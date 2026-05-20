@@ -265,3 +265,62 @@ Still needed:
 - Replace the Wi-Fi placeholders in `firmware/esphome/secrets.yaml` with the real 2.4 GHz Wi-Fi SSID and password.
 
 No firmware flashing has been done yet.
+## 2026-05-20T15:41:22Z - Playback volume option added
+
+- Added `--volume` to `tools/box3_play_audio.py`.
+- The Box package currently clamps speaker media-player volume to:
+  - initial: `0.5`
+  - min: `0.5`
+  - max: `0.8`
+- Microphone-related firmware settings currently inherited from the ESPHome package:
+  - ES7210 ADC mic gain: `24.0`
+  - voice assistant auto gain: `31`
+  - voice assistant volume multiplier: `2.0`
+- Note:
+  - Speaker playback loudness and captured microphone WAV loudness are separate paths.
+
+## 2026-05-20T15:43:20Z - Capture normalization added
+
+- Added post-capture normalization to `tools/box3_capture_voice.py`.
+- Default behavior:
+  - captured WAV remains 16 kHz mono 16-bit PCM;
+  - after capture, samples are scaled so peak amplitude reaches `0.89`;
+  - normalization is skipped for silence or empty captures.
+- Disable normalization with `--normalize-peak 0`.
+- Validation:
+  - `python -m py_compile tools/box3_capture_voice.py` passed.
+
+## 2026-05-20T15:46:33Z - Capture voice state cleanup fixed
+
+- Problem:
+  - The capture script could leave the Box in listening/awaiting-response state.
+  - Cause: Piotr sent `VOICE_ASSISTANT_RUN_END` too soon, before ESPHome had finished stopping the microphone after `VOICE_ASSISTANT_STT_VAD_END`.
+- Change:
+  - `tools/box3_capture_voice.py` now sends `STT_VAD_END`, waits for the audio stream stop callback or times out, then sends `RUN_END`.
+  - Added `tools/box3_reset_voice.py` to send stop/end events if the Box is already stuck in a voice-assistant run.
+- Validation:
+  - `python -m py_compile tools/box3_capture_voice.py tools/box3_reset_voice.py tools/box3_common.py` passed.
+  - Ran `tools/box3_reset_voice.py` once over Wi-Fi.
+
+## 2026-05-20T15:51:04Z - Capture script can run as persistent subscriber
+
+- Finding:
+  - ESPHome only keeps on-device wake-word detection running while a voice-assistant API client is subscribed.
+  - A one-shot capture script exits after recording, unsubscribes, and the firmware's `on_client_disconnected` automation stops wake-word detection.
+- Change:
+  - Added `--continuous` to `tools/box3_capture_voice.py`.
+  - In continuous mode Piotr remains connected and captures each wake-word run to a timestamped WAV.
+- Command:
+  - `.venv/bin/python -u tools/box3_capture_voice.py --continuous --seconds 4`
+- Validation:
+  - `python -m py_compile tools/box3_capture_voice.py` passed.
+
+## 2026-05-20T19:18:23Z - Playback volume mapping documented
+
+- Finding:
+  - ESPHome speaker media player remaps API volume `0.0..1.0` into configured firmware limits.
+  - Current package limits are `volume_min: 0.5` and `volume_max: 0.8`.
+  - Therefore API volume `0.8` becomes effective firmware volume `0.74`; API volume `1.0` becomes `0.8`.
+- Change:
+  - `tools/box3_play_audio.py` now prints the effective firmware volume when `--volume` is used.
+  - `tools/README.md` documents the mapping.

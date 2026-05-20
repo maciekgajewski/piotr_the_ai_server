@@ -12,12 +12,16 @@ from urllib.parse import quote
 from box3_common import DEFAULT_HOST, local_ip_for, make_client, media_player_key
 
 
+FIRMWARE_VOLUME_MIN = 0.5
+FIRMWARE_VOLUME_MAX = 0.8
+
+
 class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         return
 
 
-async def run(host: str, audio_file: Path, port: int, wait: float) -> None:
+async def run(host: str, audio_file: Path, port: int, wait: float, volume: float | None) -> None:
     audio_file = audio_file.resolve()
     if not audio_file.exists():
         raise FileNotFoundError(audio_file)
@@ -34,6 +38,11 @@ async def run(host: str, audio_file: Path, port: int, wait: float) -> None:
     await client.connect(login=True)
     try:
         key = await media_player_key(client)
+        if volume is not None:
+            effective_volume = FIRMWARE_VOLUME_MIN + (FIRMWARE_VOLUME_MAX - FIRMWARE_VOLUME_MIN) * volume
+            print(f"setting volume={volume:.2f} effective_firmware_volume={effective_volume:.2f}")
+            client.media_player_command(key, volume=volume)
+            await asyncio.sleep(0.1)
         print(f"playing {url}")
         client.media_player_command(key, media_url=url, announcement=True)
         await asyncio.sleep(wait)
@@ -49,8 +58,11 @@ def main() -> None:
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--wait", type=float, default=8.0)
+    parser.add_argument("--volume", type=float, default=None, help="Playback volume from 0.0 to 1.0.")
     args = parser.parse_args()
-    asyncio.run(run(args.host, args.file, args.port, args.wait))
+    if args.volume is not None and not 0.0 <= args.volume <= 1.0:
+        raise SystemExit("--volume must be between 0.0 and 1.0")
+    asyncio.run(run(args.host, args.file, args.port, args.wait, args.volume))
 
 
 if __name__ == "__main__":
