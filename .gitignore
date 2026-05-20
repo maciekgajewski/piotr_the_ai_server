@@ -1,0 +1,7 @@
+.venv/
+.platformio/
+.uv-cache/
+__pycache__/
+*.py[cod]
+firmware/esphome/secrets.yaml
+audio/captures/*.wav
