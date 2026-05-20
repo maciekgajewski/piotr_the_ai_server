@@ -1,6 +1,8 @@
 .venv/
+.venv-stt/
 .platformio/
 .uv-cache/
+.hf-cache/
 __pycache__/
 *.py[cod]
 firmware/esphome/secrets.yaml

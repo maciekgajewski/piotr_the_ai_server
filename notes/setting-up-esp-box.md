@@ -324,3 +324,87 @@ No firmware flashing has been done yet.
 - Change:
   - `tools/box3_play_audio.py` now prints the effective firmware volume when `--volume` is used.
   - `tools/README.md` documents the mapping.
+
+## 2026-05-20T19:47:38Z - Local Whisper STT tool added
+
+- Added separate STT environment `.venv-stt/` and `requirements-stt.txt`.
+- Installed:
+  - `faster-whisper`
+  - `aioesphomeapi`
+  - `PyYAML`
+- Added `tools/box3_stt_whisper.py`.
+  - Waits for Box wake word through ESPHome voice-assistant API.
+  - Captures a fixed duration of 16 kHz mono PCM.
+  - Runs local `faster-whisper`.
+  - Prints recognized text to stdout and status/debug to stderr.
+  - Supports `--continuous`, `--device auto|cuda|cpu`, `--model`, `--language`, `--keep-audio`, and `--self-test`.
+- CUDA access:
+  - Normal sandbox cannot see `/dev/nvidia*`.
+  - Escalated STT venv command can load Whisper on CUDA.
+  - CUDA self-test passed with model `base`, device `cuda`, compute type `float16`.
+- Validation:
+  - `python -m py_compile tools/box3_stt_whisper.py tools/box3_common.py` passed.
+  - `HF_HOME=.hf-cache .venv-stt/bin/python -c "import faster_whisper, aioesphomeapi"` passed.
+  - `nvidia-smi` shows RTX 2060, driver `595.71.05`, CUDA `13.2`.
+  - `tools/box3_api_probe.py` still connects to the Box.
+
+## 2026-05-20T19:50:28Z - STT defaults adjusted
+
+- Review comments addressed:
+  - default Whisper language is now Polish (`pl`);
+  - added `--list-models` to print common faster-whisper model presets.
+- Validation:
+  - `python -m py_compile tools/box3_stt_whisper.py` passed.
+  - `tools/box3_stt_whisper.py --list-models` prints presets.
+  - CPU self-test with `tiny` passed.
+  - CUDA self-test with `base` passed.
+
+## 2026-05-20T19:55:07Z - STT audio callback fixed
+
+- Problem:
+  - `.venv-stt` installed a newer `aioesphomeapi` whose voice assistant audio callback passes `(data, data2)`.
+  - `tools/box3_stt_whisper.py` accepted only one audio argument, causing the API connection to crash after wake-word detection.
+- Change:
+  - STT audio callback now accepts `data2` and appends both payload chunks when present.
+- Validation:
+  - `python -m py_compile tools/box3_stt_whisper.py` passed.
+  - CUDA self-test with `base` passed.
+
+## 2026-05-20T20:00:17Z - Local CUDA runtime libraries added
+
+- Problem:
+  - CUDA model loading worked, but first real transcription failed with missing `libcublas.so.12`.
+  - This means the NVIDIA driver was available, but CUDA user-space libraries were not.
+- Change:
+  - Installed `nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, and `nvidia-cuda-nvrtc-cu12` into `.venv-stt`.
+  - Added `nvidia-cublas-cu12` and `nvidia-cudnn-cu12` to `requirements-stt.txt`.
+  - `tools/box3_stt_whisper.py` now prepends local NVIDIA library directories to `LD_LIBRARY_PATH` and re-execs itself once before importing `faster_whisper`.
+  - `--self-test` now runs a tiny transcription, not just model load.
+- Validation:
+  - CPU self-test with `tiny` passed.
+  - CUDA self-test with `base` passed and completed transcription.
+
+## 2026-05-20T20:01:36Z - STT shell wrappers added
+
+- Added wrapper scripts:
+  - `tools/box3-stt`
+  - `tools/box3-stt-continuous`
+  - `tools/box3-stt-self-test`
+- Purpose:
+  - hide `.venv-stt/bin/python`;
+  - set `HF_HOME=.hf-cache` by default;
+  - keep the common STT commands short.
+- Validation:
+  - `tools/box3-stt --list-models` passed.
+  - `tools/box3-stt-self-test --device cpu --model tiny` passed.
+  - `tools/box3-stt-self-test --device cuda` passed outside the sandbox.
+
+## 2026-05-20T20:05:00Z - Tool implementation files nested
+
+- Moved Python implementation scripts under `tools/lib/`.
+- Removed executable flags from the Python implementation scripts.
+- User-facing executable commands are now shell wrappers such as:
+  - `tools/box3-stt`
+  - `tools/box3-stt-continuous`
+  - `tools/box3-stt-self-test`
+- Updated wrapper targets and current tools README paths.
