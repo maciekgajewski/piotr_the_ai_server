@@ -2,6 +2,15 @@
 
 A project to turn this computer into a AI server
 
+## Project goals
+
+- Solid, stable server, with logs, monitoring, resiliency
+- Uses local models on local GPU as much as possible
+- Supports multiple sattelites of various types
+- Capable of multiple actions using dynamic, extensible tool system
+- Works in simple wakeword-utterance-reply mode, but can also switch to conversational mode
+- Recognise users by voice
+
 ## Directory
 
 - notes/ - notes from various endavours
@@ -12,3 +21,5 @@ A project to turn this computer into a AI server
 
 The first satellite target is an ESP32-S3-BOX-3 connected over 2.4 GHz Wi-Fi.
 See [docs/esp32-s3-box-3-satellite.md](docs/esp32-s3-box-3-satellite.md).
+
+
