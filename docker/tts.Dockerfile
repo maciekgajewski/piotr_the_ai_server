@@ -16,6 +16,8 @@ RUN apt-get update \
 
 COPY requirements-tts.txt /app/requirements-tts.txt
 RUN python3 -m pip install --break-system-packages --no-cache-dir -r /app/requirements-tts.txt
+RUN python3 -m pip uninstall --break-system-packages -y onnxruntime \
+    && python3 -m pip install --break-system-packages --no-cache-dir --force-reinstall onnxruntime-gpu
 
 COPY tools/lib /app/tools/lib
 

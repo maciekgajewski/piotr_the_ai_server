@@ -483,3 +483,77 @@ No firmware flashing has been done yet.
 ## 2026-05-21T09:55:10Z - Default Piper voice changed
 
 - Default TTS voice changed from `pl_PL-gosia-medium` to `pl_PL-bass-high`.
+
+## 2026-05-21T10:26:33Z - Experimental Piper streaming prototype
+
+- Added `tools/box3-tts.sh --stream`.
+- Streaming mode:
+  - gives the Box an HTTP WAV URL immediately;
+  - starts Piper when the Box connects;
+  - forwards Piper stdout chunks to the HTTP response;
+  - avoids writing a complete generated audio file before playback.
+- Added streaming timing logs:
+  - `tts_send_seconds`;
+  - `tts_first_audio_seconds`;
+  - `tts_stream_seconds`;
+  - `tts_stream_bytes`.
+- Test result with a 126-character Polish phrase:
+  - `tts_send_seconds=0.101`;
+  - `tts_first_audio_seconds=9.985`;
+  - `tts_stream_seconds=10.271`;
+  - `tts_stream_bytes=353324`.
+- Interpretation: the Box can request the HTTP stream, but Piper stdout does not provide useful early audio for this phrase; first bytes arrived near the end of synthesis.
+- Piper `--output-raw` was also checked and did not materially improve first-byte latency for the same phrase.
+- Existing pre-rendered FLAC mode remains the default.
+
+## 2026-05-21T10:38:04Z - Wyoming Piper server autostart added
+
+- Decision: use a long-running Wyoming Piper server to avoid paying Piper process startup/model loading cost on every TTS request.
+- Added service wrappers:
+  - `tools/box3-tts-server-start.sh`
+  - `tools/box3-tts-server-stop.sh`
+  - `tools/box3-tts-server-status.sh`
+  - `tools/box3-tts-server-logs.sh`
+- Server container name: `piotr-box3-tts-server`.
+- Server port: `10200`.
+- `tools/box3-tts.sh` now autostarts the server for default Wyoming-backed synthesis.
+- Added `--engine wyoming|cli`; default is `wyoming`.
+- `--list-voices`, `--stream`, and `--engine cli` do not autostart the server.
+- Validation:
+  - first Wyoming-backed playback succeeded with `tts_generate_seconds=5.013` and `tts_send_seconds=0.101`;
+  - second warm-server self-test succeeded with `tts_generate_seconds=3.001`.
+
+## 2026-05-21T10:50:14Z - Wyoming chunk streaming prototype
+
+- Changed `tools/box3-tts.sh --stream` to use the Wyoming server by default.
+- Streaming mode now:
+  - starts an HTTP WAV response for the Box;
+  - sends a WAV header when Wyoming `AudioStart` arrives;
+  - forwards each Wyoming `AudioChunk` directly to the Box;
+  - stops on Wyoming `AudioStop`.
+- Added `tts_first_byte_sent_seconds`.
+- Previous Piper CLI streaming path remains available with `--stream --engine cli`.
+- Validation:
+  - 139-character phrase: first audio bytes sent at `2.803s`; full stream `10.377s`; `383020` bytes.
+  - 48-character phrase with smaller server chunks: first audio bytes sent at `3.089s`; full stream `3.196s`; `156716` bytes.
+- Interpretation: Wyoming chunk streaming removes the full-file buffering delay, but Piper/voice inference still takes roughly 2.8-3.1s before first chunk for tested Polish phrases.
+
+## 2026-05-21T11:10:44Z - TTS choke point found and GPU enabled
+
+- Problem found: the TTS container had `onnxruntime-gpu` installed but CPU `onnxruntime` was shadowing it, so Wyoming Piper exposed only CPU providers.
+- Confirmed before fix:
+  - providers: `['AzureExecutionProvider', 'CPUExecutionProvider']`;
+  - `nvidia-smi` showed no TTS process.
+- Fix:
+  - added `onnxruntime-gpu` to `requirements-tts.txt`;
+  - Docker image now uninstalls CPU `onnxruntime` and force-reinstalls `onnxruntime-gpu`;
+  - Wyoming Piper starts with `--use-cuda`;
+  - `--stream` now autostarts the Wyoming server.
+- Confirmed after fix:
+  - providers: `['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']`.
+- Direct Wyoming timing:
+  - first CUDA warmup request first chunk: `3.737s`;
+  - second warm request first chunk: `0.311s`.
+- Box streaming timing with warmed GPU server:
+  - `tts_first_audio_seconds=0.312`, `tts_first_byte_sent_seconds=0.311`;
+  - next run: `tts_first_audio_seconds=0.279`, `tts_first_byte_sent_seconds=0.279`.

@@ -109,15 +109,63 @@ the resolved IP into Docker as `BOX3_HOST`.
 The TTS tool logs generation time as `tts_generate_seconds` and ESPHome media
 command send time as `tts_send_seconds`.
 
+By default, `tools/box3-tts.sh` autostarts a named Wyoming Piper server
+container before synthesis:
+
+```text
+piotr-box3-tts-server
+```
+
+Manage it directly:
+
+```bash
+tools/box3-tts-server-start.sh
+tools/box3-tts-server-status.sh
+tools/box3-tts-server-logs.sh
+tools/box3-tts-server-stop.sh
+```
+
+Use the old per-command Piper CLI path explicitly:
+
+```bash
+echo "Test syntezy mowy." | tools/box3-tts.sh --engine cli
+```
+
+The server runs Wyoming Piper with CUDA enabled through `onnxruntime-gpu`.
+The first request after server restart may pay CUDA/model warmup cost; subsequent
+requests should be much faster.
+
 Run synthesis without playing on the Box:
 
 ```bash
 echo "Test syntezy mowy." | tools/box3-tts.sh --self-test
 ```
 
+Experimental streaming mode asks the Box to play an HTTP WAV stream while the
+Wyoming server is still producing audio chunks:
+
+```bash
+echo "Test strumieniowania mowy." | tools/box3-tts.sh --stream
+```
+
+Streaming mode logs:
+
+- `tts_send_seconds`: time to send the ESPHome media command
+- `tts_first_audio_seconds`: time from Box HTTP request to first Wyoming audio chunk
+- `tts_first_byte_sent_seconds`: time from Box HTTP request to first HTTP audio bytes
+- `tts_stream_seconds`: total time spent writing the HTTP stream
+- `tts_stream_bytes`: number of WAV bytes written to the HTTP response
+
+Use the older Piper CLI streaming comparison path with:
+
+```bash
+echo "Test strumieniowania mowy." | tools/box3-tts.sh --stream --engine cli
+```
+
 Defaults:
 
 - voice: `pl_PL-bass-high`
+- engine: `wyoming`
 - volume: `1.0`
 - generated audio: `audio/tts/`
 
