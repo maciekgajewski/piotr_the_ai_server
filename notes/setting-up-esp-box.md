@@ -442,3 +442,44 @@ No firmware flashing has been done yet.
 - User installed/configured NVIDIA Container Toolkit on the host.
 - `docker run --rm --gpus all nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 nvidia-smi` works.
 - GPU-first STT wrappers can now use Docker `--gpus all`.
+
+## 2026-05-21T09:34:18Z - Piper TTS prototype added
+
+- Decision: start TTS with Piper and the Polish `pl_PL-gosia-medium` voice.
+- Added `tools/box3-tts.sh`.
+- Added `docker/tts.Dockerfile` and `requirements-tts.txt`.
+- Added `tools/lib/box3_tts_piper.py`:
+  - reads text from stdin;
+  - downloads/caches the Piper Polish voice under `.piper-cache`;
+  - synthesizes WAV locally;
+  - converts it to 48 kHz mono FLAC for Box playback;
+  - plays through the existing ESPHome media-player path.
+- The TTS container requests Docker `--gpus all` to keep the project GPU-first, even though Piper inference itself is CPU-oriented.
+
+## 2026-05-21T09:42:24Z - Piper TTS verified on Box
+
+- Built `piotr-box3-tts:latest`.
+- `tools/box3-tts.sh --list-voices` lists `pl_PL-gosia-medium`.
+- `echo ... | tools/box3-tts.sh --self-test` downloaded the Polish voice, synthesized audio, and wrote FLAC under `audio/tts`.
+- First playback attempt failed because the container could not resolve the `.local` Box hostname.
+- Updated Docker wrappers to resolve the default Box hostname on the host and pass `BOX3_HOST` into containers.
+- `echo "Cześć, jestem Piotr." | tools/box3-tts.sh` succeeded and played `box3-tts-20260521T094156Z.flac` on the Box.
+- Re-ran `tools/box3-stt-self-test.sh --device cuda`; STT Docker path still works.
+
+## 2026-05-21T09:53:00Z - Piper Polish voice catalog expanded
+
+- Added all current official Polish Piper voices from `rhasspy/piper-voices`:
+  - `pl_PL-bass-high`
+  - `pl_PL-darkman-medium`
+  - `pl_PL-gosia-medium`
+  - `pl_PL-mc_speech-medium`
+  - `pl_PL-mls_6892-low`
+- `tools/box3-tts.sh --list-voices` lists these voices.
+- `tools/box3-tts.sh --voice ...` downloads and uses the selected voice.
+- TTS logs:
+  - `tts_generate_seconds` for Piper synthesis plus FLAC conversion;
+  - `tts_send_seconds` for sending the ESPHome media-player command.
+
+## 2026-05-21T09:55:10Z - Default Piper voice changed
+
+- Default TTS voice changed from `pl_PL-gosia-medium` to `pl_PL-bass-high`.

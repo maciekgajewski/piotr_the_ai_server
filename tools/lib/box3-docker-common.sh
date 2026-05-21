@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 box3_stt_image="${BOX3_STT_IMAGE:-piotr-box3-stt:latest}"
+box3_default_host="${BOX3_HOST:-piotr-box3-01-cbfaA8.local}"
 
 box3_require_docker() {
   if ! command -v docker >/dev/null 2>&1; then
@@ -18,6 +19,7 @@ box3_build_stt_image_if_needed() {
 box3_run_stt_container() {
   local -a gpu_args=()
   local requested_gpus="${BOX3_STT_GPUS:-auto}"
+  local resolved_host="$box3_default_host"
 
   if [[ "$requested_gpus" == "auto" ]]; then
     requested_gpus="all"
@@ -35,9 +37,15 @@ box3_run_stt_container() {
     gpu_args=(--gpus "$requested_gpus")
   fi
 
+  if command -v getent >/dev/null 2>&1; then
+    resolved_host="$(getent ahostsv4 "$box3_default_host" | sed -n '1s/[[:space:]].*//p')"
+    resolved_host="${resolved_host:-$box3_default_host}"
+  fi
+
   docker run --rm \
     "${gpu_args[@]}" \
     --network host \
+    -e BOX3_HOST="$resolved_host" \
     -e HF_HOME=/app/.hf-cache \
     -e BOX3_WHISPER_MODEL="${BOX3_WHISPER_MODEL:-base}" \
     -e BOX3_WHISPER_LANGUAGE="${BOX3_WHISPER_LANGUAGE:-pl}" \

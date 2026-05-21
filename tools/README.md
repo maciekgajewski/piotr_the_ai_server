@@ -81,6 +81,46 @@ The upstream ESPHome package remaps API volume `0.0..1.0` into firmware volume
 The Box currently reports FLAC playback support at 48 kHz, mono. Playback with
 `audio/playback/timer_finished.flac` has been verified.
 
+## Local Piper TTS
+
+Reads text from standard input, renders it locally with Piper, converts it to
+48 kHz mono FLAC, and plays it on the Box.
+
+```bash
+echo "Cześć, jestem Piotr." | tools/box3-tts.sh
+```
+
+List available Polish Piper voices:
+
+```bash
+tools/box3-tts.sh --list-voices
+```
+
+Use a specific voice:
+
+```bash
+echo "Cześć, jestem Piotr." | tools/box3-tts.sh --voice pl_PL-darkman-medium
+```
+
+The wrapper builds `piotr-box3-tts:latest` on first use, runs with Docker
+`--gpus all`, and caches the Polish Piper voice under `.piper-cache/`.
+By default the wrapper resolves the Box `.local` hostname on the host and passes
+the resolved IP into Docker as `BOX3_HOST`.
+The TTS tool logs generation time as `tts_generate_seconds` and ESPHome media
+command send time as `tts_send_seconds`.
+
+Run synthesis without playing on the Box:
+
+```bash
+echo "Test syntezy mowy." | tools/box3-tts.sh --self-test
+```
+
+Defaults:
+
+- voice: `pl_PL-bass-high`
+- volume: `1.0`
+- generated audio: `audio/tts/`
+
 ## Local Whisper STT
 
 Uses Docker for the local `faster-whisper` runtime. The wrappers build the STT
@@ -125,6 +165,8 @@ tools/box3-stt-continuous.sh --seconds 5
 
 Set `BOX3_STT_IMAGE` to override the image tag, or `BOX3_STT_GPUS=none` to run
 without Docker GPU flags.
+By default the wrapper resolves the Box `.local` hostname on the host and passes
+the resolved IP into Docker as `BOX3_HOST`.
 
 If `--device cuda` fails with `could not select device driver "" with
 capabilities: [[gpu]]`, install/configure NVIDIA Container Toolkit on the host.

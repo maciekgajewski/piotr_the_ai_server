@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import os
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,7 @@ import aioesphomeapi
 import yaml
 
 
-DEFAULT_HOST = "piotr-box3-01-cbfaA8.local"
+DEFAULT_HOST = os.environ.get("BOX3_HOST", "piotr-box3-01-cbfaA8.local")
 EXPECTED_NAME = "piotr-box3-01-cbfaa8"
 API_PORT = 6053
 SECRETS_PATH = Path("firmware/esphome/secrets.yaml")

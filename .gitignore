@@ -3,7 +3,10 @@
 .platformio/
 .uv-cache/
 .hf-cache/
+.piper-cache/
 __pycache__/
 *.py[cod]
 firmware/esphome/secrets.yaml
 audio/captures/*.wav
+audio/tts/*.wav
+audio/tts/*.flac

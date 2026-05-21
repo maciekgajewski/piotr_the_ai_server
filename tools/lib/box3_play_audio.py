@@ -7,6 +7,7 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import threading
+import time
 from urllib.parse import quote
 
 from box3_common import DEFAULT_HOST, local_ip_for, make_client, media_player_key
@@ -21,7 +22,7 @@ class QuietHandler(SimpleHTTPRequestHandler):
         return
 
 
-async def run(host: str, audio_file: Path, port: int, wait: float, volume: float | None) -> None:
+async def run(host: str, audio_file: Path, port: int, wait: float, volume: float | None) -> dict[str, float]:
     audio_file = audio_file.resolve()
     if not audio_file.exists():
         raise FileNotFoundError(audio_file)
@@ -38,6 +39,7 @@ async def run(host: str, audio_file: Path, port: int, wait: float, volume: float
     await client.connect(login=True)
     try:
         key = await media_player_key(client)
+        send_started = time.monotonic()
         if volume is not None:
             effective_volume = FIRMWARE_VOLUME_MIN + (FIRMWARE_VOLUME_MAX - FIRMWARE_VOLUME_MIN) * volume
             print(f"setting volume={volume:.2f} effective_firmware_volume={effective_volume:.2f}")
@@ -45,7 +47,9 @@ async def run(host: str, audio_file: Path, port: int, wait: float, volume: float
             await asyncio.sleep(0.1)
         print(f"playing {url}")
         client.media_player_command(key, media_url=url, announcement=True)
+        send_seconds = time.monotonic() - send_started
         await asyncio.sleep(wait)
+        return {"send_seconds": send_seconds}
     finally:
         await client.disconnect()
         server.shutdown()
