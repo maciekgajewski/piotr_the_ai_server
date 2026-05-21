@@ -83,41 +83,55 @@ The Box currently reports FLAC playback support at 48 kHz, mono. Playback with
 
 ## Local Whisper STT
 
-Uses a separate STT virtual environment and local `faster-whisper`.
+Uses Docker for the local `faster-whisper` runtime. The wrappers build the STT
+image on first use.
 
-Install dependencies:
+Build or rebuild the image manually:
 
 ```bash
-.venv-stt/bin/pip install -r requirements-stt.txt
+docker build -f docker/stt.Dockerfile -t piotr-box3-stt:latest .
 ```
 
-CUDA is visible only outside the Codex sandbox, so run STT commands with the
-approved escalated path when using `--device cuda`. CUDA runtime libraries are
-installed into `.venv-stt`; the STT tool restarts itself once to expose those
-libraries through `LD_LIBRARY_PATH`.
+The container uses host networking for ESPHome/mDNS and mounts:
+
+- `.hf-cache/` for Whisper model cache
+- `firmware/` read-only for ESPHome API secrets
+- `audio/` for optional saved audio
+- `tools/lib/` read-only so Python implementation changes do not require image rebuilds
 
 Self-test model loading and CUDA transcription runtime:
 
 ```bash
-tools/box3-stt-self-test --device cuda
+tools/box3-stt-self-test.sh --device cuda
 ```
 
 List common model presets:
 
 ```bash
-tools/box3-stt --list-models
+tools/box3-stt.sh --list-models
 ```
 
 Wait for one wake-word utterance and print recognized text:
 
 ```bash
-tools/box3-stt --seconds 5
+tools/box3-stt.sh --seconds 5
 ```
 
 Keep listening and print one line per utterance:
 
 ```bash
-tools/box3-stt-continuous --seconds 5
+tools/box3-stt-continuous.sh --seconds 5
+```
+
+Set `BOX3_STT_IMAGE` to override the image tag, or `BOX3_STT_GPUS=none` to run
+without Docker GPU flags.
+
+If `--device cuda` fails with `could not select device driver "" with
+capabilities: [[gpu]]`, install/configure NVIDIA Container Toolkit on the host.
+Until then, run CPU mode with:
+
+```bash
+BOX3_STT_GPUS=none tools/box3-stt-self-test.sh --device cpu --model tiny
 ```
 
 Defaults:

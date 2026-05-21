@@ -1,0 +1,10 @@
+.git/
+.venv/
+.venv-stt/
+.platformio/
+.uv-cache/
+.hf-cache/
+audio/captures/
+firmware/esphome/secrets.yaml
+__pycache__/
+*.py[cod]

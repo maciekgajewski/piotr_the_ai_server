@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-cd "$(dirname "$0")/.."
-export HF_HOME="${HF_HOME:-.hf-cache}"
-exec .venv-stt/bin/python -u tools/lib/box3_stt_whisper.py "$@"

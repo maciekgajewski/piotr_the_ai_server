@@ -408,3 +408,37 @@ No firmware flashing has been done yet.
   - `tools/box3-stt-continuous`
   - `tools/box3-stt-self-test`
 - Updated wrapper targets and current tools README paths.
+
+## 2026-05-21T07:25:02Z - STT wrappers moved to Docker
+
+- Added Docker image definition:
+  - `docker/stt.Dockerfile`
+  - `.dockerignore`
+- STT shell wrappers renamed to `.sh` suffix:
+  - `tools/box3-stt.sh`
+  - `tools/box3-stt-continuous.sh`
+  - `tools/box3-stt-self-test.sh`
+- STT wrappers now:
+  - build `piotr-box3-stt:latest` on first use;
+  - run with host networking;
+  - request all GPUs by default with Docker `--gpus all`;
+  - mount `.hf-cache`, `firmware`, `audio`, and `tools/lib`.
+- Added `tools/lib/box3-docker-common.sh` as non-executable wrapper support.
+- Docker was not available in the current command environment, so image build/run was not verified here.
+
+## 2026-05-21T07:51:00Z - STT Docker image built
+
+- Docker access was fixed by adding the user to the `docker` group.
+- Built `piotr-box3-stt:latest` through `tools/box3-stt.sh --list-models`.
+- Validation:
+  - `tools/box3-stt.sh --list-models` passed.
+  - `BOX3_STT_GPUS=none tools/box3-stt-self-test.sh --device cpu --model tiny` passed.
+- GPU container status:
+  - `tools/box3-stt-self-test.sh --device cuda` currently fails with Docker error `could not select device driver "" with capabilities: [[gpu]]`.
+  - Docker daemon runtimes list only `runc`; NVIDIA Container Toolkit is not configured yet.
+
+## 2026-05-21T08:18:41Z - NVIDIA Docker runtime configured
+
+- User installed/configured NVIDIA Container Toolkit on the host.
+- `docker run --rm --gpus all nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 nvidia-smi` works.
+- GPU-first STT wrappers can now use Docker `--gpus all`.
