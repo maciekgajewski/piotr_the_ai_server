@@ -15,3 +15,6 @@ class EchoAgent:
             message = await endpoint.receive()
             self._logger.debug("%s Echoing message: %s", log_prefix, message.text)
             await endpoint.send(message)
+
+    async def close(self) -> None:
+        pass

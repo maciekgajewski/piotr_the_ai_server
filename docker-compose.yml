@@ -1,0 +1,30 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    gpus: all
+
+  ai-server:
+    build:
+      context: .
+      dockerfile: docker/ai-server.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    ports:
+      - "2137:2137"
+    volumes:
+      - ${AI_SERVER_CONFIG:?Set AI_SERVER_CONFIG to the AI server YAML config file}:/config/ai_server.yaml:ro
+    entrypoint:
+      - python
+      - -m
+      - ai_server.server
+      - --ollama-url
+      - http://ollama:11434
+
+volumes:
+  ollama:

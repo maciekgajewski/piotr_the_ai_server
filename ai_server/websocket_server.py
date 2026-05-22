@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 
-from aiohttp import WSMsgType, web
+from aiohttp import ClientConnectionResetError, WSMsgType, web
 
-from ai_server.agent import create_agent
+from ai_server.agent import Agent
 from ai_server.config import Config
 from ai_server.endpoint import CommunicationEndpoint, EndpointClosed
 from ai_server.messages import UserMessage, user_message_from_json, user_message_to_json
@@ -39,12 +39,19 @@ class WebsocketCommunicationEndpoint(CommunicationEndpoint):
     async def send(self, msg: UserMessage) -> None:
         payload = user_message_to_json(msg)
         self._logger.debug("%s Sending websocket message: %s", self._log_prefix, payload)
-        await self._websocket.send_str(payload)
+        try:
+            await self._websocket.send_str(payload)
+        except ClientConnectionResetError as exc:
+            raise EndpointClosed() from exc
 
 
-def create_app(config: Config, session_manager: SessionManager | None = None) -> web.Application:
+def create_app(
+    config: Config,
+    agent: Agent,
+    session_manager: SessionManager | None = None,
+) -> web.Application:
     logger = logging.getLogger(f"{__name__}.WebsocketServer")
-    manager = session_manager or SessionManager(create_agent(config.agent))
+    manager = session_manager or SessionManager(agent)
     app = web.Application()
 
     async def websocket_handler(request: web.Request) -> web.WebSocketResponse:

@@ -11,10 +11,17 @@ from aiohttp import ClientSession, WSMsgType
 
 from ai_server.messages import user_message_from_json
 
+DEFAULT_WEBSOCKET_URL = "ws://127.0.0.1:2137/chat"
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Chat with the AI server over websocket.")
-    parser.add_argument("url", help="Websocket URL, for example ws://127.0.0.1:2137/chat.")
+    parser.add_argument(
+        "url",
+        nargs="?",
+        default=DEFAULT_WEBSOCKET_URL,
+        help=f"Websocket URL. Defaults to {DEFAULT_WEBSOCKET_URL}.",
+    )
     return parser.parse_args(argv)
 
 

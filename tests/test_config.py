@@ -85,6 +85,29 @@ agent:
     )
 
 
+def test_load_config_with_polite_reply_agent_model(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+websocket:
+  port: 2137
+agent:
+  type: polite_reply
+  model: qwen3:4b
+""",
+    )
+
+    assert load_config_from_yaml(config_path) == Config(
+        agent=AgentConfig(type="polite_reply", options={"model": "qwen3:4b"}),
+        log_level=DEFAULT_LOG_LEVEL,
+        websocket=WebsocketConfig(
+            host=DEFAULT_WEBSOCKET_HOST,
+            port=2137,
+            path=DEFAULT_WEBSOCKET_PATH,
+        ),
+    )
+
+
 def test_load_config_requires_websocket_port(tmp_path: Path) -> None:
     config_path = write_config(
         tmp_path,
@@ -109,6 +132,18 @@ agent:
         ("websocket:\n  port: 2137", "config must contain an agent mapping"),
         ("websocket:\n  port: 2137\nagent: []", "config must contain an agent mapping"),
         ("websocket:\n  port: 2137\nagent: {}", "agent.type must be a non-empty string"),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: polite_reply",
+            "agent.model must be a non-empty string for polite_reply",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: polite_reply\n  model: ''",
+            "agent.model must be a non-empty string for polite_reply",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: polite_reply\n  model: 123",
+            "agent.model must be a non-empty string for polite_reply",
+        ),
         ("websocket:\n  port: nope\nagent:\n  type: echo", "websocket.port must be an integer"),
         ("websocket:\n  port: 0\nagent:\n  type: echo", "websocket.port must be between 1 and 65535"),
         (

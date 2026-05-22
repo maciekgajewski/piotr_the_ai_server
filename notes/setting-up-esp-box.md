@@ -716,3 +716,24 @@ No firmware flashing has been done yet.
 - Changed `tools/box3-wakeword-test.sh` so test audio is temporary unless `--output-dir` is provided.
 - Default output is now just the model prediction result.
 - Use `--output-dir audio/wakeword-tests/ryszardzie/` to preserve captured test WAV files for inspection.
+
+## 2026-05-22T11:12:59Z - Ryszardzie cutoff selected for flashing
+
+- Decision: use the recorded-sample `Ryszardzie` model with ESPHome `probability_cutoff` set to `0.7`.
+- Rationale: live no-flash tests showed real positives can spike high while noise can also produce moderate scores; `0.7` is a practical first on-device cutoff.
+- Updated `wakeword/ryszardzie/model/ryszardzie.json`.
+- Box is connected over USB as `/dev/ttyACM0`; flashing requires running ESPHome upload outside the sandbox for USB device access.
+
+## 2026-05-22T11:14:47Z - Ryszardzie cutoff 0.7 flashed
+
+- Validated ESPHome configuration after changing the model manifest cutoff.
+- Flashed the Box over USB `/dev/ttyACM0` using ESPHome upload outside the sandbox.
+- Upload wrote and verified:
+  - app at `0x10000`
+  - bootloader at `0x0`
+  - partitions at `0x8000`
+  - OTA data at `0x9000`
+- ESPHome reported `Successfully uploaded program.`
+- Post-flash checks:
+  - `/dev/ttyACM0` still exists.
+  - Ping to `192.168.0.180` succeeded with 2/2 replies.

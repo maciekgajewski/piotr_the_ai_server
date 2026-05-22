@@ -63,9 +63,15 @@ def _parse_agent_config(raw_config: dict[str, Any]) -> AgentConfig:
     if not isinstance(agent_type, str) or not agent_type:
         raise ValueError("agent.type must be a non-empty string")
 
+    options = {key: value for key, value in raw_config.items() if key != "type"}
+    if agent_type == "polite_reply":
+        model = options.get("model")
+        if not isinstance(model, str) or not model:
+            raise ValueError("agent.model must be a non-empty string for polite_reply")
+
     return AgentConfig(
         type=agent_type,
-        options={key: value for key, value in raw_config.items() if key != "type"},
+        options=options,
     )
 
 
