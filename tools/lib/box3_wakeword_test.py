@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import wave
 
 import aioesphomeapi
@@ -19,10 +20,11 @@ from box3_common import DEFAULT_HOST, make_client
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2
-DEFAULT_OUTPUT_DIR = Path("audio/wakeword-tests/ryszardzie")
 DEFAULT_SECONDS = 1.5
 DEFAULT_READY_DELAY = 0.4
 DEFAULT_MODEL = Path("wakeword/ryszardzie/model/ryszardzie.tflite")
+DEFAULT_TEMP_DIR = Path("audio/wakeword-tests/.tmp")
+CONTAINER_WORKDIR = Path("/app")
 HA_WAKE_WORD_MODE = "In Home Assistant"
 ON_DEVICE_WAKE_WORD_MODE = "On device"
 
@@ -34,6 +36,17 @@ def log(message: str) -> None:
 def timestamped_wav(directory: Path) -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return directory / f"wakeword-test-{stamp}.wav"
+
+
+def container_path(path: Path) -> str:
+    if not path.is_absolute():
+        return str(path)
+
+    try:
+        relative = path.resolve().relative_to(Path.cwd().resolve())
+    except ValueError:
+        return str(path)
+    return str(CONTAINER_WORKDIR / relative)
 
 
 def write_wav(path: Path, chunks: Iterable[bytes]) -> int:
@@ -67,22 +80,33 @@ async def find_wake_word_select(client: aioesphomeapi.APIClient) -> tuple[int, i
     return int(selected.key), int(getattr(selected, "device_id", 0) or 0)
 
 
-async def prompt_for_test(index: int, output: Path) -> None:
-    prompt = f"test {index}: ready -> press Enter, then speak near the Box (saving {output})"
-    await asyncio.to_thread(input, prompt)
+async def prompt_for_test(index: int) -> None:
+    log(f"test {index}: ready -> press Enter, then speak near the Box")
+    await asyncio.to_thread(input)
 
 
 def predict_file(audio_path: Path, model_path: Path, cutoff: float) -> None:
-    container_model_path = str(model_path) if model_path.is_absolute() else f"/app/{model_path}"
     command = [
         "tools/box3-wakeword-predict-file.sh",
-        str(audio_path),
+        container_path(audio_path),
         "--model",
-        container_model_path,
+        container_path(model_path),
         "--cutoff",
         str(cutoff),
     ]
-    subprocess.run(command, check=True)
+    result = subprocess.run(command, text=True, capture_output=True)
+    for line in result.stdout.splitlines():
+        if line.startswith(("prediction ", "summary ")):
+            print(line, flush=True)
+        elif line.startswith("INFO: Created TensorFlow Lite XNNPACK delegate"):
+            continue
+        elif line:
+            log(line)
+    for line in result.stderr.splitlines():
+        if line.startswith("INFO: Created TensorFlow Lite XNNPACK delegate"):
+            continue
+        log(line)
+    result.check_returncode()
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -112,6 +136,26 @@ async def run(args: argparse.Namespace) -> int:
     async def handle_stop(aborted: bool) -> None:
         log(f"audio stream stopped aborted={aborted}")
 
+    async def capture_and_predict(output_for_index: Callable[[int], Path]) -> None:
+        nonlocal recording
+        for index in range(1, args.count + 1):
+            output = output_for_index(index)
+            await prompt_for_test(index)
+            await asyncio.sleep(args.ready_delay)
+
+            chunks.clear()
+            recording = True
+            try:
+                await asyncio.sleep(args.seconds)
+            finally:
+                recording = False
+
+            byte_count = write_wav(output, chunks)
+            if args.output_dir is not None:
+                duration = byte_count / (SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH_BYTES)
+                print(f"captured bytes={byte_count} duration={duration:.3f}s output={output}", flush=True)
+            predict_file(output, args.model, args.cutoff)
+
     await client.connect(login=True)
     unsubscribe = None
     restore_on_device = False
@@ -134,22 +178,12 @@ async def run(args: argparse.Namespace) -> int:
                 f"Box did not start streaming audio within {args.stream_timeout:g}s"
             ) from None
 
-        for index in range(1, args.count + 1):
-            output = timestamped_wav(args.output_dir)
-            await prompt_for_test(index, output)
-            await asyncio.sleep(args.ready_delay)
-
-            chunks.clear()
-            recording = True
-            try:
-                await asyncio.sleep(args.seconds)
-            finally:
-                recording = False
-
-            byte_count = write_wav(output, chunks)
-            duration = byte_count / (SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH_BYTES)
-            print(f"captured bytes={byte_count} duration={duration:.3f}s output={output}", flush=True)
-            predict_file(output, args.model, args.cutoff)
+        if args.output_dir is None:
+            DEFAULT_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="run-", dir=DEFAULT_TEMP_DIR) as tmpdir:
+                await capture_and_predict(lambda _index: Path(tmpdir) / "test.wav")
+        else:
+            await capture_and_predict(lambda _index: timestamped_wav(args.output_dir))
 
         return 0
     finally:
@@ -160,7 +194,6 @@ async def run(args: argparse.Namespace) -> int:
         if unsubscribe is not None:
             unsubscribe()
         await client.disconnect()
-
 
 @contextmanager
 def suppress_cleanup_errors() -> Iterator[None]:
@@ -173,7 +206,7 @@ def suppress_cleanup_errors() -> Iterator[None]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Capture Box microphone audio and test it against a local wake-word model.")
     parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--output-dir", type=Path, default=None, help="Directory to keep captured test WAVs. By default test audio is temporary.")
     parser.add_argument("--seconds", type=float, default=DEFAULT_SECONDS)
     parser.add_argument("--ready-delay", type=float, default=DEFAULT_READY_DELAY)
     parser.add_argument("--count", type=int, default=1)

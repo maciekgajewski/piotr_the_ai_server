@@ -710,3 +710,9 @@ No firmware flashing has been done yet.
 - Added no-flash model test tools:
   - `tools/box3-wakeword-test.sh`
   - `tools/box3-wakeword-predict-file.sh`
+
+## 2026-05-22T05:30:30Z - Wake-word test captures made temporary by default
+
+- Changed `tools/box3-wakeword-test.sh` so test audio is temporary unless `--output-dir` is provided.
+- Default output is now just the model prediction result.
+- Use `--output-dir audio/wakeword-tests/ryszardzie/` to preserve captured test WAV files for inspection.

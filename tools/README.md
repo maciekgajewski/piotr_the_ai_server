@@ -101,8 +101,13 @@ tools/box3-wakeword-test.sh --count 5
 ```
 
 The tool prompts before each test capture, records for `1.5s` by default, and
-prints the model prediction. Test captures are stored under
-`audio/wakeword-tests/ryszardzie/`.
+prints the model prediction. Test captures are temporary by default.
+
+Keep test captures for inspection:
+
+```bash
+tools/box3-wakeword-test.sh --count 5 --output-dir audio/wakeword-tests/ryszardzie/
+```
 
 Run the predictor directly against an existing WAV file:
 
