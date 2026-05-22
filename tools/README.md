@@ -43,11 +43,9 @@ By default the captured WAV is normalized after recording. Disable that with:
 .venv/bin/python -u tools/lib/box3_capture_voice.py --seconds 4 --normalize-peak 0
 ```
 
-Current wake words from the ESPHome package:
+Current wake word from the ESPHome package:
 
-- Okay Nabu
-- Hey Mycroft
-- Hey Jarvis
+- Ryszardzie
 
 Capture output is 16 kHz, mono, 16-bit PCM WAV. The default normalization
 target is peak `0.89`.
@@ -59,19 +57,78 @@ state:
 .venv/bin/python tools/lib/box3_reset_voice.py
 ```
 
+## Record Wake-Word Training Samples
+
+Records positive training samples through the Box microphone without relying on
+the current on-device wake-word model.
+
+```bash
+tools/box3-record-wakeword-samples.sh --count 20
+```
+
+The tool temporarily switches the Box wake-word engine to `In Home Assistant`,
+waits for the Box to stream microphone audio, prompts before each sample, and
+restores `On device` mode when done.
+
+Defaults:
+
+- phrase: `Ryszardzie`
+- sample length: `1.5s`
+- ready delay after pressing Enter: `0.4s`
+- normalization target: peak `0.89`
+- output directory: `audio/training-samples/ryszardzie/positive/`
+- file names: `0001.wav`, `0002.wav`, ...
+
+Tune the capture window:
+
+```bash
+tools/box3-record-wakeword-samples.sh --count 50 --seconds 1.8
+```
+
+Disable normalization when raw microphone levels are needed:
+
+```bash
+tools/box3-record-wakeword-samples.sh --normalize-peak 0
+```
+
+## Test Wake-Word Model Locally
+
+Captures short Box microphone clips and runs the local `Ryszardzie` TFLite
+model without flashing firmware.
+
+```bash
+tools/box3-wakeword-test.sh --count 5
+```
+
+The tool prompts before each test capture, records for `1.5s` by default, and
+prints the model prediction. Test captures are stored under
+`audio/wakeword-tests/ryszardzie/`.
+
+Run the predictor directly against an existing WAV file:
+
+```bash
+tools/box3-wakeword-predict-file.sh audio/training-samples/ryszardzie/positive/0001.wav
+```
+
 ## Play Audio
 
 Serves a local audio file from Piotr over temporary HTTP and asks the Box media
 player to play it.
 
 ```bash
-.venv/bin/python -u tools/lib/box3_play_audio.py audio/playback/timer_finished.flac
+tools/box3-play-audio.sh audio/playback/timer_finished.flac
 ```
 
 Set playback volume before playing:
 
 ```bash
-.venv/bin/python -u tools/lib/box3_play_audio.py audio/playback/timer_finished.flac --volume 0.8
+tools/box3-play-audio.sh audio/playback/timer_finished.flac --volume 0.8
+```
+
+Review a recorded wake-word training sample:
+
+```bash
+tools/box3-play-audio.sh audio/training-samples/ryszardzie/positive/0001.wav
 ```
 
 The upstream ESPHome package remaps API volume `0.0..1.0` into firmware volume

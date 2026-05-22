@@ -557,3 +557,156 @@ No firmware flashing has been done yet.
 - Box streaming timing with warmed GPU server:
   - `tts_first_audio_seconds=0.312`, `tts_first_byte_sent_seconds=0.311`;
   - next run: `tts_first_audio_seconds=0.279`, `tts_first_byte_sent_seconds=0.279`.
+
+## 2026-05-21T13:30:12Z - Ryszardzie wake-word training scaffold
+
+- Confirmed ESPHome BOX-3 package uses on-device `micro_wake_word` with model names:
+  - `okay_nabu`
+  - `hey_mycroft`
+  - `hey_jarvis`
+- Custom phrase `Ryszardzie` needs a microWakeWord `.tflite` model plus ESPHome JSON manifest.
+- Added local wake-word tooling:
+  - `tools/box3-wakeword-generate-samples.sh`
+  - `tools/box3-wakeword-prepare-training.sh`
+  - `tools/box3-wakeword-download-negatives.sh`
+  - `tools/box3-wakeword-train.sh`
+  - `docker/wakeword.Dockerfile`
+  - `wakeword/README.md`
+- Generated 225 positive `Ryszardzie` samples with Polish Piper voices:
+  - `pl_PL-bass-high`
+  - `pl_PL-darkman-medium`
+  - `pl_PL-gosia-medium`
+  - `pl_PL-mc_speech-medium`
+  - `pl_PL-mls_6892-low`
+- Sample format verified inside the TTS container:
+  - 16 kHz
+  - mono
+  - about 1.17 seconds for the first sample
+- Training image builds, but local training is blocked:
+  - host CPU is Intel Core i7-930;
+  - CPU flags do not include AVX;
+  - stock TensorFlow 2.x exits with illegal instruction before it can use CUDA.
+- Options for training:
+  - use an AVX-capable host;
+  - build/use a no-AVX TensorFlow 2.16+ wheel;
+  - train in a cloud GPU runner.
+
+## 2026-05-21T15:05:00Z - Ryszardzie wake-word model export
+
+- Kept a community no-AVX TensorFlow 2.16.1 wheel locally under `third_party/tensorflow-wheels/`.
+- The wheel is ignored by Git; it is used only by the wake-word Docker image on this non-AVX host.
+- TensorFlow imports and sees the RTX 2060, although it warns that some GPU kernels may JIT compile for compute capability 7.5.
+- Downloaded and extracted the upstream microWakeWord negative datasets locally under ignored `wakeword/ryszardzie/negative_datasets/`.
+- Prepared positive spectrogram features from the 225 synthetic Piper samples.
+- Patched vendored microWakeWord streaming export for the current TensorFlow/Keras behavior when `tf.control_dependencies` receives no state assignment op.
+- Exported a quantized streaming TFLite model:
+  - `wakeword/ryszardzie/model/ryszardzie.tflite`
+  - size: about 60 KiB
+- Added the ESPHome model manifest:
+  - `wakeword/ryszardzie/model/ryszardzie.json`
+  - wake word: `Ryszardzie`
+  - language: Polish
+  - initial `probability_cutoff`: `0.01`
+  - initial `tensor_arena_size`: `30000`
+- Built-in TFLite streaming export test completed, but the validation set is still synthetic-heavy.
+- Decision: treat this as a first prototype for on-device testing, not as a tuned production wake word.
+
+## 2026-05-21T15:35:00Z - Ryszardzie firmware image prepared
+
+- Box is visible on USB as `/dev/ttyACM0`.
+- Changed firmware to use only the local `Ryszardzie` wake-word model.
+- ESPHome list merging kept the upstream built-in wake words when overriding from the top-level config, so the upstream package was copied locally to:
+  - `firmware/esphome/packages/esp32-s3-box-3-ryszardzie.yaml`
+- In that local package, `micro_wake_word.models` now contains only:
+  - `wakeword/ryszardzie/model/ryszardzie.json`
+- Corrected the model manifest version to `2` for the current ESPHome model schema.
+- `esphome config` validates and resolves exactly one wake-word model.
+- Built the firmware image successfully using temporary build/cache paths under `/tmp` because the root filesystem has very little free space.
+- Build artifacts:
+  - factory image: `/tmp/piotr-esphome-build/piotr-box3-01/.pioenvs/piotr-box3-01/firmware.factory.bin`
+  - OTA image: `/tmp/piotr-esphome-build/piotr-box3-01/.pioenvs/piotr-box3-01/firmware.ota.bin`
+- After the build, `/dev/ttyACM0` was no longer present; recheck USB before flashing.
+- No flash has been performed yet.
+
+## 2026-05-21T15:44:00Z - Ryszardzie firmware flashed
+
+- User confirmed `/dev/ttyACM0` existed on the host after reconnecting the Box.
+- The sandbox could not see `/dev/ttyACM0`, so the upload required an escalated command with host device access.
+- Flashed via:
+  - `.venv/bin/esphome upload firmware/esphome/box3-satellite.yaml --device /dev/ttyACM0`
+- Upload wrote and verified:
+  - app at `0x10000`
+  - bootloader at `0x0`
+  - partitions at `0x8000`
+  - OTA data at `0x9000`
+- ESPHome reported `Successfully uploaded program.`
+- Post-flash checks:
+  - USB still enumerates as `303a:1001 Espressif USB JTAG/serial debug unit`.
+  - Ping to `192.168.0.180` succeeds.
+
+## 2026-05-21T15:55:00Z - Disk cleanup after wake-word prototype
+
+- Confirmed the flashed `Ryszardzie` wake word works on the Box.
+- Freed root filesystem space while preserving retraining inputs:
+  - removed project-local failed PlatformIO cache: `.platformio/`
+  - removed ESPHome build output: `firmware/esphome/.esphome/build/`
+  - removed negative dataset ZIP archives after extraction
+- Kept:
+  - positive training samples: `wakeword/ryszardzie/samples/`
+  - extracted negative datasets: `wakeword/ryszardzie/negative_datasets/`
+  - generated features: `wakeword/ryszardzie/generated_features/`
+  - trained model outputs: `wakeword/ryszardzie/trained_models/`
+  - deployed model package: `wakeword/ryszardzie/model/`
+- Root filesystem free space improved from about `612M` to about `14G`.
+
+## 2026-05-21T20:15:00Z - Real positive wake-word sample recorder
+
+- Decision: improve the weak `Ryszardzie` model by recording real positive samples instead of relying only on synthetic Piper-generated samples.
+- Constraint: the host is headless over SSH, so the ESP32-S3-BOX-3 microphone is the recording device.
+- Added a recorder tool:
+  - `tools/box3-record-wakeword-samples.sh`
+  - implementation: `tools/lib/box3_record_wakeword_samples.py`
+- Defaults:
+  - phrase: `Ryszardzie`
+  - sample length: `1.5s`
+  - output directory: `audio/training-samples/ryszardzie/positive/`
+  - numbered filenames such as `0001.wav`, `0002.wav`
+- The tool temporarily switches the Box wake-word engine to `In Home Assistant` to stream raw microphone audio, prompts before each sample, and restores `On device` mode during cleanup.
+
+## 2026-05-21T20:17:28Z - Generic Box audio playback wrapper
+
+- Added `tools/box3-play-audio.sh` as the shell entrypoint for playing a local sound file on the Box.
+- The wrapper delegates to `tools/lib/box3_play_audio.py`, which serves the file over temporary HTTP and asks the Box media player to play it.
+- Intended immediate use: verify recorded wake-word samples such as `audio/training-samples/ryszardzie/positive/0001.wav`.
+
+## 2026-05-21T20:20:31Z - Wake-word sample recorder cleanup
+
+- Added a default `0.4s` ready delay after pressing Enter before recording starts, to avoid capturing keyboard noise.
+- Added default peak normalization for recorded samples:
+  - default target peak: `0.89`
+  - disable with `--normalize-peak 0`
+- The recorder logs the original peak and applied gain for each saved sample.
+
+## 2026-05-21T20:43:56Z - Ryszardzie retrained from recorded positives
+
+- Retrained the `Ryszardzie` wake-word model using only recorded positive samples from:
+  - `audio/training-samples/ryszardzie/positive/`
+- Synthetic Piper positives remain on disk for comparison, but were not used in this retraining run.
+- Reused the existing extracted negative/background feature datasets under:
+  - `wakeword/ryszardzie/negative_datasets/`
+- Generated recorded-positive features under:
+  - `wakeword/ryszardzie/generated_features_recorded/`
+- Trained into a separate recorded-run model directory:
+  - `wakeword/ryszardzie/trained_models/wakeword_recorded/`
+- Training was stopped after 1500 steps because the small recorded-positive set had already saturated validation metrics by 1000-1500 steps.
+- Exported and evaluated the quantized streaming TFLite model:
+  - `wakeword/ryszardzie/trained_models/wakeword_recorded/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite`
+- Replaced the local deployable model artifact with that recorded-sample retrain:
+  - `wakeword/ryszardzie/model/ryszardzie.tflite`
+- ROC summary:
+  - cutoff `0.12`: `frr=0.0000`, `faph=0.000`
+  - cutoff `0.01`: `frr=0.0000`, `faph=0.187`
+- Left the ESPHome manifest cutoff unchanged for now; tune it after live no-flash tests.
+- Added no-flash model test tools:
+  - `tools/box3-wakeword-test.sh`
+  - `tools/box3-wakeword-predict-file.sh`

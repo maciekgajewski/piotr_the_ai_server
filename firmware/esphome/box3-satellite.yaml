@@ -3,7 +3,7 @@ substitutions:
   friendly_name: Piotr Box 3 01
 
 packages:
-  esphome.voice-assistant: github://esphome/wake-word-voice-assistants/esp32-s3-box-3/esp32-s3-box-3.yaml@main
+  esphome.voice-assistant: !include packages/esp32-s3-box-3-ryszardzie.yaml
 
 wifi:
   ssid: !secret wifi_ssid
@@ -16,9 +16,3 @@ api:
 ota:
   - platform: esphome
     password: !secret box3_01_ota_password
-
-# Custom wake word note:
-# The upstream package currently defines the micro_wake_word model list as
-# okay_nabu, hey_mycroft, and hey_jarvis. For a truly custom phrase, train a
-# microWakeWord model and then replace that list with the model JSON URL/path.
-# See docs/esp32-s3-box-3-satellite.md before editing this file.

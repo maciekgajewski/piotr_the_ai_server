@@ -9,6 +9,10 @@ audio/
 firmware/
 docs/
 notes/
+wakeword/*/samples/
+wakeword/*/generated_features/
+wakeword/*/negative_datasets/
+wakeword/*/trained_models/
 __pycache__/
 **/__pycache__/
 *.py[cod]

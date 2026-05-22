@@ -8,5 +8,13 @@ __pycache__/
 *.py[cod]
 firmware/esphome/secrets.yaml
 audio/captures/*.wav
+audio/training-samples/
+audio/wakeword-tests/
 audio/tts/*.wav
 audio/tts/*.flac
+wakeword/*/samples/
+wakeword/*/generated_features/
+wakeword/*/generated_features_recorded/
+wakeword/*/negative_datasets/
+wakeword/*/trained_models/
+third_party/tensorflow-wheels/*.whl
