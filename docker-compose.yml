@@ -15,16 +15,19 @@ services:
     restart: unless-stopped
     depends_on:
       - ollama
-    ports:
-      - "2137:2137"
+    network_mode: host
+    gpus: all
     volumes:
       - ${AI_SERVER_CONFIG:?Set AI_SERVER_CONFIG to the AI server YAML config file}:/config/ai_server.yaml:ro
+      - ./.hf-cache:/app/.hf-cache
+      - ./.piper-cache:/app/.piper-cache
+      - ./audio:/app/audio
     entrypoint:
-      - python
+      - python3
       - -m
       - ai_server.server
       - --ollama-url
-      - http://ollama:11434
+      - http://127.0.0.1:11434
 
 volumes:
   ollama:

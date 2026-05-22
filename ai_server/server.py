@@ -10,9 +10,18 @@ from aiohttp import web
 
 from ai_server.agent import create_agent
 from ai_server.config import Config, LOG_LEVELS, load_config_from_yaml
+from ai_server.microphones import init_mics
 from ai_server.websocket_server import create_app
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+THIRD_PARTY_LOGGERS = (
+    "aioesphomeapi",
+    "httpcore",
+    "httpx",
+    "tzlocal",
+    "urllib3",
+    "zeroconf",
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -32,20 +41,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def configure_logging(log_level: str) -> None:
+    level = getattr(logging, log_level)
     logging.basicConfig(
-        level=getattr(logging, log_level),
+        level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stdout,
     )
+    logging.getLogger().setLevel(level)
+    for logger_name in THIRD_PARTY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.INFO)
 
 
 async def run_server(config: Config, ollama_url: str) -> None:
     logger = logging.getLogger(f"{__name__}.server")
     agent = None
     runner = None
+    microphone_manager = None
 
     try:
         agent = await create_agent(config.agent, ollama_url)
+        microphone_manager = await init_mics(config.microphones, config.stt, config.tts, agent)
         app = create_app(config, agent)
         runner = web.AppRunner(app)
         await runner.setup()
@@ -69,6 +84,8 @@ async def run_server(config: Config, ollama_url: str) -> None:
 
         await stop_event.wait()
     finally:
+        if microphone_manager is not None:
+            await microphone_manager.close()
         if runner is not None:
             await runner.cleanup()
         if agent is not None:

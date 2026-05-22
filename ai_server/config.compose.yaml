@@ -8,3 +8,21 @@ websocket:
   host: 0.0.0.0
   port: 2137
   path: /chat
+
+stt:
+  model: base
+  language: pl
+  device: auto
+  beam_size: 5
+  capture_seconds: 5
+
+tts:
+  voice: pl_PL-bass-high
+  volume: 1.0
+
+microphones:
+  # - type: box3_esphome
+  #   name: box3-office
+  #   address: piotr-box3-01-cbfaA8.local
+  #   api_key: replace-with-esphome-api-key
+  #   location: office

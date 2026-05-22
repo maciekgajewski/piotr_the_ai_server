@@ -40,9 +40,9 @@ fi
 export AI_SERVER_CONFIG
 
 if docker compose version >/dev/null 2>&1; then
-  docker compose run --rm --service-ports ai-server "${SERVER_ARGS[@]}"
+  docker compose run --rm ai-server "${SERVER_ARGS[@]}"
 elif command -v docker-compose >/dev/null 2>&1; then
-  docker-compose run --rm --service-ports ai-server "${SERVER_ARGS[@]}"
+  docker-compose run --rm ai-server "${SERVER_ARGS[@]}"
 else
   echo "Docker Compose is required. Install the Docker Compose plugin or docker-compose." >&2
   exit 1

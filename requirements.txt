@@ -1,2 +1,10 @@
 aiohttp
+aioesphomeapi
+faster-whisper
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+onnxruntime-gpu
+piper-tts
 PyYAML
+wyoming
+wyoming-piper

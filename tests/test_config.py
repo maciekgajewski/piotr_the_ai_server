@@ -8,6 +8,9 @@ from ai_server.config import (
     DEFAULT_WEBSOCKET_HOST,
     DEFAULT_WEBSOCKET_PATH,
     Config,
+    MicrophoneConfig,
+    SttConfig,
+    TtsConfig,
     WebsocketConfig,
     load_config_from_yaml,
 )
@@ -108,6 +111,79 @@ agent:
     )
 
 
+def test_load_config_with_voice_defaults_and_multiple_microphones(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+websocket:
+  port: 2137
+agent:
+  type: echo
+microphones:
+  - type: box3_esphome
+    name: box3-office
+    address: piotr-box3-01-cbfaA8.local
+    api_key: abc
+    location: office
+  - type: box3_esphome
+    name: box3-roaming
+    address: 192.168.1.42
+    api_key: def
+""",
+    )
+
+    config = load_config_from_yaml(config_path)
+
+    assert config.stt == SttConfig()
+    assert config.tts == TtsConfig()
+    assert config.microphones == (
+        MicrophoneConfig(
+            type="box3_esphome",
+            name="box3-office",
+            location="office",
+            options={"address": "piotr-box3-01-cbfaA8.local", "api_key": "abc"},
+        ),
+        MicrophoneConfig(
+            type="box3_esphome",
+            name="box3-roaming",
+            location=None,
+            options={"address": "192.168.1.42", "api_key": "def"},
+        ),
+    )
+
+
+def test_load_config_with_explicit_voice_values(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+websocket:
+  port: 2137
+agent:
+  type: echo
+stt:
+  model: small
+  language: pl
+  device: cpu
+  beam_size: 3
+  capture_seconds: 4.5
+tts:
+  voice: pl_PL-darkman-medium
+  volume: 0.7
+""",
+    )
+
+    config = load_config_from_yaml(config_path)
+
+    assert config.stt == SttConfig(
+        model="small",
+        language="pl",
+        device="cpu",
+        beam_size=3,
+        capture_seconds=4.5,
+    )
+    assert config.tts == TtsConfig(voice="pl_PL-darkman-medium", volume=0.7)
+
+
 def test_load_config_requires_websocket_port(tmp_path: Path) -> None:
     config_path = write_config(
         tmp_path,
@@ -152,6 +228,35 @@ agent:
         ),
         ("log_level: noisy\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "log_level must be one of"),
         ("log_level: 1\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "log_level must be a string"),
+        ("websocket:\n  port: 2137\nagent:\n  type: echo\nstt: []", "stt must be a mapping"),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  device: nope",
+            "stt.device must be one of",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\ntts:\n  volume: 2",
+            "tts.volume must be between",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones: {}",
+            "microphones must be a list",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  - name: box",
+            r"microphones\[0\].type must be a non-empty string",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  - type: box3_esphome",
+            r"microphones\[0\].name must be a non-empty string",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  - type: box3_esphome\n    name: box",
+            r"microphones\[0\].address must be a non-empty string for box3_esphome",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  - type: box3_esphome\n    name: box\n    address: host",
+            r"microphones\[0\].api_key must be a non-empty string for box3_esphome",
+        ),
     ],
 )
 def test_load_config_rejects_invalid_values(tmp_path: Path, content: str, error: str) -> None:
