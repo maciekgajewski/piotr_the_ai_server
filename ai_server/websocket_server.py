@@ -5,6 +5,7 @@ from typing import ClassVar
 
 from aiohttp import WSMsgType, web
 
+from ai_server.agent import create_agent
 from ai_server.config import Config
 from ai_server.endpoint import CommunicationEndpoint, EndpointClosed
 from ai_server.messages import UserMessage, user_message_from_json, user_message_to_json
@@ -43,7 +44,7 @@ class WebsocketCommunicationEndpoint(CommunicationEndpoint):
 
 def create_app(config: Config, session_manager: SessionManager | None = None) -> web.Application:
     logger = logging.getLogger(f"{__name__}.WebsocketServer")
-    manager = session_manager or SessionManager()
+    manager = session_manager or SessionManager(create_agent(config.agent))
     app = web.Application()
 
     async def websocket_handler(request: web.Request) -> web.WebSocketResponse:

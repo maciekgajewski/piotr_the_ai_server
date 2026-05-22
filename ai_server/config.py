@@ -21,7 +21,14 @@ class WebsocketConfig:
 
 
 @dataclass(frozen=True)
+class AgentConfig:
+    type: str
+    options: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class Config:
+    agent: AgentConfig
     websocket: WebsocketConfig
     log_level: str = DEFAULT_LOG_LEVEL
 
@@ -40,9 +47,25 @@ def load_config_from_yaml(path: str | Path) -> Config:
     if not isinstance(websocket_config, dict):
         raise ValueError("config must contain a websocket mapping")
 
+    agent_config = raw_config.get("agent")
+    if not isinstance(agent_config, dict):
+        raise ValueError("config must contain an agent mapping")
+
     return Config(
+        agent=_parse_agent_config(agent_config),
         websocket=_parse_websocket_config(websocket_config),
         log_level=_parse_log_level(raw_config),
+    )
+
+
+def _parse_agent_config(raw_config: dict[str, Any]) -> AgentConfig:
+    agent_type = raw_config.get("type")
+    if not isinstance(agent_type, str) or not agent_type:
+        raise ValueError("agent.type must be a non-empty string")
+
+    return AgentConfig(
+        type=agent_type,
+        options={key: value for key, value in raw_config.items() if key != "type"},
     )
 
 

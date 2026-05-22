@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ai_server.agent.echo import run_echo_agent
+from ai_server.agent import Agent
 from ai_server.endpoint import CommunicationEndpoint, EndpointClosed
 
 
@@ -20,9 +20,9 @@ class Session:
     def log_context(self) -> str:
         return f"Session[{self.session_id}]"
 
-    async def run(self) -> None:
+    async def run(self, agent: Agent) -> None:
         try:
-            await run_echo_agent(self.endpoint, self.session_id)
+            await agent.run(self.endpoint, self.session_id)
         except EndpointClosed:
             self._logger.debug("%s endpoint closed", self.log_context)
 
@@ -30,7 +30,8 @@ class Session:
 class SessionManager:
     _logger: ClassVar[logging.Logger] = logging.getLogger(f"{__name__}.SessionManager")
 
-    def __init__(self) -> None:
+    def __init__(self, agent: Agent) -> None:
+        self._agent = agent
         self._sessions: dict[str, Session] = {}
 
     async def run_session(self, endpoint: CommunicationEndpoint) -> None:
@@ -39,7 +40,7 @@ class SessionManager:
         self._logger.info("%s New session", session.log_context)
 
         try:
-            await session.run()
+            await session.run(self._agent)
         finally:
             self._sessions.pop(session.session_id, None)
             self._logger.info("%s ended", session.log_context)
