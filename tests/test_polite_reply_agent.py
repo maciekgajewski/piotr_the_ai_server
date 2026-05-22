@@ -4,6 +4,7 @@ import logging
 import pytest
 
 from ai_server.agent.polite_reply import (
+    GENERATION_OPTIONS,
     GENERATION_FAILURE_MESSAGE,
     POLITE_REPLY_PROMPT,
     PoliteReplyAgent,
@@ -84,9 +85,10 @@ def test_polite_reply_sends_wrapped_prompt_and_returns_reply(caplog) -> None:
             "url": "http://127.0.0.1:11434/api/generate",
             "json": {
                 "model": "qwen3:4b",
+                "raw": True,
                 "prompt": POLITE_REPLY_PROMPT.format(user_input="siema"),
                 "stream": False,
-                "think": False,
+                "options": GENERATION_OPTIONS,
             },
         }
     ]
@@ -96,7 +98,8 @@ def test_polite_reply_sends_wrapped_prompt_and_returns_reply(caplog) -> None:
     assert "PoliteReplyAgent[session-1] request_len=5 reply_len=12 duration_ms=" in log_text
     assert "siema" in log_text
     assert "Dzień dobry!" in log_text
-    assert POLITE_REPLY_PROMPT.format(user_input="siema") in log_text
+    assert "Odpowiedz tylko jednym krótkim zdaniem po polsku" in log_text
+    assert "Ryszard:" in log_text
 
 
 def test_polite_reply_strips_thinking_block() -> None:

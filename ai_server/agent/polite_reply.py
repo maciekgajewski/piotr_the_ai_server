@@ -12,9 +12,15 @@ from ai_server.messages import UserMessage
 
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 POLITE_REPLY_PROMPT = (
-    "Jesteś uprzejmym człowiekiem, masz na imię Ryszard. "
-    "Odpowiedz grzecznie na następujący zwrot: {user_input}"
+    "Odpowiedz tylko jednym krótkim zdaniem po polsku. Nie wyjaśniaj.\n"
+    "Użytkownik: {user_input}\n"
+    "Ryszard:"
 )
+GENERATION_OPTIONS = {
+    "num_predict": 48,
+    "temperature": 0,
+    "stop": ["\n"],
+}
 GENERATION_FAILURE_MESSAGE = "Przepraszam, nie mogę teraz odpowiedzieć."
 
 
@@ -86,9 +92,10 @@ class PoliteReplyAgent:
         response = await self._post_generate(
             {
                 "model": self._model,
+                "raw": True,
                 "prompt": POLITE_REPLY_PROMPT.format(user_input=user_input),
                 "stream": False,
-                "think": False,
+                "options": GENERATION_OPTIONS,
             }
         )
 
@@ -119,6 +126,6 @@ def _elapsed_ms(started_at: float) -> int:
 def _strip_thinking(reply: str) -> str:
     end_tag = "</think>"
     if end_tag not in reply:
-        return reply
+        return reply.strip()
 
     return reply.split(end_tag, maxsplit=1)[1].strip()
