@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
+from ai_server.agent.assitant import AssistantAgent
 from ai_server.agent.echo import EchoAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.config import AgentConfig
@@ -34,6 +35,20 @@ async def create_agent(config: AgentConfig, ollama_url: str) -> Agent:
             await agent.close()
             raise
         logger.info("Created polite_reply agent model=%s", model)
+        return agent
+
+    if config.type == "assistant":
+        model = config.options["model"]
+        logger.info("Creating assistant agent model=%s", model)
+        agent = AssistantAgent(model=model, base_url=ollama_url)
+        try:
+            logger.info("Preloading assistant agent model=%s", model)
+
+            await agent.preload()
+        except BaseException:
+            await agent.close()
+            raise
+        logger.info("Created asistant agent model=%s", model)
         return agent
 
     raise ValueError(f"unsupported agent type: {config.type}")
