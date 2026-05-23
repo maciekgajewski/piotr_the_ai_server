@@ -16,7 +16,7 @@ class Tool(Protocol):
     name: str
     description: str
 
-    async def run(self, endpoint: CommunicationEndpoint) -> None:
+    async def run(self, endpoint: CommunicationEndpoint, request: UserMessage) -> None:
         raise NotImplementedError
 
 
@@ -28,5 +28,5 @@ class BaseTool:
         self._config = config
         self._ollama = ollama_client
 
-    async def run(self, endpoint: CommunicationEndpoint) -> None:
+    async def run(self, endpoint: CommunicationEndpoint, request: UserMessage) -> None:
         await send_user_message(endpoint, UserMessage(text=TOOL_NOT_IMPLEMENTED_REPLY))

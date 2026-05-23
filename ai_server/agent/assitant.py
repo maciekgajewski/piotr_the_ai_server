@@ -121,7 +121,7 @@ class AssistantAgent:
                 len(message.text),
                 elapsed_ms,
             )
-            await tool.run(endpoint)
+            await tool.run(endpoint, message)
 
     async def close(self) -> None:
         if self._owns_ollama:

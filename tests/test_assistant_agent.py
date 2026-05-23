@@ -36,18 +36,21 @@ def test_parse_tool_route_rejects_invalid_response(content: str, error: str) -> 
 def test_assistant_routes_message_to_selected_tool() -> None:
     config = AgentConfig(type="assistant", options={"intent_router_model": "llama3.2:3b"})
     ollama_client = OllamaClient(session=FakeSession())
+    tool = RecordingTool(config, ollama_client)
     agent = AssistantAgent(
         intent_router_model="llama3.2:3b",
-        tools={"time": RecordingTool(config, ollama_client)},
+        tools={"time": tool},
         ollama_client=FakeOllamaClient('{"tool": "time", "confidence": 1.0}'),
         owns_ollama_client=False,
     )
-    endpoint = FakeEndpoint([UserMessage(text="która godzina?")])
+    request = UserMessage(text="która godzina?")
+    endpoint = FakeEndpoint([request])
 
     with pytest.raises(EndpointClosed):
         asyncio.run(agent.run(endpoint, "session-1"))
 
     assert endpoint.sent == list(user_message_to_events(UserMessage(text=TOOL_NOT_IMPLEMENTED_REPLY)))
+    assert tool.request == request
 
 
 class RecordingTool:
@@ -58,7 +61,8 @@ class RecordingTool:
         self._config = config
         self._ollama = ollama_client
 
-    async def run(self, endpoint) -> None:
+    async def run(self, endpoint, request: UserMessage) -> None:
+        self.request = request
         await send_user_message(endpoint, UserMessage(text=TOOL_NOT_IMPLEMENTED_REPLY))
 
 

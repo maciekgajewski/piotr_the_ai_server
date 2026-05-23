@@ -51,7 +51,7 @@ def test_tool_run_stubs_send_default_reply() -> None:
     tool = CalculatorTool(config, ollama_client)
     endpoint = FakeEndpoint([])
 
-    asyncio.run(tool.run(endpoint))
+    asyncio.run(tool.run(endpoint, UserMessage(text="zrób coś")))
 
     assert endpoint.sent == list(user_message_to_events(UserMessage(text=TOOL_NOT_IMPLEMENTED_REPLY)))
 
