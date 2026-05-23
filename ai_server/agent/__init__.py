@@ -38,17 +38,17 @@ async def create_agent(config: AgentConfig, ollama_url: str) -> Agent:
         return agent
 
     if config.type == "assistant":
-        model = config.options["model"]
-        logger.info("Creating assistant agent model=%s", model)
-        agent = AssistantAgent(model=model, base_url=ollama_url)
+        intent_router_model = config.options["intent_router_model"]
+        logger.info("Creating assistant agent intent_router_model=%s", intent_router_model)
+        agent = AssistantAgent(intent_router_model=intent_router_model, base_url=ollama_url)
         try:
-            logger.info("Preloading assistant agent model=%s", model)
+            logger.info("Preloading assistant agent intent_router_model=%s", intent_router_model)
 
             await agent.preload()
         except BaseException:
             await agent.close()
             raise
-        logger.info("Created asistant agent model=%s", model)
+        logger.info("Created asistant agent intent_router_model=%s", intent_router_model)
         return agent
 
     raise ValueError(f"unsupported agent type: {config.type}")

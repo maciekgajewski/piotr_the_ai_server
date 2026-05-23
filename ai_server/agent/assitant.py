@@ -26,12 +26,31 @@ You receive a user message and must determine which tool should handle it. You h
 - clarify: A tool for asking the user for clarification. Use this when the user's message is ambiguous and you need more information to determine the correct tool.
 
 Reply ONLY with valid JSON in the following format:
-{{
-    "tool": "...",
-    "confidence": 0.0
-}}
+{{"tool": "...","confidence": 0.0}}
 
 User input: {user_input}
+"""
+
+USER_PROMPT = """
+Available tools:
+- calculator: A tool for performing mathematical calculations. Use this for any math-related queries.
+- weather: A tool for providing current weather information. Use this for any weather-related queries.
+- time: A tool for providing the current time, date or day of week. Use this for any time-related queries.
+- home_assistant: A tool for controlling smart home devices. Use this for any queries related to smart home control, air conditioning, lighting, etc.
+- web_search: A tool for performing web searches. Use this for any general knowledge queries or when the user explicitly asks you to search the web.
+- wikipedia: A tool for retrieving information from Wikipedia. Use this for any queries about historical events, famous people, scientific concepts, etc.
+- clarify: A tool for asking the user for clarification. Use this when the user's message is ambiguous and you need more information to determine the correct tool.
+
+Return schema:
+{{"tool": "...","confidence": 0.0}}
+
+User input: {user_input}
+"""
+
+SYSTEM_PROMPT = """
+You are an intent router.
+Return only compact valid JSON.
+No reasoning. No explanation. No markdown.
 """
 
 # experiment - will polish promt be faster?  YES< BUT, the model returns only "{"
@@ -53,8 +72,9 @@ User input: {user_input}
 # """
 
 GENERATION_OPTIONS = {
-#    "num_predict": 48,
+    "num_predict": 32,
     "temperature": 0,
+    "num_ctx": 1024,
 #    "stop": ["\n"],
 }
 GENERATION_FAILURE_MESSAGE = "Przepraszam, nie mogę teraz odpowiedzieć."
@@ -67,28 +87,44 @@ class OllamaError(Exception):
 class AssistantAgent:
     def __init__(
         self,
-        model: str,
+        intent_router_model: str,
         base_url: str = OLLAMA_BASE_URL,
         session: ClientSession | None = None,
     ) -> None:
-        self._model = model
+        self._intent_router_model = intent_router_model
         self._base_url = base_url.rstrip("/")
         self._session = session or ClientSession()
         self._owns_session = session is None
-        self._logger = logging.getLogger(f"{__name__}.AssistantAgent[{model}]")
+        self._logger = logging.getLogger(f"{__name__}.AssistantAgent[{intent_router_model}]")
 
     async def preload(self) -> None:
         try:
-            await self._post_generate(
+            # await self._post_generate(
+            #     {
+            #         "model": self._intent_router_model,
+            #         "prompt": "",
+            #         "stream": False,
+            #         "keep_alive": -1,
+            #     }
+            # )
+            # alternative
+            await self._post_chat(
                 {
-                    "model": self._model,
-                    "prompt": "",
+                    "model": self._intent_router_model,
+                    "think" : False,
+                    "format" : "json",
                     "stream": False,
-                    "keep_alive": -1,
+                    "keep_alive": "1h",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Return JSON: {\"ok\":true}",
+                        },
+                    ]
                 }
             )
         except Exception as exc:
-            raise OllamaError(f"failed to preload Ollama model {self._model}") from exc
+            raise OllamaError(f"failed to preload Ollama model {self._intent_router_model}") from exc
 
     async def run(self, endpoint: CommunicationEndpoint, session_id: str) -> None:
         logger = logging.getLogger(f"{__name__}.AssistantAgent[{session_id}]")
@@ -122,24 +158,36 @@ class AssistantAgent:
             await self._session.close()
 
     async def _generate_reply(self, user_input: str) -> str:
-        response = await self._post_generate(
+        response = await self._post_chat(
             {
-                "model": self._model,
+                "model": self._intent_router_model,
                 "raw": False,
                 "think" : False,
-                #"format" : "json",
-                #"keep_alive": "1h",
-                "prompt": ROUTER_PROMPT.format(user_input=user_input),
+                "format" : "json",
                 "stream": False,
+                "keep_alive": "1h",
+                # "prompt": ROUTER_PROMPT.format(user_input=user_input),
                 "options": GENERATION_OPTIONS,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT,
+                    },
+                    {
+                        "role": "user",
+                        "content": USER_PROMPT.format(user_input=user_input),
+                    },
+                ]
             }
         )
 
-        reply = response.get("response")
-        if not isinstance(reply, str):
+        reply = response["message"]
+        assert reply["role"] == "assistant"
+        content = reply["content"]
+        if not isinstance(content, str):
             raise OllamaError("Ollama response missing string response field")
 
-        return _strip_thinking(reply)
+        return content
 
     async def _post_generate(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._logger.debug("Ollama request: %s", payload)
@@ -154,14 +202,20 @@ class AssistantAgent:
             self._logger.debug("Ollama response: %s", body)
             return body
 
+    async def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._logger.debug("Ollama request: %s", payload)
+        async with self._session.post(f"{self._base_url}/api/chat", json=payload) as response:
+            if response.status >= 400:
+                raise OllamaError(f"Ollama chat failed with status {response.status}")
+
+            body = await response.json()
+            if not isinstance(body, dict):
+                raise OllamaError("Ollama response must be a JSON object")
+
+            self._logger.debug("Ollama response: %s", body)
+            return body
+
 
 def _elapsed_ms(started_at: float) -> int:
     return round((time.perf_counter() - started_at) * 1000)
 
-
-def _strip_thinking(reply: str) -> str:
-    end_tag = "</think>"
-    if end_tag not in reply:
-        return reply.strip()
-
-    return reply.split(end_tag, maxsplit=1)[1].strip()
