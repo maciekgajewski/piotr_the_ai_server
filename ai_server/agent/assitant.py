@@ -14,7 +14,9 @@ from ai_server.streaming import receive_user_message, send_user_message
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
 ROUTER_PROMPT = """
-You are an assistant for routing user messages to the correct tool. Return ONLY valid JSON! You receive a user message and must determine which tool should handle it. You have access to the following tools:
+You are an intent router for a local AI assistant.
+Return ONLY valid JSON!
+You receive a user message and must determine which tool should handle it. You have access to the following tools:
 - calculator: A tool for performing mathematical calculations. Use this for any math-related queries.
 - weather: A tool for providing current weather information. Use this for any weather-related queries.
 - time: A tool for providing the current time, date or day of week. Use this for any time-related queries.
@@ -32,10 +34,28 @@ Reply ONLY with valid JSON in the following format:
 User input: {user_input}
 """
 
+# experiment - will polish promt be faster?  YES< BUT, the model returns only "{"
+# ROUTER_PROMPT = """
+# Jesteś routerem intencji użytkownika, który przekierowuje wiadomości do odpowiednich narzędzi. Odpowiadaj TYLKO poprawnym JSONem! Otrzymujesz wiadomość od użytkownika i musisz określić, które narzędzie powinno się nią zająć. Masz dostęp do następujących narzędzi:
+# - calculator: Narzędzie do wykonywania obliczeń matematycznych. Używaj tego do wszelkich zapytań związanych z matematyką.
+# - weather: Narzędzie do podawania aktualnych informacji o pogodzie. Używaj tego do wszelkich zapytań związanych z pogodą.
+# - time: Narzędzie do podawania aktualnego czasu, daty lub dnia tygodnia. Używaj tego do wszelkich zapytań związanych z czasem.
+# - home_assistant: Narzędzie do sterowania inteligentnymi urządzeniami domowymi. Używaj tego do wszelkich zapytań związanych ze sterowaniem inteligentnym domem, klimatyzacją, oświetleniem itp.
+# - web_search: Narzędzie do wykonywania wyszukiwań w sieci. Używaj tego do wszelkich ogólnych zapytań o wiedzę lub gdy użytkownik wyraźnie poprosi cię o wyszukanie w sieci.
+# - wikipedia: Narzędzie do pobierania informacji z Wikipedii. Używaj tego do wszelkich zapytań o wydarzenia historyczne, sławne osoby, pojęcia naukowe itp.
+# - clarify: Narzędzie do zadawania użytkownikowi pytań w celu uzyskania wyjaśnień. Używaj tego, gdy wiadomość użytkownika jest niejednoznaczna i potrzebujesz więcej informacji, aby określić właściwe narzędzie.    
+# Odpowiadaj TYLKO poprawnym JSONem w następującym formacie:
+# {{
+#     "tool": "...",
+#     "confidence": 0.0
+# }}  
+# Wejście od użytkownika: {user_input}
+# """
+
 GENERATION_OPTIONS = {
-    "num_predict": 48,
+#    "num_predict": 48,
     "temperature": 0,
-    "stop": ["\n"],
+#    "stop": ["\n"],
 }
 GENERATION_FAILURE_MESSAGE = "Przepraszam, nie mogę teraz odpowiedzieć."
 
@@ -107,8 +127,8 @@ class AssistantAgent:
                 "model": self._model,
                 "raw": False,
                 "think" : False,
-                "format" : "json",
-                "keep_alive": "1h",
+                #"format" : "json",
+                #"keep_alive": "1h",
                 "prompt": ROUTER_PROMPT.format(user_input=user_input),
                 "stream": False,
                 "options": GENERATION_OPTIONS,
