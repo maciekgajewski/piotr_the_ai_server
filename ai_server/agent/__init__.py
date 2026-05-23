@@ -3,11 +3,14 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
+from ai_server.ai_tools import create_tools
 from ai_server.agent.assitant import AssistantAgent
 from ai_server.agent.echo import EchoAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.config import AgentConfig
 from ai_server.interfaces import CommunicationEndpoint
+from ai_server.ollama import OllamaClient
+
 
 class Agent(Protocol):
     async def run(self, endpoint: CommunicationEndpoint, session_id: str) -> None:
@@ -27,7 +30,8 @@ async def create_agent(config: AgentConfig, ollama_url: str) -> Agent:
     if config.type == "polite_reply":
         model = config.options["model"]
         logger.info("Creating polite_reply agent model=%s", model)
-        agent = PoliteReplyAgent(model=model, base_url=ollama_url)
+        ollama_client = OllamaClient(base_url=ollama_url)
+        agent = PoliteReplyAgent(model=model, ollama_client=ollama_client)
         try:
             logger.info("Preloading polite_reply agent model=%s", model)
             await agent.preload()
@@ -40,7 +44,10 @@ async def create_agent(config: AgentConfig, ollama_url: str) -> Agent:
     if config.type == "assistant":
         intent_router_model = config.options["intent_router_model"]
         logger.info("Creating assistant agent intent_router_model=%s", intent_router_model)
-        agent = AssistantAgent(intent_router_model=intent_router_model, base_url=ollama_url)
+        ollama_client = OllamaClient(base_url=ollama_url)
+        tools = create_tools(config, ollama_client)
+        logger.info("Loaded %s assistant tools", len(tools))
+        agent = AssistantAgent(intent_router_model=intent_router_model, tools=tools, ollama_client=ollama_client)
         try:
             logger.info("Preloading assistant agent intent_router_model=%s", intent_router_model)
 

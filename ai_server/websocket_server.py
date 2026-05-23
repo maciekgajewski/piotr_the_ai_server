@@ -27,8 +27,8 @@ class WebsocketCommunicationEndpoint(CommunicationEndpoint):
         message = await self._websocket.receive()
 
         if message.type == WSMsgType.TEXT:
-            self._logger.debug("received websocket message: %s", message.data)
             user_message = user_message_from_json(message.data)
+            self._logger.debug("received websocket message: %s", user_message_to_json(user_message))
             self._incoming_events.append(MessageFragment(text=user_message.text))
             self._incoming_events.append(MessageEnd())
             return MessageBegin()

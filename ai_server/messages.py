@@ -49,7 +49,7 @@ def user_message_from_mapping(raw_message: dict[str, Any]) -> UserMessage:
 
 
 def user_message_to_json(message: UserMessage) -> str:
-    return json.dumps({"text": message.text})
+    return json.dumps({"text": message.text}, ensure_ascii=False)
 
 
 def user_message_to_events(message: UserMessage) -> tuple[MessageEvent, ...]:

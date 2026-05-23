@@ -12,6 +12,10 @@ def test_user_message_to_json() -> None:
     assert user_message_to_json(UserMessage(text="hello")) == '{"text": "hello"}'
 
 
+def test_user_message_to_json_preserves_unicode() -> None:
+    assert user_message_to_json(UserMessage(text="która godzina?")) == '{"text": "która godzina?"}'
+
+
 def test_user_message_to_events() -> None:
     assert user_message_to_events(UserMessage(text="hello")) == (
         MessageBegin(),

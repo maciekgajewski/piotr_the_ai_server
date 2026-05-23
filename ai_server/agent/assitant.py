@@ -1,45 +1,23 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
-from typing import Any
+from dataclasses import dataclass
+from typing import Mapping
 
 from aiohttp import ClientSession
 
+from ai_server.ai_tools.interfaces import Tool
 from ai_server.interfaces import CommunicationEndpoint
 from ai_server.messages import UserMessage
+from ai_server.ollama import OLLAMA_BASE_URL, OllamaClient, OllamaError
 from ai_server.streaming import receive_user_message, send_user_message
 
 
-OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-
-ROUTER_PROMPT = """
-You are an intent router for a local AI assistant.
-Return ONLY valid JSON!
-You receive a user message and must determine which tool should handle it. You have access to the following tools:
-- calculator: A tool for performing mathematical calculations. Use this for any math-related queries.
-- weather: A tool for providing current weather information. Use this for any weather-related queries.
-- time: A tool for providing the current time, date or day of week. Use this for any time-related queries.
-- home_assistant: A tool for controlling smart home devices. Use this for any queries related to smart home control, air conditioning, lighting, etc.
-- web_search: A tool for performing web searches. Use this for any general knowledge queries or when the user explicitly asks you to search the web.
-- wikipedia: A tool for retrieving information from Wikipedia. Use this for any queries about historical events, famous people, scientific concepts, etc.
-- clarify: A tool for asking the user for clarification. Use this when the user's message is ambiguous and you need more information to determine the correct tool.
-
-Reply ONLY with valid JSON in the following format:
-{{"tool": "...","confidence": 0.0}}
-
-User input: {user_input}
-"""
-
-USER_PROMPT = """
+USER_PROMPT_TEMPLATE = """
 Available tools:
-- calculator: A tool for performing mathematical calculations. Use this for any math-related queries.
-- weather: A tool for providing current weather information. Use this for any weather-related queries.
-- time: A tool for providing the current time, date or day of week. Use this for any time-related queries.
-- home_assistant: A tool for controlling smart home devices. Use this for any queries related to smart home control, air conditioning, lighting, etc.
-- web_search: A tool for performing web searches. Use this for any general knowledge queries or when the user explicitly asks you to search the web.
-- wikipedia: A tool for retrieving information from Wikipedia. Use this for any queries about historical events, famous people, scientific concepts, etc.
-- clarify: A tool for asking the user for clarification. Use this when the user's message is ambiguous and you need more information to determine the correct tool.
+{tools}
 
 Return schema:
 {{"tool": "...","confidence": 0.0}}
@@ -53,66 +31,44 @@ Return only compact valid JSON.
 No reasoning. No explanation. No markdown.
 """
 
-# experiment - will polish promt be faster?  YES< BUT, the model returns only "{"
-# ROUTER_PROMPT = """
-# Jesteś routerem intencji użytkownika, który przekierowuje wiadomości do odpowiednich narzędzi. Odpowiadaj TYLKO poprawnym JSONem! Otrzymujesz wiadomość od użytkownika i musisz określić, które narzędzie powinno się nią zająć. Masz dostęp do następujących narzędzi:
-# - calculator: Narzędzie do wykonywania obliczeń matematycznych. Używaj tego do wszelkich zapytań związanych z matematyką.
-# - weather: Narzędzie do podawania aktualnych informacji o pogodzie. Używaj tego do wszelkich zapytań związanych z pogodą.
-# - time: Narzędzie do podawania aktualnego czasu, daty lub dnia tygodnia. Używaj tego do wszelkich zapytań związanych z czasem.
-# - home_assistant: Narzędzie do sterowania inteligentnymi urządzeniami domowymi. Używaj tego do wszelkich zapytań związanych ze sterowaniem inteligentnym domem, klimatyzacją, oświetleniem itp.
-# - web_search: Narzędzie do wykonywania wyszukiwań w sieci. Używaj tego do wszelkich ogólnych zapytań o wiedzę lub gdy użytkownik wyraźnie poprosi cię o wyszukanie w sieci.
-# - wikipedia: Narzędzie do pobierania informacji z Wikipedii. Używaj tego do wszelkich zapytań o wydarzenia historyczne, sławne osoby, pojęcia naukowe itp.
-# - clarify: Narzędzie do zadawania użytkownikowi pytań w celu uzyskania wyjaśnień. Używaj tego, gdy wiadomość użytkownika jest niejednoznaczna i potrzebujesz więcej informacji, aby określić właściwe narzędzie.    
-# Odpowiadaj TYLKO poprawnym JSONem w następującym formacie:
-# {{
-#     "tool": "...",
-#     "confidence": 0.0
-# }}  
-# Wejście od użytkownika: {user_input}
-# """
-
 GENERATION_OPTIONS = {
     "num_predict": 32,
     "temperature": 0,
     "num_ctx": 1024,
-#    "stop": ["\n"],
 }
 GENERATION_FAILURE_MESSAGE = "Przepraszam, nie mogę teraz odpowiedzieć."
 
 
-class OllamaError(Exception):
-    """Raised when Ollama cannot generate a response."""
+@dataclass(frozen=True)
+class ToolRoute:
+    tool: str
+    confidence: float
 
 
 class AssistantAgent:
     def __init__(
         self,
         intent_router_model: str,
+        tools: Mapping[str, Tool],
         base_url: str = OLLAMA_BASE_URL,
         session: ClientSession | None = None,
+        ollama_client: OllamaClient | None = None,
+        owns_ollama_client: bool = True,
     ) -> None:
         self._intent_router_model = intent_router_model
-        self._base_url = base_url.rstrip("/")
-        self._session = session or ClientSession()
-        self._owns_session = session is None
+        self._tools = dict(tools)
+        self._user_prompt_template = _build_user_prompt_template(self._tools)
+        self._ollama = ollama_client or OllamaClient(base_url=base_url, session=session)
+        self._owns_ollama = owns_ollama_client
         self._logger = logging.getLogger(f"{__name__}.AssistantAgent[{intent_router_model}]")
 
     async def preload(self) -> None:
         try:
-            # await self._post_generate(
-            #     {
-            #         "model": self._intent_router_model,
-            #         "prompt": "",
-            #         "stream": False,
-            #         "keep_alive": -1,
-            #     }
-            # )
-            # alternative
-            await self._post_chat(
+            await self._ollama.chat(
                 {
                     "model": self._intent_router_model,
-                    "think" : False,
-                    "format" : "json",
+                    "think": False,
+                    "format": "json",
                     "stream": False,
                     "keep_alive": "1h",
                     "messages": [
@@ -120,7 +76,7 @@ class AssistantAgent:
                             "role": "user",
                             "content": "Return JSON: {\"ok\":true}",
                         },
-                    ]
+                    ],
                 }
             )
         except Exception as exc:
@@ -133,7 +89,7 @@ class AssistantAgent:
             started_at = time.perf_counter()
 
             try:
-                reply = await self._generate_reply(message.text)
+                route = await self._route_message(message.text)
             except Exception:
                 elapsed_ms = _elapsed_ms(started_at)
                 logger.exception(
@@ -144,29 +100,42 @@ class AssistantAgent:
                 await send_user_message(endpoint, UserMessage(text=GENERATION_FAILURE_MESSAGE))
                 continue
 
+            tool = self._tools.get(route.tool)
+            if tool is None:
+                elapsed_ms = _elapsed_ms(started_at)
+                logger.error(
+                    "router selected unknown tool=%s confidence=%s request_len=%s duration_ms=%s",
+                    route.tool,
+                    route.confidence,
+                    len(message.text),
+                    elapsed_ms,
+                )
+                await send_user_message(endpoint, UserMessage(text=GENERATION_FAILURE_MESSAGE))
+                continue
+
             elapsed_ms = _elapsed_ms(started_at)
-            logger.debug(
-                "request_len=%s reply_len=%s duration_ms=%s",
+            logger.info(
+                "router selected tool=%s confidence=%s request_len=%s duration_ms=%s",
+                route.tool,
+                route.confidence,
                 len(message.text),
-                len(reply),
                 elapsed_ms,
             )
-            await send_user_message(endpoint, UserMessage(text=reply))
+            await tool.run(endpoint)
 
     async def close(self) -> None:
-        if self._owns_session:
-            await self._session.close()
+        if self._owns_ollama:
+            await self._ollama.close()
 
-    async def _generate_reply(self, user_input: str) -> str:
-        response = await self._post_chat(
+    async def _route_message(self, user_input: str) -> ToolRoute:
+        response = await self._ollama.chat(
             {
                 "model": self._intent_router_model,
                 "raw": False,
-                "think" : False,
-                "format" : "json",
+                "think": False,
+                "format": "json",
                 "stream": False,
                 "keep_alive": "1h",
-                # "prompt": ROUTER_PROMPT.format(user_input=user_input),
                 "options": GENERATION_OPTIONS,
                 "messages": [
                     {
@@ -175,9 +144,9 @@ class AssistantAgent:
                     },
                     {
                         "role": "user",
-                        "content": USER_PROMPT.format(user_input=user_input),
+                        "content": self._user_prompt_template.format(user_input=user_input),
                     },
-                ]
+                ],
             }
         )
 
@@ -187,35 +156,36 @@ class AssistantAgent:
         if not isinstance(content, str):
             raise OllamaError("Ollama response missing string response field")
 
-        return content
-
-    async def _post_generate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._logger.debug("Ollama request: %s", payload)
-        async with self._session.post(f"{self._base_url}/api/generate", json=payload) as response:
-            if response.status >= 400:
-                raise OllamaError(f"Ollama generate failed with status {response.status}")
-
-            body = await response.json()
-            if not isinstance(body, dict):
-                raise OllamaError("Ollama response must be a JSON object")
-
-            self._logger.debug("Ollama response: %s", body)
-            return body
-
-    async def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._logger.debug("Ollama request: %s", payload)
-        async with self._session.post(f"{self._base_url}/api/chat", json=payload) as response:
-            if response.status >= 400:
-                raise OllamaError(f"Ollama chat failed with status {response.status}")
-
-            body = await response.json()
-            if not isinstance(body, dict):
-                raise OllamaError("Ollama response must be a JSON object")
-
-            self._logger.debug("Ollama response: %s", body)
-            return body
+        return _parse_tool_route(content)
 
 
 def _elapsed_ms(started_at: float) -> int:
     return round((time.perf_counter() - started_at) * 1000)
 
+
+def _build_user_prompt_template(tools: Mapping[str, Tool]) -> str:
+    tool_lines = []
+    for tool in tools.values():
+        tool_lines.append(f"- {tool.name}: {tool.description}")
+
+    return USER_PROMPT_TEMPLATE.replace("{tools}", "\n".join(tool_lines))
+
+
+def _parse_tool_route(content: str) -> ToolRoute:
+    try:
+        raw_route = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError("router response must be valid JSON") from exc
+
+    if not isinstance(raw_route, dict):
+        raise ValueError("router response must be a JSON object")
+
+    tool = raw_route.get("tool")
+    if not isinstance(tool, str) or not tool:
+        raise ValueError("router response tool must be a non-empty string")
+
+    confidence = raw_route.get("confidence")
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+        raise ValueError("router response confidence must be a number")
+
+    return ToolRoute(tool=tool, confidence=float(confidence))

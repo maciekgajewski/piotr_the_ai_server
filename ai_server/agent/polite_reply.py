@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 
 from aiohttp import ClientSession
 
 from ai_server.interfaces import CommunicationEndpoint
 from ai_server.messages import UserMessage
+from ai_server.ollama import OLLAMA_BASE_URL, OllamaClient, OllamaError
 from ai_server.streaming import receive_user_message, send_user_message
 
 
-OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 POLITE_REPLY_PROMPT = (
     "Jesteś pijanym wrednym chamem, masz na imię Ryszard. Odpowiedz uyżytkownikowi w najbardziej chamski sposób, użyj wielu wulgaryzmów. Zawrzyj część pytania w swojej odpiwedzi.\n"
     "Użytkownik: {user_input}\n"
@@ -25,26 +24,23 @@ GENERATION_OPTIONS = {
 GENERATION_FAILURE_MESSAGE = "Przepraszam, nie mogę teraz odpowiedzieć."
 
 
-class OllamaError(Exception):
-    """Raised when Ollama cannot generate a response."""
-
-
 class PoliteReplyAgent:
     def __init__(
         self,
         model: str,
         base_url: str = OLLAMA_BASE_URL,
         session: ClientSession | None = None,
+        ollama_client: OllamaClient | None = None,
+        owns_ollama_client: bool = True,
     ) -> None:
         self._model = model
-        self._base_url = base_url.rstrip("/")
-        self._session = session or ClientSession()
-        self._owns_session = session is None
+        self._ollama = ollama_client or OllamaClient(base_url=base_url, session=session)
+        self._owns_ollama = owns_ollama_client
         self._logger = logging.getLogger(f"{__name__}.PoliteReplyAgent[{model}]")
 
     async def preload(self) -> None:
         try:
-            await self._post_generate(
+            await self._ollama.generate(
                 {
                     "model": self._model,
                     "prompt": "",
@@ -83,11 +79,11 @@ class PoliteReplyAgent:
             await send_user_message(endpoint, UserMessage(text=reply))
 
     async def close(self) -> None:
-        if self._owns_session:
-            await self._session.close()
+        if self._owns_ollama:
+            await self._ollama.close()
 
     async def _generate_reply(self, user_input: str) -> str:
-        response = await self._post_generate(
+        response = await self._ollama.generate(
             {
                 "model": self._model,
                 "raw": True,
@@ -102,19 +98,6 @@ class PoliteReplyAgent:
             raise OllamaError("Ollama response missing string response field")
 
         return _strip_thinking(reply)
-
-    async def _post_generate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._logger.debug("Ollama request: %s", payload)
-        async with self._session.post(f"{self._base_url}/api/generate", json=payload) as response:
-            if response.status >= 400:
-                raise OllamaError(f"Ollama generate failed with status {response.status}")
-
-            body = await response.json()
-            if not isinstance(body, dict):
-                raise OllamaError("Ollama response must be a JSON object")
-
-            self._logger.debug("Ollama response: %s", body)
-            return body
 
 
 def _elapsed_ms(started_at: float) -> int:
