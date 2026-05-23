@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build/Flash ESP Box"
+  short_description: "ESP32-S3-BOX-3 firmware workflow"
+  default_prompt: "Use $build-flash-esp-box to configure, build, verify, and flash the ESP32-S3-BOX-3 satellite firmware."

@@ -8,6 +8,65 @@ services:
       - ollama:/root/.ollama
     gpus: all
 
+  wyoming-piper:
+    build:
+      context: .
+      dockerfile: docker/ai-server.Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    gpus: all
+    environment:
+      PIPER_HOME: /app/.piper-cache
+    volumes:
+      - ./.piper-cache:/app/.piper-cache
+    entrypoint:
+      - wyoming-piper
+      - --voice
+      - ${AI_SERVER_TTS_VOICE:-pl_PL-bass-high}
+      - --uri
+      - tcp://0.0.0.0:10200
+      - --data-dir
+      - /app/.piper-cache
+      - --download-dir
+      - /app/.piper-cache
+      - --update-voices
+      - --use-cuda
+      - --samples-per-chunk
+      - "1024"
+
+  wyoming-whisper:
+    build:
+      context: .
+      dockerfile: docker/ai-server.Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    gpus: all
+    environment:
+      HF_HOME: /app/.hf-cache
+    volumes:
+      - ./.whisper-cache:/data
+      - ./.hf-cache:/app/.hf-cache
+    entrypoint:
+      - python3
+      - -m
+      - wyoming_faster_whisper
+      - --model
+      - ${AI_SERVER_STT_MODEL:-base}
+      - --language
+      - ${AI_SERVER_STT_LANGUAGE:-pl}
+      - --device
+      - ${AI_SERVER_STT_DEVICE:-cuda}
+      - --compute-type
+      - ${AI_SERVER_STT_COMPUTE_TYPE:-float16}
+      - --beam-size
+      - ${AI_SERVER_STT_BEAM_SIZE:-5}
+      - --uri
+      - tcp://0.0.0.0:10300
+      - --data-dir
+      - /data
+      - --download-dir
+      - /data
+
   ai-server:
     build:
       context: .
@@ -15,12 +74,16 @@ services:
     restart: unless-stopped
     depends_on:
       - ollama
+      - wyoming-piper
+      - wyoming-whisper
     network_mode: host
     gpus: all
     volumes:
-      - ${AI_SERVER_CONFIG:?Set AI_SERVER_CONFIG to the AI server YAML config file}:/config/ai_server.yaml:ro
+      - ./ai_server:/app/ai_server:ro
+      - ${AI_SERVER_CONFIG:-./ai_server/config.compose.yaml}:/config/ai_server.yaml:ro
       - ./.hf-cache:/app/.hf-cache
       - ./.piper-cache:/app/.piper-cache
+      - ./.whisper-cache:/app/.whisper-cache
       - ./audio:/app/audio
     entrypoint:
       - python3

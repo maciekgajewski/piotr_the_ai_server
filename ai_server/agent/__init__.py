@@ -3,11 +3,10 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
+from ai_server.agent.echo import EchoAgent
+from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.config import AgentConfig
-from ai_server.endpoint import CommunicationEndpoint
-
-logger = logging.getLogger(f"{__name__}.factory")
-
+from ai_server.interfaces import CommunicationEndpoint
 
 class Agent(Protocol):
     async def run(self, endpoint: CommunicationEndpoint, session_id: str) -> None:
@@ -18,16 +17,13 @@ class Agent(Protocol):
 
 
 async def create_agent(config: AgentConfig, ollama_url: str) -> Agent:
+    logger = logging.getLogger(f"{__name__}.factory[{config.type}]")
     logger.info("Creating agent type=%s", config.type)
     if config.type == "echo":
-        from ai_server.agent.echo import EchoAgent
-
         logger.info("Created agent type=echo")
         return EchoAgent()
 
     if config.type == "polite_reply":
-        from ai_server.agent.polite_reply import PoliteReplyAgent
-
         model = config.options["model"]
         logger.info("Creating polite_reply agent model=%s", model)
         agent = PoliteReplyAgent(model=model, base_url=ollama_url)

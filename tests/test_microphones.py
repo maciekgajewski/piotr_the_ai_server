@@ -6,20 +6,22 @@ from ai_server.config import MicrophoneConfig, SttConfig, TtsConfig
 from ai_server.messages import UserMessage
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.manager import MicrophoneManager, init_mics
-from ai_server.microphones.types import MicrophoneContext, MicrophoneUtterance, PlaybackTarget
+from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, TextEnd, TextFragment
+from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
+from ai_server.streaming import receive_user_message, send_user_message
 
 
 class FakeAgent:
     async def run(self, endpoint, session_id: str) -> None:
         while True:
-            message = await endpoint.receive()
-            await endpoint.send(UserMessage(text=f"reply:{message.text}"))
+            message = await receive_user_message(endpoint)
+            await send_user_message(endpoint, UserMessage(text=f"reply:{message.text}"))
 
     async def close(self) -> None:
         pass
 
 
-class FakeDriver:
+class FakeMicrophone:
     def __init__(self) -> None:
         self.context = MicrophoneContext(type="fake", name="office", location="office")
         self.playback_target = PlaybackTarget(
@@ -29,13 +31,43 @@ class FakeDriver:
             api_key="key",
         )
         self.closed = False
-        self._sent = False
+        self.sent_audio_events = []
+        self._events = [
+            AudioStart(wake_word="Ryszardzie"),
+            AudioChunk(data=b"audio"),
+            AudioEnd(),
+        ]
 
-    async def wait_for_utterance(self, capture_seconds: float) -> MicrophoneUtterance:
-        if self._sent:
+    async def wait_for_event(self):
+        if not self._events:
             await asyncio.sleep(3600)
-        self._sent = True
-        return MicrophoneUtterance(audio_chunks=(b"audio",), wake_word="Ryszardzie")
+        return self._events.pop(0)
+
+    async def send_audio_event(self, event) -> None:
+        self.sent_audio_events.append(event)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeSttSession:
+    def __init__(self) -> None:
+        self.audio_chunks = []
+        self.ended = False
+        self.closed = False
+        self._text_events = [
+            TextFragment(text="cześć"),
+            TextEnd(),
+        ]
+
+    async def send_audio(self, chunk: AudioChunk) -> None:
+        self.audio_chunks.append(chunk)
+
+    async def end_audio(self) -> None:
+        self.ended = True
+
+    async def receive_text(self):
+        return self._text_events.pop(0)
 
     async def close(self) -> None:
         self.closed = True
@@ -45,14 +77,15 @@ class FakeStt:
     def __init__(self) -> None:
         self.started = False
         self.closed = False
-        self.utterances = []
+        self.sessions = []
 
     async def start(self) -> None:
         self.started = True
 
-    async def transcribe(self, utterance: MicrophoneUtterance) -> str:
-        self.utterances.append(utterance)
-        return "cześć"
+    async def create_session(self, session_id: str):
+        session = FakeSttSession()
+        self.sessions.append(session)
+        return session
 
     async def close(self) -> None:
         self.closed = True
@@ -61,11 +94,23 @@ class FakeStt:
 class FakeTts:
     def __init__(self) -> None:
         self.spoken = []
+        self.synthesized = []
+        self.started = False
         self.closed = False
         self.spoke = asyncio.Event()
 
+    async def start(self) -> None:
+        self.started = True
+
     async def speak(self, target: PlaybackTarget, text: str) -> None:
         self.spoken.append((target, text))
+        self.spoke.set()
+
+    async def synthesize(self, text: str):
+        self.synthesized.append(text)
+        yield AudioStart(rate=22050, width=2, channels=1, volume=1.0)
+        yield AudioChunk(data=b"reply-audio")
+        yield AudioEnd()
         self.spoke.set()
 
     async def close(self) -> None:
@@ -78,14 +123,25 @@ class FailingTts(FakeTts):
         self.spoke.set()
         raise RuntimeError("speaker unavailable")
 
+    async def synthesize(self, text: str):
+        self.spoke.set()
+        raise RuntimeError("speaker unavailable")
+        yield AudioEnd()
+
+
+class StartFailingTts(FakeTts):
+    async def start(self) -> None:
+        await super().start()
+        raise RuntimeError("tts startup failed")
+
 
 def test_microphone_agent_endpoint_exchanges_one_message() -> None:
     async def run() -> None:
         endpoint = MicrophoneAgentEndpoint()
 
         async def agent() -> None:
-            message = await endpoint.receive()
-            await endpoint.send(UserMessage(text=f"reply:{message.text}"))
+            message = await receive_user_message(endpoint)
+            await send_user_message(endpoint, UserMessage(text=f"reply:{message.text}"))
 
         task = asyncio.create_task(agent())
         reply = await endpoint.exchange(UserMessage(text="hello"))
@@ -98,15 +154,14 @@ def test_microphone_agent_endpoint_exchanges_one_message() -> None:
 
 def test_microphone_manager_sends_transcript_to_agent_and_speaks_reply() -> None:
     async def run() -> None:
-        driver = FakeDriver()
+        microphone = FakeMicrophone()
         stt = FakeStt()
         tts = FakeTts()
         manager = MicrophoneManager(
-            drivers=[driver],
+            microphones=[microphone],
             stt=stt,
             tts=tts,
             agent=FakeAgent(),
-            capture_seconds=5.0,
         )
 
         await manager.start()
@@ -114,34 +169,66 @@ def test_microphone_manager_sends_transcript_to_agent_and_speaks_reply() -> None
         await manager.close()
 
         assert stt.started is True
+        assert tts.started is True
         assert stt.closed is True
-        assert driver.closed is True
+        assert microphone.closed is True
         assert tts.closed is True
-        assert stt.utterances == [MicrophoneUtterance(audio_chunks=(b"audio",), wake_word="Ryszardzie")]
-        assert tts.spoken == [(driver.playback_target, "reply:cześć")]
+        assert len(stt.sessions) == 1
+        assert stt.sessions[0].audio_chunks == [AudioChunk(data=b"audio")]
+        assert stt.sessions[0].ended is True
+        assert tts.synthesized == ["reply:cześć"]
+        assert microphone.sent_audio_events == [
+            AudioStart(rate=22050, width=2, channels=1, volume=1.0),
+            AudioChunk(data=b"reply-audio"),
+            AudioEnd(),
+        ]
 
     asyncio.run(run())
 
 
 def test_microphone_manager_keeps_session_alive_after_tts_error() -> None:
     async def run() -> None:
-        driver = FakeDriver()
+        microphone = FakeMicrophone()
         tts = FailingTts()
         manager = MicrophoneManager(
-            drivers=[driver],
+            microphones=[microphone],
             stt=FakeStt(),
             tts=tts,
             agent=FakeAgent(),
-            capture_seconds=5.0,
         )
 
         await manager.start()
         await asyncio.wait_for(tts.spoke.wait(), timeout=1)
         await asyncio.sleep(0)
 
-        assert driver.closed is False
+        assert microphone.closed is False
 
         await manager.close()
+
+    asyncio.run(run())
+
+
+def test_microphone_manager_cleans_up_when_start_fails() -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        stt = FakeStt()
+        tts = StartFailingTts()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=stt,
+            tts=tts,
+            agent=FakeAgent(),
+        )
+
+        with pytest.raises(RuntimeError, match="tts startup failed"):
+            await manager.start()
+
+        assert stt.started is True
+        assert tts.started is True
+        assert stt.closed is True
+        assert tts.closed is True
+        assert microphone.closed is True
+        assert manager.microphone_count == 1
 
     asyncio.run(run())
 

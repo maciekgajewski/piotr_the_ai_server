@@ -737,3 +737,65 @@ No firmware flashing has been done yet.
 - Post-flash checks:
   - `/dev/ttyACM0` still exists.
   - Ping to `192.168.0.180` succeeded with 2/2 replies.
+
+## 2026-05-22T16:21:31Z - Add Okay Nabu fallback wake word
+
+- Live `Ryszardzie` wake-word behavior is still hit and miss.
+- Decision: keep the custom local `Ryszardzie` model and add ESPHome's built-in `okay_nabu` model as a second on-device wake word.
+- Chime-after-wake is not included in this flash; it needs a separate test because local media playback can interact with microphone capture and wake-word restart behavior.
+
+## 2026-05-22T16:22:00Z - Dual wake-word firmware flashed
+
+- Validated ESPHome configuration with two on-device wake-word models:
+  - local `Ryszardzie`
+  - built-in `okay_nabu`
+- Flashed the Box over USB `/dev/ttyACM0`.
+- ESPHome reported `Successfully uploaded program.`
+- Post-flash checks:
+  - `/dev/ttyACM0` still exists.
+  - Ping to `192.168.0.180` succeeded with 2/2 replies.
+
+## 2026-05-23T10:04:09Z - Enable Okay Nabu explicitly
+
+- The clean-generated ESPHome `main.cpp` showed both wake-word models, but `Okay Nabu` was generated with `default_enabled=false`.
+- ESPHome enables only the first wake-word model by default; additional models need explicit enabling or persisted runtime state.
+- Decision: assign `okay_nabu` a stable ESPHome model ID and run `micro_wake_word.enable_model` at boot.
+
+## 2026-05-23T10:14:31Z - Dual wake-word firmware reflashed with Okay Nabu enabled
+
+- Validated ESPHome configuration after adding the boot-time `micro_wake_word.enable_model` action.
+- Rebuilt the firmware from a clean build tree and verified generated `main.cpp` contains:
+  - local `Ryszardzie` model
+  - built-in `Okay Nabu` model
+  - boot-time `EnableModelAction` for `okay_nabu_wake_word`
+- Flashed the Box over USB `/dev/ttyACM0`.
+- ESPHome reported `Successfully uploaded program.`
+- Post-flash checks:
+  - `/dev/ttyACM0` still exists.
+  - Ping to `192.168.0.180` succeeded with 2/2 replies.
+
+## 2026-05-23T10:31:32Z - Red touch button and explicit dual wake-word enable flashed
+
+- User confirmed `Okay Nabu` works, but `Ryszardzie` does not.
+- ESPHome persists wake-word model enabled/disabled state in flash, so relying on default enabled state can leave a model disabled after previous runtime changes.
+- Decision: give both wake-word models stable IDs and explicitly enable both at boot:
+  - `ryszardzie_wake_word`
+  - `okay_nabu_wake_word`
+- Added GT911 touchscreen support for the ESP32-S3-BOX-3 red circle below the screen.
+- Added internal GT911 button binary sensor `red_touch_button` at index `0`.
+- A single tap on the red touch button now:
+  - stops the timer if a timer is ringing
+  - otherwise starts a normal voice assistant run with synthetic wake word `button`, when not muted and not already running
+- Validated ESPHome configuration.
+- Rebuilt firmware and verified generated `main.cpp` contains:
+  - boot-time `EnableModelAction` for both wake-word models
+  - local `Ryszardzie` model
+  - built-in `Okay Nabu` model
+  - `GT911Touchscreen` on the existing I2C bus
+  - `GT911Button` index `0`
+  - `VoiceAssistantStartAction` with wake word `button`
+- Flashed the Box over USB `/dev/ttyACM0`.
+- ESPHome reported `Successfully uploaded program.`
+- Post-flash checks:
+  - `/dev/ttyACM0` still exists.
+  - Ping to `192.168.0.180` succeeded with 2/2 replies.

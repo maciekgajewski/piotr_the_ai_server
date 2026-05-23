@@ -4,38 +4,43 @@ import asyncio
 import logging
 import uuid
 from contextlib import suppress
-from typing import ClassVar
 
 from ai_server.agent import Agent
 from ai_server.config import MicrophoneConfig, SttConfig, TtsConfig
-from ai_server.messages import UserMessage
+from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, UserMessage
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
-from ai_server.microphones.types import MicrophoneDriver, SpeechToText, TextToSpeech
+from ai_server.microphones.drivers import create_microphone
+from ai_server.microphones.interfaces import Microphone, SpeechToText, SttSession, TextToSpeech
+from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, TextEnd, TextFragment
+from ai_server.microphones.stt import WyomingFasterWhisperSpeechToText
+from ai_server.microphones.tts import PiperTextToSpeech
 
 
 class MicrophoneManager:
-    _logger: ClassVar[logging.Logger] = logging.getLogger(f"{__name__}.MicrophoneManager")
-
     def __init__(
         self,
-        drivers: list[MicrophoneDriver],
+        microphones: list[Microphone],
         stt: SpeechToText,
         tts: TextToSpeech,
         agent: Agent,
-        capture_seconds: float,
     ) -> None:
-        self._drivers = drivers
+        self._microphones = microphones
         self._stt = stt
         self._tts = tts
         self._agent = agent
-        self._capture_seconds = capture_seconds
         self._tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
-        await self._stt.start()
-        for driver in self._drivers:
-            self._logger.info("%s starting persistent microphone session", driver.context.log_prefix)
-            self._tasks.append(asyncio.create_task(self._run_microphone(driver)))
+        try:
+            await self._stt.start()
+            await self._tts.start()
+            for microphone in self._microphones:
+                logger = _microphone_logger(microphone)
+                logger.info("starting persistent microphone session")
+                self._tasks.append(asyncio.create_task(self._run_microphone(microphone)))
+        except Exception:
+            await self.close()
+            raise
 
     async def close(self) -> None:
         for task in self._tasks:
@@ -45,26 +50,24 @@ class MicrophoneManager:
                 await task
         self._tasks.clear()
 
-        for driver in self._drivers:
-            await driver.close()
+        for microphone in self._microphones:
+            await microphone.close()
         await self._tts.close()
         await self._stt.close()
 
-    async def _run_microphone(self, driver: MicrophoneDriver) -> None:
+    async def _run_microphone(self, microphone: Microphone) -> None:
+        logger = _microphone_logger(microphone)
         endpoint = MicrophoneAgentEndpoint()
-        session_id = f"mic-{driver.context.name}-{uuid.uuid4()}"
+        session_id = f"mic-{microphone.context.name}-{uuid.uuid4()}"
         agent_task = asyncio.create_task(self._agent.run(endpoint, session_id))
         try:
             while True:
                 try:
-                    await self._handle_utterance(driver, endpoint)
+                    await self._handle_utterance(microphone, endpoint, logger)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    self._logger.exception(
-                        "%s utterance handling failed; returning to wake-word wait",
-                        driver.context.log_prefix,
-                    )
+                    logger.exception("utterance handling failed; returning to wake-word wait")
                     await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             raise
@@ -73,40 +76,94 @@ class MicrophoneManager:
             agent_task.cancel()
             with suppress(asyncio.CancelledError):
                 await agent_task
-            self._logger.info("%s microphone session ended", driver.context.log_prefix)
+            logger.info("microphone session ended")
 
     async def _handle_utterance(
         self,
-        driver: MicrophoneDriver,
+        microphone: Microphone,
         endpoint: MicrophoneAgentEndpoint,
+        logger: logging.Logger,
     ) -> None:
-        utterance = await driver.wait_for_utterance(self._capture_seconds)
-        self._logger.info(
-            "%s wake_word=%r captured bytes=%s",
-            driver.context.log_prefix,
-            utterance.wake_word,
-            utterance.byte_count,
-        )
-        self._logger.debug("%s audio_chunks=%s", driver.context.log_prefix, len(utterance.audio_chunks))
-
-        transcript = await self._stt.transcribe(utterance)
-        self._logger.info("%s transcription complete chars=%s", driver.context.log_prefix, len(transcript))
-        self._logger.debug("%s transcript=%r", driver.context.log_prefix, transcript)
-        if not transcript:
-            self._logger.info("%s empty transcript; returning to wake-word wait", driver.context.log_prefix)
+        event = await microphone.wait_for_event()
+        if not isinstance(event, AudioStart):
+            logger.warning("ignored microphone event before audio start event=%s", type(event).__name__)
             return
 
-        reply = await endpoint.exchange(UserMessage(text=transcript))
-        self._logger.info("%s agent reply ready chars=%s", driver.context.log_prefix, len(reply.text))
-        self._logger.debug("%s reply=%r", driver.context.log_prefix, reply.text)
+        logger.info("wake_word=%r audio stream started", event.wake_word)
+        stt_session = await self._stt.create_session(microphone.context.name)
+        text_task = asyncio.create_task(self._forward_text_to_agent(endpoint, stt_session, logger))
+        await endpoint.send_to_agent(MessageBegin())
+        try:
+            while True:
+                event = await microphone.wait_for_event()
+                if isinstance(event, AudioChunk):
+                    await stt_session.send_audio(event)
+                    continue
+                if isinstance(event, AudioEnd):
+                    await stt_session.end_audio()
+                    break
+                if isinstance(event, AudioStart):
+                    logger.warning("received nested audio start; ending current stream")
+                    await stt_session.end_audio()
+                    break
 
-        self._logger.info("%s starting TTS playback", driver.context.log_prefix)
-        await self._tts.speak(driver.playback_target, reply.text)
-        self._logger.info("%s TTS playback complete", driver.context.log_prefix)
+            await text_task
+            await stt_session.close()
+            await endpoint.send_to_agent(MessageEnd())
+        except Exception:
+            text_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await text_task
+            await stt_session.close()
+            raise
+
+        reply = await self._receive_agent_reply(endpoint)
+        if not reply.text:
+            logger.info("empty agent reply; returning to wake-word wait")
+            return
+
+        logger.info("agent reply ready chars=%s", len(reply.text))
+        logger.debug("reply=%r", reply.text)
+
+        logger.info("starting TTS playback")
+        async for audio_event in self._tts.synthesize(reply.text):
+            await microphone.send_audio_event(audio_event)
+        logger.info("TTS stream finished")
+
+    async def _forward_text_to_agent(
+        self,
+        endpoint: MicrophoneAgentEndpoint,
+        stt_session: SttSession,
+        logger: logging.Logger,
+    ) -> None:
+        while True:
+            event = await stt_session.receive_text()
+            if isinstance(event, TextFragment):
+                logger.info("transcription fragment chars=%s", len(event.text))
+                logger.debug("transcript_fragment=%r", event.text)
+                await endpoint.send_to_agent(MessageFragment(text=event.text))
+                continue
+            if isinstance(event, TextEnd):
+                return
+            raise ValueError(f"unsupported STT event: {type(event).__name__}")
+
+    async def _receive_agent_reply(self, endpoint: MicrophoneAgentEndpoint) -> UserMessage:
+        text_parts: list[str] = []
+        while True:
+            event = await endpoint.receive_reply()
+            if isinstance(event, MessageBegin):
+                text_parts.clear()
+                continue
+            if isinstance(event, MessageFragment):
+                text_parts.append(event.text)
+                continue
+            if isinstance(event, MessageEnd):
+                return UserMessage(text="".join(text_parts))
+            raise ValueError(f"unsupported agent reply event: {type(event).__name__}")
 
     @property
     def microphone_count(self) -> int:
-        return len(self._drivers)
+        return len(self._microphones)
 
 
 async def init_mics(
@@ -118,23 +175,17 @@ async def init_mics(
     if not mic_configs:
         return None
 
-    from ai_server.microphones.box3_esphome import Box3EsphomeMicrophoneDriver
-    from ai_server.microphones.stt import FasterWhisperSpeechToText
-    from ai_server.microphones.tts import PiperTextToSpeech
-
-    drivers: list[MicrophoneDriver] = []
-    for mic_config in mic_configs:
-        if mic_config.type == "box3_esphome":
-            drivers.append(Box3EsphomeMicrophoneDriver.from_config(mic_config))
-            continue
-        raise ValueError(f"unsupported microphone type: {mic_config.type}")
+    microphones = [create_microphone(mic_config) for mic_config in mic_configs]
 
     manager = MicrophoneManager(
-        drivers=drivers,
-        stt=FasterWhisperSpeechToText(stt_config),
+        microphones=microphones,
+        stt=WyomingFasterWhisperSpeechToText(stt_config),
         tts=PiperTextToSpeech(tts_config),
         agent=agent,
-        capture_seconds=stt_config.capture_seconds,
     )
     await manager.start()
     return manager
+
+
+def _microphone_logger(microphone: Microphone) -> logging.Logger:
+    return logging.getLogger(f"{__name__}.MicrophoneManager[{microphone.context.instance_id}]")

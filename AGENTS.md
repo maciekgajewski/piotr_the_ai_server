@@ -3,6 +3,7 @@
 - Do not run `sudo` commands from the agent terminal.
 - When a task requires `sudo`, ask the user to run the exact command manually and wait for confirmation.
 - Prefer one step at a time for ESP32-S3-BOX-3 setup work.
+- Read the "Architecture decisions" section in README.md before architecture-related work.
 
 Before writing code, interview me to remove ambiguity.
 
@@ -21,3 +22,9 @@ Rules:
 
 - For AI server logging, include a stable per-instance context in log messages when concurrent sessions or connections can interleave. Prefer readable prefixes such as `Session[<id>]` or `WebsocketCommunicationEndpoint[<peer>]`.
 - For AI server options that can be supplied by both config and command line, the command-line value always takes precedence over the config value.
+
+# Python coding guidelines
+
+- Keep interfaces in interfaces.py, messages in messages.py, per module
+- Keep imports on the top of the file. I don't like mid-function imports
+- If class uses logger, give it a instance member variable, _logger, with a prefix that identifies class type and the instance.

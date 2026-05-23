@@ -4,6 +4,7 @@
 .uv-cache/
 .hf-cache/
 .piper-cache/
+.whisper-cache/
 __pycache__/
 *.py[cod]
 firmware/esphome/secrets.yaml

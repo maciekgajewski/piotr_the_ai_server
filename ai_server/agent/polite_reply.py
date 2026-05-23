@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, ClassVar
+from typing import Any
 
 from aiohttp import ClientSession
 
-from ai_server.endpoint import CommunicationEndpoint
+from ai_server.interfaces import CommunicationEndpoint
 from ai_server.messages import UserMessage
+from ai_server.streaming import receive_user_message, send_user_message
 
 
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 POLITE_REPLY_PROMPT = (
-    "Odpowiedz tylko jednym krótkim zdaniem po polsku. Nie wyjaśniaj.\n"
+    "Jesteś pijanym wrednym chamem, masz na imię Ryszard. Odpowiedz uyżytkownikowi w najbardziej chamski sposób, użyj wielu wulgaryzmów. Zawrzyj część pytania w swojej odpiwedzi.\n"
     "Użytkownik: {user_input}\n"
     "Ryszard:"
 )
@@ -29,8 +30,6 @@ class OllamaError(Exception):
 
 
 class PoliteReplyAgent:
-    _logger: ClassVar[logging.Logger] = logging.getLogger(f"{__name__}.PoliteReplyAgent")
-
     def __init__(
         self,
         model: str,
@@ -41,6 +40,7 @@ class PoliteReplyAgent:
         self._base_url = base_url.rstrip("/")
         self._session = session or ClientSession()
         self._owns_session = session is None
+        self._logger = logging.getLogger(f"{__name__}.PoliteReplyAgent[{model}]")
 
     async def preload(self) -> None:
         try:
@@ -56,33 +56,31 @@ class PoliteReplyAgent:
             raise OllamaError(f"failed to preload Ollama model {self._model}") from exc
 
     async def run(self, endpoint: CommunicationEndpoint, session_id: str) -> None:
-        log_prefix = f"PoliteReplyAgent[{session_id}]"
+        logger = logging.getLogger(f"{__name__}.PoliteReplyAgent[{session_id}]")
         while True:
-            message = await endpoint.receive()
+            message = await receive_user_message(endpoint)
             started_at = time.perf_counter()
 
             try:
                 reply = await self._generate_reply(message.text)
             except Exception:
                 elapsed_ms = _elapsed_ms(started_at)
-                self._logger.exception(
-                    "%s generation failed request_len=%s duration_ms=%s",
-                    log_prefix,
+                logger.exception(
+                    "generation failed request_len=%s duration_ms=%s",
                     len(message.text),
                     elapsed_ms,
                 )
-                await endpoint.send(UserMessage(text=GENERATION_FAILURE_MESSAGE))
+                await send_user_message(endpoint, UserMessage(text=GENERATION_FAILURE_MESSAGE))
                 continue
 
             elapsed_ms = _elapsed_ms(started_at)
-            self._logger.debug(
-                "%s request_len=%s reply_len=%s duration_ms=%s",
-                log_prefix,
+            logger.debug(
+                "request_len=%s reply_len=%s duration_ms=%s",
                 len(message.text),
                 len(reply),
                 elapsed_ms,
             )
-            await endpoint.send(UserMessage(text=reply))
+            await send_user_message(endpoint, UserMessage(text=reply))
 
     async def close(self) -> None:
         if self._owns_session:
@@ -106,7 +104,7 @@ class PoliteReplyAgent:
         return _strip_thinking(reply)
 
     async def _post_generate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._logger.debug("PoliteReplyAgent Ollama request: %s", payload)
+        self._logger.debug("Ollama request: %s", payload)
         async with self._session.post(f"{self._base_url}/api/generate", json=payload) as response:
             if response.status >= 400:
                 raise OllamaError(f"Ollama generate failed with status {response.status}")
@@ -115,7 +113,7 @@ class PoliteReplyAgent:
             if not isinstance(body, dict):
                 raise OllamaError("Ollama response must be a JSON object")
 
-            self._logger.debug("PoliteReplyAgent Ollama response: %s", body)
+            self._logger.debug("Ollama response: %s", body)
             return body
 
 

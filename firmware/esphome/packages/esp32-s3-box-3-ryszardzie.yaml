@@ -43,6 +43,8 @@ esphome:
   on_boot:
     priority: 600
     then:
+      - micro_wake_word.enable_model: ryszardzie_wake_word
+      - micro_wake_word.enable_model: okay_nabu_wake_word
       - script.execute: draw_display
       - delay: 30s
       - if:
@@ -113,6 +115,26 @@ binary_sensor:
           - ON for at least 10s
         then:
           - button.press: factory_reset_btn
+  - platform: gt911
+    id: red_touch_button
+    gt911_id: box_touchscreen
+    index: 0
+    internal: true
+    on_press:
+      - if:
+          condition:
+            switch.is_on: timer_ringing
+          then:
+            - switch.turn_off: timer_ringing
+          else:
+            - if:
+                condition:
+                  and:
+                    - switch.is_off: mute
+                    - not:
+                        voice_assistant.is_running:
+                then:
+                  - script.execute: start_button_voice_assistant
 
 output:
   - platform: ledc
@@ -133,6 +155,13 @@ i2c:
   - id: i2c_adc_dac
     scl: GPIO18
     sda: GPIO8
+
+touchscreen:
+  - platform: gt911
+    id: box_touchscreen
+    display: s3_box_lcd
+    i2c_id: i2c_adc_dac
+    interrupt_pin: GPIO3
 
 i2s_audio:
   - id: i2s_audio_bus
@@ -226,7 +255,10 @@ media_player:
 micro_wake_word:
   id: mww
   models:
-    - model: /home/maciek/piotr/wakeword/ryszardzie/model/ryszardzie.json
+    - id: ryszardzie_wake_word
+      model: /home/maciek/piotr/wakeword/ryszardzie/model/ryszardzie.json
+    - id: okay_nabu_wake_word
+      model: okay_nabu
   on_wake_word_detected:
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
@@ -514,6 +546,14 @@ script:
             lambda: return id(wake_word_engine_location).current_option() == "On device";
           then:
             - micro_wake_word.stop:
+  # Starts a normal voice assistant run from the red touch button below the screen.
+  - id: start_button_voice_assistant
+    then:
+      - script.execute: stop_wake_word
+      - delay: 200ms
+      - lambda: id(va).set_use_wake_word(false);
+      - voice_assistant.start:
+          wake_word: button
   # Set the voice assistant phase to idle or muted, depending on if the software mute switch is activated
   - id: set_idle_or_mute_phase
     then:

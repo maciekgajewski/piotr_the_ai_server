@@ -2,12 +2,30 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeAlias
 
 
 @dataclass(frozen=True)
 class UserMessage:
     text: str
+
+
+@dataclass(frozen=True)
+class MessageBegin:
+    pass
+
+
+@dataclass(frozen=True)
+class MessageFragment:
+    text: str
+
+
+@dataclass(frozen=True)
+class MessageEnd:
+    pass
+
+
+MessageEvent: TypeAlias = MessageBegin | MessageFragment | MessageEnd
 
 
 def user_message_from_json(payload: str) -> UserMessage:
@@ -33,3 +51,10 @@ def user_message_from_mapping(raw_message: dict[str, Any]) -> UserMessage:
 def user_message_to_json(message: UserMessage) -> str:
     return json.dumps({"text": message.text})
 
+
+def user_message_to_events(message: UserMessage) -> tuple[MessageEvent, ...]:
+    return (
+        MessageBegin(),
+        MessageFragment(text=message.text),
+        MessageEnd(),
+    )

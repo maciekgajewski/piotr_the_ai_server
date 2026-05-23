@@ -3,47 +3,42 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import ClassVar
 
 from ai_server.agent import Agent
-from ai_server.endpoint import CommunicationEndpoint, EndpointClosed
+from ai_server.interfaces import CommunicationEndpoint, EndpointClosed
 
 
 @dataclass
 class Session:
-    _logger: ClassVar[logging.Logger] = logging.getLogger(f"{__name__}.Session")
-
     session_id: str
     endpoint: CommunicationEndpoint
 
-    @property
-    def log_context(self) -> str:
-        return f"Session[{self.session_id}]"
+    def __post_init__(self) -> None:
+        self._logger = logging.getLogger(f"{__name__}.Session[{self.session_id}]")
 
     async def run(self, agent: Agent) -> None:
         try:
             await agent.run(self.endpoint, self.session_id)
         except EndpointClosed:
-            self._logger.debug("%s endpoint closed", self.log_context)
+            self._logger.debug("endpoint closed")
 
 
 class SessionManager:
-    _logger: ClassVar[logging.Logger] = logging.getLogger(f"{__name__}.SessionManager")
-
     def __init__(self, agent: Agent) -> None:
+        self._logger = logging.getLogger(f"{__name__}.SessionManager")
         self._agent = agent
         self._sessions: dict[str, Session] = {}
 
     async def run_session(self, endpoint: CommunicationEndpoint) -> None:
         session = Session(session_id=str(uuid.uuid4()), endpoint=endpoint)
         self._sessions[session.session_id] = session
-        self._logger.info("%s New session", session.log_context)
+        session._logger.info("new session")
 
         try:
             await session.run(self._agent)
         finally:
             self._sessions.pop(session.session_id, None)
-            self._logger.info("%s ended", session.log_context)
+            session._logger.info("ended")
 
     @property
     def session_count(self) -> int:

@@ -9,8 +9,8 @@ from ai_server.agent.polite_reply import (
     POLITE_REPLY_PROMPT,
     PoliteReplyAgent,
 )
-from ai_server.endpoint import EndpointClosed
-from ai_server.messages import UserMessage
+from ai_server.interfaces import EndpointClosed
+from ai_server.messages import MessageEvent, UserMessage, user_message_to_events
 
 
 class FakeResponse:
@@ -40,16 +40,18 @@ class FakeSession:
 
 class FakeEndpoint:
     def __init__(self, incoming: list[UserMessage]) -> None:
-        self._incoming = incoming
+        self._incoming: list[MessageEvent] = []
+        for message in incoming:
+            self._incoming.extend(user_message_to_events(message))
         self.sent = []
 
-    async def receive(self) -> UserMessage:
+    async def receive(self) -> MessageEvent:
         if not self._incoming:
             raise EndpointClosed()
         return self._incoming.pop(0)
 
-    async def send(self, msg: UserMessage) -> None:
-        self.sent.append(msg)
+    async def send(self, event: MessageEvent) -> None:
+        self.sent.append(event)
 
 
 def test_preload_posts_model_keep_alive() -> None:
@@ -92,13 +94,17 @@ def test_polite_reply_sends_wrapped_prompt_and_returns_reply(caplog) -> None:
             },
         }
     ]
-    assert endpoint.sent == [UserMessage(text="Dzień dobry!")]
+    assert endpoint.sent == list(user_message_to_events(UserMessage(text="Dzień dobry!")))
 
     log_text = caplog.text
-    assert "PoliteReplyAgent[session-1] request_len=5 reply_len=12 duration_ms=" in log_text
+    assert any(
+        record.name.endswith("PoliteReplyAgent[session-1]")
+        and "request_len=5 reply_len=12 duration_ms=" in record.message
+        for record in caplog.records
+    )
     assert "siema" in log_text
     assert "Dzień dobry!" in log_text
-    assert "Odpowiedz tylko jednym krótkim zdaniem po polsku" in log_text
+    assert "Użytkownik: siema" in log_text
     assert "Ryszard:" in log_text
 
 
@@ -110,7 +116,7 @@ def test_polite_reply_strips_thinking_block() -> None:
     with pytest.raises(EndpointClosed):
         asyncio.run(agent.run(endpoint, "session-1"))
 
-    assert endpoint.sent == [UserMessage(text="Dzień dobry!")]
+    assert endpoint.sent == list(user_message_to_events(UserMessage(text="Dzień dobry!")))
 
 
 def test_polite_reply_sends_generic_apology_on_ollama_error(caplog) -> None:
@@ -122,7 +128,7 @@ def test_polite_reply_sends_generic_apology_on_ollama_error(caplog) -> None:
         with pytest.raises(EndpointClosed):
             asyncio.run(agent.run(endpoint, "session-2"))
 
-    assert endpoint.sent == [UserMessage(text=GENERATION_FAILURE_MESSAGE)]
+    assert endpoint.sent == list(user_message_to_events(UserMessage(text=GENERATION_FAILURE_MESSAGE)))
     assert "generation failed request_len=15 duration_ms=" in caplog.text
     assert "tajna wiadomość" in caplog.text
     assert GENERATION_FAILURE_MESSAGE not in caplog.text

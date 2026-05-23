@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 import logging
-from typing import ClassVar
 
-from ai_server.endpoint import CommunicationEndpoint
+from ai_server.interfaces import CommunicationEndpoint
+from ai_server.streaming import forward_one_message
 
 
 class EchoAgent:
-    _logger: ClassVar[logging.Logger] = logging.getLogger(f"{__name__}.EchoAgent")
-
     async def run(self, endpoint: CommunicationEndpoint, session_id: str) -> None:
-        log_prefix = f"EchoAgent[{session_id}]"
+        logger = logging.getLogger(f"{__name__}.EchoAgent[{session_id}]")
         while True:
-            message = await endpoint.receive()
-            self._logger.debug("%s Echoing message: %s", log_prefix, message.text)
-            await endpoint.send(message)
+            logger.debug("echoing streaming message")
+            await forward_one_message(endpoint, endpoint)
 
     async def close(self) -> None:
         pass
