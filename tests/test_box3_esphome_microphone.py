@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import struct
 import sys
 from types import SimpleNamespace
 import urllib.request
+
+import pytest
 
 from ai_server.config import MicrophoneConfig
 import ai_server.microphones.drivers.box3_esphome as box3_esphome
@@ -304,6 +307,26 @@ def test_box3_microphone_streams_audio_events_over_http(monkeypatch) -> None:
         assert data[44:] == b"abc"
 
     asyncio.run(run())
+
+
+def test_box3_playback_stream_estimates_remaining_speaker_drain_time() -> None:
+    stream = box3_esphome.Box3PlaybackStream(
+        local_ip="127.0.0.1",
+        rate=10,
+        width=2,
+        channels=1,
+        logger=logging.getLogger("test"),
+    )
+    stream.start()
+    try:
+        stream.write(b"1234567890")
+        stream.first_audio_drained_at = 100.0
+
+        assert stream.audio_seconds == 0.5
+        assert stream.remaining_playback_seconds(now=100.1) == pytest.approx(0.6)
+        assert stream.remaining_playback_seconds(now=101.0) == 0.0
+    finally:
+        stream.close()
 
 
 def _pcm16_chunk(value: int, samples: int = 512) -> bytes:

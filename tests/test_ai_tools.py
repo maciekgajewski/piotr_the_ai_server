@@ -1,4 +1,5 @@
 import asyncio
+import locale
 
 import pytest
 
@@ -56,9 +57,33 @@ def test_tool_run_stubs_send_default_reply() -> None:
     assert endpoint.sent == list(user_message_to_events(UserMessage(text=TOOL_NOT_IMPLEMENTED_REPLY)))
 
 
+def test_time_tool_logs_locale_failure(monkeypatch, caplog) -> None:
+    def fake_setlocale(category, value=None):
+        if value is None:
+            return "C"
+        if value == "pl_PL.utf8":
+            raise locale.Error("unsupported locale")
+        return value
+
+    monkeypatch.setattr(locale, "setlocale", fake_setlocale)
+    config = AgentConfig(type="assistant", options={"intent_router_model": "llama3.2:3b"})
+    tool = TimeTool(config, FakeOllamaClient())
+    endpoint = FakeEndpoint([])
+
+    with caplog.at_level("ERROR"):
+        asyncio.run(tool.run(endpoint, UserMessage(text="która godzina?")))
+
+    assert "failed to set locale pl_PL.utf8" in caplog.text
+
+
 class FakeSession:
     def post(self, url: str, json: dict):
         raise AssertionError("unexpected HTTP request")
+
+
+class FakeOllamaClient:
+    async def chat(self, payload: dict):
+        return {"message": {"role": "assistant", "content": "Jest południe."}}
 
 
 class FakeEndpoint:

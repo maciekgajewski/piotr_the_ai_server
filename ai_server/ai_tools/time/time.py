@@ -26,7 +26,7 @@ class TimeTool(BaseTool):
             try:
                 locale.setlocale(locale.LC_TIME, "pl_PL.utf8")
             except locale.Error:
-                pass
+                self._logger.error("failed to set locale pl_PL.utf8")
 
             current_time = dt.datetime.now().strftime("%A, %d. %B %Y %H:%M")
 

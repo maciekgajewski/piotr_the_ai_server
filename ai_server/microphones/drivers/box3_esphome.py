@@ -29,6 +29,7 @@ STREAM_PATH = "/tts.wav"
 WAV_HEADER_BYTES = 44
 STREAM_REQUEST_TIMEOUT_SECONDS = 5.0
 STREAM_DONE_TIMEOUT_SECONDS = 30.0
+PLAYBACK_DRAIN_GRACE_SECONDS = 0.2
 SPEECH_PEAK_THRESHOLD = 500
 END_SILENCE_SECONDS = 0.9
 START_GRACE_SECONDS = 0.5
@@ -171,6 +172,7 @@ class Box3EsphomeMicrophone:
             rate=event.rate,
             width=event.width,
             channels=event.channels,
+            logger=self._logger,
         )
         playback_stream.start()
         self._playback_stream = playback_stream
@@ -210,7 +212,23 @@ class Box3EsphomeMicrophone:
                 "BOX-3 playback stream did not finish within %.1fs",
                 STREAM_DONE_TIMEOUT_SECONDS,
             )
-        self._logger.info("playback stream finished bytes=%s", playback_stream.byte_count)
+        remaining_seconds = playback_stream.remaining_playback_seconds()
+        if remaining_seconds > 0:
+            self._logger.debug(
+                "waiting for speaker playback drain seconds=%.2f audio_seconds=%.2f",
+                remaining_seconds,
+                playback_stream.audio_seconds,
+            )
+            await asyncio.sleep(remaining_seconds)
+        self._logger.info(
+            "playback stream finished queued_chunks=%s queued_bytes=%s drained_chunks=%s drained_bytes=%s "
+            "audio_seconds=%.2f",
+            playback_stream.queued_chunks,
+            playback_stream.queued_bytes,
+            playback_stream.drained_chunks,
+            playback_stream.byte_count,
+            playback_stream.audio_seconds,
+        )
         playback_stream.close()
 
     async def _handle_start(
@@ -398,10 +416,14 @@ def _pcm16_peak(data: bytes) -> int:
 
 
 class Box3PlaybackStream:
-    def __init__(self, local_ip: str, rate: int, width: int, channels: int) -> None:
+    def __init__(self, local_ip: str, rate: int, width: int, channels: int, logger: logging.Logger) -> None:
         self._chunks: queue.Queue[bytes | None] = queue.Queue()
         self._request_event = threading.Event()
         self._done_event = threading.Event()
+        self._rate = rate
+        self._width = width
+        self._channels = channels
+        self._logger = logger
         self._server = ThreadingHTTPServer(
             (local_ip, 0),
             partial(
@@ -413,10 +435,16 @@ class Box3PlaybackStream:
                 request_event=self._request_event,
                 done_event=self._done_event,
                 byte_counter=self,
+                logger=logger,
             ),
         )
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self.byte_count = 0
+        self.queued_chunks = 0
+        self.queued_bytes = 0
+        self.drained_chunks = 0
+        self.first_audio_drained_at: float | None = None
+        self.done_at: float | None = None
 
     @property
     def port(self) -> int:
@@ -426,6 +454,14 @@ class Box3PlaybackStream:
         self._thread.start()
 
     def write(self, data: bytes) -> None:
+        self.queued_chunks += 1
+        self.queued_bytes += len(data)
+        if self.queued_chunks == 1 or self.queued_chunks % 50 == 0:
+            self._logger.debug(
+                "queued playback audio chunks=%s bytes=%s",
+                self.queued_chunks,
+                self.queued_bytes,
+            )
         self._chunks.put(data)
 
     def finish(self) -> None:
@@ -436,6 +472,20 @@ class Box3PlaybackStream:
 
     def wait_for_done(self, timeout: float) -> bool:
         return self._done_event.wait(timeout)
+
+    @property
+    def audio_seconds(self) -> float:
+        byte_rate = self._rate * self._width * self._channels
+        if byte_rate <= 0:
+            return 0.0
+        return self.queued_bytes / byte_rate
+
+    def remaining_playback_seconds(self, now: float | None = None) -> float:
+        if self.first_audio_drained_at is None:
+            return 0.0
+        observed_at = now if now is not None else time.monotonic()
+        played_seconds = observed_at - self.first_audio_drained_at
+        return max(0.0, self.audio_seconds - played_seconds + PLAYBACK_DRAIN_GRACE_SECONDS)
 
     def close(self) -> None:
         self._server.shutdown()
@@ -455,6 +505,7 @@ class Box3PlaybackStreamHandler(BaseHTTPRequestHandler):
         request_event: threading.Event,
         done_event: threading.Event,
         byte_counter: Box3PlaybackStream,
+        logger: logging.Logger,
         **kwargs: Any,
     ) -> None:
         self._chunks = chunks
@@ -464,6 +515,7 @@ class Box3PlaybackStreamHandler(BaseHTTPRequestHandler):
         self._request_event = request_event
         self._done_event = done_event
         self._byte_counter = byte_counter
+        self._logger = logger
         super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args: object) -> None:
@@ -485,14 +537,35 @@ class Box3PlaybackStreamHandler(BaseHTTPRequestHandler):
             self.wfile.write(header)
             self.wfile.flush()
             self._byte_counter.byte_count += len(header)
+            self._logger.debug(
+                "playback HTTP stream requested rate=%s width=%s channels=%s",
+                self._rate,
+                self._width,
+                self._channels,
+            )
             while True:
                 chunk = self._chunks.get()
                 if chunk is None:
+                    self._logger.debug(
+                        "playback HTTP stream reached end drained_chunks=%s bytes=%s",
+                        self._byte_counter.drained_chunks,
+                        self._byte_counter.byte_count,
+                    )
                     return
+                if self._byte_counter.first_audio_drained_at is None:
+                    self._byte_counter.first_audio_drained_at = time.monotonic()
                 self.wfile.write(chunk)
                 self.wfile.flush()
                 self._byte_counter.byte_count += len(chunk)
+                self._byte_counter.drained_chunks += 1
+                if self._byte_counter.drained_chunks == 1 or self._byte_counter.drained_chunks % 50 == 0:
+                    self._logger.debug(
+                        "drained playback audio chunks=%s bytes=%s",
+                        self._byte_counter.drained_chunks,
+                        self._byte_counter.byte_count,
+                    )
         finally:
+            self._byte_counter.done_at = time.monotonic()
             self._done_event.set()
 
 

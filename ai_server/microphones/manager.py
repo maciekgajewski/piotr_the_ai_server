@@ -126,9 +126,42 @@ class MicrophoneManager:
         logger.debug("reply=%r", reply.text)
 
         logger.info("starting TTS playback")
+        audio_start_count = 0
+        audio_chunk_count = 0
+        audio_byte_count = 0
         async for audio_event in self._tts.synthesize(reply.text):
+            if isinstance(audio_event, AudioStart):
+                audio_start_count += 1
+                logger.debug(
+                    "TTS audio start count=%s rate=%s width=%s channels=%s",
+                    audio_start_count,
+                    audio_event.rate,
+                    audio_event.width,
+                    audio_event.channels,
+                )
+            elif isinstance(audio_event, AudioChunk):
+                audio_chunk_count += 1
+                audio_byte_count += len(audio_event.data)
+                if audio_chunk_count == 1 or audio_chunk_count % 50 == 0:
+                    logger.debug(
+                        "TTS audio chunks=%s bytes=%s",
+                        audio_chunk_count,
+                        audio_byte_count,
+                    )
+            elif isinstance(audio_event, AudioEnd):
+                logger.debug(
+                    "TTS audio end starts=%s chunks=%s bytes=%s",
+                    audio_start_count,
+                    audio_chunk_count,
+                    audio_byte_count,
+                )
             await microphone.send_audio_event(audio_event)
-        logger.info("TTS stream finished")
+        logger.info(
+            "TTS stream finished starts=%s chunks=%s bytes=%s",
+            audio_start_count,
+            audio_chunk_count,
+            audio_byte_count,
+        )
 
     async def _forward_text_to_agent(
         self,

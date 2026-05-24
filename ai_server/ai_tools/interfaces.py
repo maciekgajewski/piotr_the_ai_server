@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Protocol
 
 from ai_server.config import AgentConfig
@@ -27,6 +28,7 @@ class BaseTool:
     def __init__(self, config: AgentConfig, ollama_client: OllamaClient) -> None:
         self._config = config
         self._ollama = ollama_client
+        self._logger = logging.getLogger(f"{self.__module__}.{type(self).__name__}[{self.name}]")
 
     async def run(self, endpoint: CommunicationEndpoint, request: UserMessage) -> None:
         await send_user_message(endpoint, UserMessage(text=TOOL_NOT_IMPLEMENTED_REPLY))
