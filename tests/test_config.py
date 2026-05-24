@@ -111,6 +111,33 @@ agent:
     )
 
 
+def test_load_config_adds_top_level_home_assistant_to_agent_options(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+websocket:
+  port: 2137
+agent:
+  type: assistant
+  intent_router_model: llama3.2:3b
+home_assistant:
+  url: http://ha.local:8123
+  token: secret-token
+""",
+    )
+
+    assert load_config_from_yaml(config_path).agent == AgentConfig(
+        type="assistant",
+        options={
+            "intent_router_model": "llama3.2:3b",
+            "home_assistant": {
+                "url": "http://ha.local:8123",
+                "token": "secret-token",
+            },
+        },
+    )
+
+
 def test_load_config_with_voice_defaults_and_multiple_microphones(tmp_path: Path) -> None:
     config_path = write_config(
         tmp_path,

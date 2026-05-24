@@ -86,7 +86,7 @@ def load_config_from_yaml(path: str | Path) -> Config:
         raise ValueError("config must contain an agent mapping")
 
     return Config(
-        agent=_parse_agent_config(agent_config),
+        agent=_parse_agent_config(agent_config, raw_config.get("home_assistant")),
         websocket=_parse_websocket_config(websocket_config),
         log_level=_parse_log_level(raw_config),
         stt=_parse_stt_config(raw_config.get("stt", {})),
@@ -95,12 +95,15 @@ def load_config_from_yaml(path: str | Path) -> Config:
     )
 
 
-def _parse_agent_config(raw_config: dict[str, Any]) -> AgentConfig:
+def _parse_agent_config(raw_config: dict[str, Any], home_assistant_config: Any = None) -> AgentConfig:
     agent_type = raw_config.get("type")
     if not isinstance(agent_type, str) or not agent_type:
         raise ValueError("agent.type must be a non-empty string")
 
     options = {key: value for key, value in raw_config.items() if key != "type"}
+    if home_assistant_config is not None:
+        options["home_assistant"] = home_assistant_config
+
     if agent_type == "polite_reply":
         model = options.get("model")
         if not isinstance(model, str) or not model:
