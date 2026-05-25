@@ -5,10 +5,10 @@ import pytest
 from ai_server.agent.assitant import AssistantAgent, ToolRoute, _parse_tool_route
 from ai_server.ai_tools.interfaces import TOOL_NOT_IMPLEMENTED_REPLY
 from ai_server.config import AgentConfig
-from ai_server.interfaces import EndpointClosed
-from ai_server.messages import MessageEvent, UserMessage, user_message_to_events
+from ai_server.interfaces import Conversation
+from ai_server.messages import TextMessage, text_message_to_events
 from ai_server.ollama import OllamaClient
-from ai_server.streaming import send_user_message
+from conftest import FakeConversationEndpoint
 
 
 def test_parse_tool_route() -> None:
@@ -43,13 +43,13 @@ def test_assistant_routes_message_to_selected_tool() -> None:
         ollama_client=FakeOllamaClient('{"tool": "time", "confidence": 1.0}'),
         owns_ollama_client=False,
     )
-    request = UserMessage(text="która godzina?")
-    endpoint = FakeEndpoint([request])
+    request = TextMessage(text="która godzina?")
+    endpoint = FakeConversationEndpoint([request])
+    conversation = Conversation(conversation_id="conversation-1", attributes={})
 
-    with pytest.raises(EndpointClosed):
-        asyncio.run(agent.run(endpoint, "session-1"))
+    asyncio.run(agent.run_conversation(conversation, endpoint))
 
-    assert endpoint.sent == list(user_message_to_events(UserMessage(text=TOOL_NOT_IMPLEMENTED_REPLY)))
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text=TOOL_NOT_IMPLEMENTED_REPLY)))
     assert tool.request == request
 
 
@@ -61,9 +61,9 @@ class RecordingTool:
         self._config = config
         self._ollama = ollama_client
 
-    async def run(self, endpoint, request: UserMessage) -> None:
+    async def run(self, endpoint, request: TextMessage) -> None:
         self.request = request
-        await send_user_message(endpoint, UserMessage(text=TOOL_NOT_IMPLEMENTED_REPLY))
+        await endpoint.send_message(TextMessage(text=TOOL_NOT_IMPLEMENTED_REPLY))
 
 
 class FakeOllamaClient:
@@ -81,18 +81,3 @@ class FakeSession:
     def post(self, url: str, json: dict):
         raise AssertionError("unexpected HTTP request")
 
-
-class FakeEndpoint:
-    def __init__(self, incoming: list[UserMessage]) -> None:
-        self._incoming: list[MessageEvent] = []
-        for message in incoming:
-            self._incoming.extend(user_message_to_events(message))
-        self.sent = []
-
-    async def receive(self) -> MessageEvent:
-        if not self._incoming:
-            raise EndpointClosed()
-        return self._incoming.pop(0)
-
-    async def send(self, event: MessageEvent) -> None:
-        self.sent.append(event)

@@ -4,6 +4,7 @@ import pytest
 
 from ai_server.config import (
     AgentConfig,
+    ConversationConfig,
     DEFAULT_LOG_LEVEL,
     DEFAULT_WEBSOCKET_HOST,
     DEFAULT_WEBSOCKET_PATH,
@@ -168,15 +169,42 @@ microphones:
             type="box3_esphome",
             name="box3-office",
             location="office",
+            follow_up_timeout_seconds=None,
             options={"address": "piotr-box3-01-cbfaA8.local", "api_key": "abc"},
         ),
         MicrophoneConfig(
             type="box3_esphome",
             name="box3-roaming",
             location=None,
+            follow_up_timeout_seconds=None,
             options={"address": "192.168.1.42", "api_key": "def"},
         ),
     )
+
+
+def test_load_config_with_explicit_conversation_and_microphone_timeout(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+websocket:
+  port: 2137
+agent:
+  type: echo
+conversation:
+  follow_up_timeout_seconds: 12.5
+microphones:
+  - type: box3_esphome
+    name: box3-office
+    address: box.local
+    api_key: abc
+    follow_up_timeout_seconds: 3
+""",
+    )
+
+    config = load_config_from_yaml(config_path)
+
+    assert config.conversation == ConversationConfig(follow_up_timeout_seconds=12.5)
+    assert config.microphones[0].follow_up_timeout_seconds == 3.0
 
 
 def test_load_config_with_explicit_voice_values(tmp_path: Path) -> None:

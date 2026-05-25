@@ -9,8 +9,9 @@ from ai_server.agent.polite_reply import (
     POLITE_REPLY_PROMPT,
     PoliteReplyAgent,
 )
-from ai_server.interfaces import EndpointClosed
-from ai_server.messages import MessageEvent, UserMessage, user_message_to_events
+from ai_server.interfaces import Conversation
+from ai_server.messages import TextMessage, text_message_to_events
+from conftest import FakeConversationEndpoint
 
 
 class FakeResponse:
@@ -38,22 +39,6 @@ class FakeSession:
         return self.responses.pop(0)
 
 
-class FakeEndpoint:
-    def __init__(self, incoming: list[UserMessage]) -> None:
-        self._incoming: list[MessageEvent] = []
-        for message in incoming:
-            self._incoming.extend(user_message_to_events(message))
-        self.sent = []
-
-    async def receive(self) -> MessageEvent:
-        if not self._incoming:
-            raise EndpointClosed()
-        return self._incoming.pop(0)
-
-    async def send(self, event: MessageEvent) -> None:
-        self.sent.append(event)
-
-
 def test_preload_posts_model_keep_alive() -> None:
     session = FakeSession([FakeResponse({"done": True})])
     agent = PoliteReplyAgent(model="qwen3:4b", session=session)
@@ -76,11 +61,11 @@ def test_preload_posts_model_keep_alive() -> None:
 def test_polite_reply_sends_wrapped_prompt_and_returns_reply(caplog) -> None:
     session = FakeSession([FakeResponse({"response": "Dzień dobry!"})])
     agent = PoliteReplyAgent(model="qwen3:4b", session=session)
-    endpoint = FakeEndpoint([UserMessage(text="siema")])
+    endpoint = FakeConversationEndpoint([TextMessage(text="siema")])
+    conversation = Conversation(conversation_id="conversation-1", attributes={})
 
     with caplog.at_level(logging.DEBUG):
-        with pytest.raises(EndpointClosed):
-            asyncio.run(agent.run(endpoint, "session-1"))
+        asyncio.run(agent.run_conversation(conversation, endpoint))
 
     assert session.requests == [
         {
@@ -94,11 +79,11 @@ def test_polite_reply_sends_wrapped_prompt_and_returns_reply(caplog) -> None:
             },
         }
     ]
-    assert endpoint.sent == list(user_message_to_events(UserMessage(text="Dzień dobry!")))
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Dzień dobry!")))
 
     log_text = caplog.text
     assert any(
-        record.name.endswith("PoliteReplyAgent[session-1]")
+        record.name.endswith("PoliteReplyAgent[conversation-1]")
         and "request_len=5 reply_len=12 duration_ms=" in record.message
         for record in caplog.records
     )
@@ -111,24 +96,24 @@ def test_polite_reply_sends_wrapped_prompt_and_returns_reply(caplog) -> None:
 def test_polite_reply_strips_thinking_block() -> None:
     session = FakeSession([FakeResponse({"response": "<think>sekret</think>\n\nDzień dobry!"})])
     agent = PoliteReplyAgent(model="qwen3:4b", session=session)
-    endpoint = FakeEndpoint([UserMessage(text="siema")])
+    endpoint = FakeConversationEndpoint([TextMessage(text="siema")])
+    conversation = Conversation(conversation_id="conversation-1", attributes={})
 
-    with pytest.raises(EndpointClosed):
-        asyncio.run(agent.run(endpoint, "session-1"))
+    asyncio.run(agent.run_conversation(conversation, endpoint))
 
-    assert endpoint.sent == list(user_message_to_events(UserMessage(text="Dzień dobry!")))
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Dzień dobry!")))
 
 
 def test_polite_reply_sends_generic_apology_on_ollama_error(caplog) -> None:
     session = FakeSession([FakeResponse({"error": "missing model"}, status=500)])
     agent = PoliteReplyAgent(model="qwen3:4b", session=session)
-    endpoint = FakeEndpoint([UserMessage(text="tajna wiadomość")])
+    endpoint = FakeConversationEndpoint([TextMessage(text="tajna wiadomość")])
+    conversation = Conversation(conversation_id="conversation-2", attributes={})
 
     with caplog.at_level(logging.DEBUG):
-        with pytest.raises(EndpointClosed):
-            asyncio.run(agent.run(endpoint, "session-2"))
+        asyncio.run(agent.run_conversation(conversation, endpoint))
 
-    assert endpoint.sent == list(user_message_to_events(UserMessage(text=GENERATION_FAILURE_MESSAGE)))
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text=GENERATION_FAILURE_MESSAGE)))
     assert "generation failed request_len=15 duration_ms=" in caplog.text
     assert "tajna wiadomość" in caplog.text
     assert GENERATION_FAILURE_MESSAGE not in caplog.text

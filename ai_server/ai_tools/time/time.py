@@ -4,9 +4,8 @@ import datetime as dt
 import locale
 
 from ai_server.ai_tools.interfaces import BaseTool
-from ai_server.interfaces import CommunicationEndpoint
-from ai_server.messages import UserMessage
-from ai_server.streaming import send_user_message
+from ai_server.interfaces import ConversationEndpoint
+from ai_server.messages import TextMessage
 
 GENERATION_OPTIONS = {
     "num_predict": 32,
@@ -19,7 +18,7 @@ class TimeTool(BaseTool):
     name = "time"
     description = "A tool for providing the current time, date or day of week. Use this for any time-related queries."
 
-    async def run(self, endpoint: CommunicationEndpoint, request: UserMessage) -> None:
+    async def run(self, endpoint: ConversationEndpoint, request: TextMessage) -> None:
         current_locale = locale.setlocale(locale.LC_TIME)
 
         try:
@@ -57,6 +56,6 @@ class TimeTool(BaseTool):
             assert reply["role"] == "assistant"
             content = reply["content"]
 
-            await send_user_message(endpoint, UserMessage(text=content))
+            await endpoint.send_message(TextMessage(text=content))
         finally:
             locale.setlocale(locale.LC_TIME, current_locale)

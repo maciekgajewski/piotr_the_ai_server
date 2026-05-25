@@ -6,14 +6,16 @@ import uuid
 from contextlib import suppress
 
 from ai_server.agent import Agent
-from ai_server.config import MicrophoneConfig, SttConfig, TtsConfig
-from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, UserMessage
+from ai_server.config import ConversationConfig, MicrophoneConfig, SttConfig, TtsConfig
+from ai_server.messages import ConversationEnded, MessageBegin, MessageEnd, MessageFragment, NewConversation, TextMessage
+from ai_server.messages import WaitForNewConversation, WaitForNewMessage
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.interfaces import Microphone, SpeechToText, SttSession, TextToSpeech
 from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, TextEnd, TextFragment
 from ai_server.microphones.stt import WyomingFasterWhisperSpeechToText
 from ai_server.microphones.tts import PiperTextToSpeech
+from ai_server.sessions import Session
 
 
 class MicrophoneManager:
@@ -23,11 +25,15 @@ class MicrophoneManager:
         stt: SpeechToText,
         tts: TextToSpeech,
         agent: Agent,
+        follow_up_timeout_seconds: float,
+        microphone_follow_up_timeouts: dict[str, float] | None = None,
     ) -> None:
         self._microphones = microphones
         self._stt = stt
         self._tts = tts
         self._agent = agent
+        self._follow_up_timeout_seconds = follow_up_timeout_seconds
+        self._microphone_follow_up_timeouts = dict(microphone_follow_up_timeouts or {})
         self._tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
@@ -59,26 +65,96 @@ class MicrophoneManager:
         logger = _microphone_logger(microphone)
         endpoint = MicrophoneAgentEndpoint()
         session_id = f"mic-{microphone.context.name}-{uuid.uuid4()}"
-        agent_task = asyncio.create_task(self._agent.run(endpoint, session_id))
+        attributes = {}
+        if microphone.context.location:
+            attributes["location"] = microphone.context.location
+        session = Session(session_id=session_id, endpoint=endpoint, attributes=attributes)
+        session_task = asyncio.create_task(session.run(self._agent))
         try:
             while True:
                 try:
-                    await self._handle_utterance(microphone, endpoint, logger)
+                    event = await endpoint.receive_from_session()
+                    if isinstance(event, WaitForNewConversation):
+                        await self._capture_utterance(
+                            microphone=microphone,
+                            endpoint=endpoint,
+                            logger=logger,
+                            starts_new_conversation=True,
+                            timeout_seconds=None,
+                        )
+                        continue
+                    if isinstance(event, WaitForNewMessage):
+                        captured = await self._capture_utterance(
+                            microphone=microphone,
+                            endpoint=endpoint,
+                            logger=logger,
+                            starts_new_conversation=False,
+                            timeout_seconds=self._follow_up_timeout_for(microphone),
+                        )
+                        if not captured:
+                            logger.info("follow-up timed out; ending conversation")
+                            await endpoint.send_to_session(ConversationEnded())
+                        continue
+                    if isinstance(event, MessageBegin):
+                        reply = await self._receive_agent_reply(endpoint, first_event=event)
+                        await self._speak_reply(microphone, reply, logger)
+                        continue
+
+                    raise ValueError(f"unsupported session event: {type(event).__name__}")
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    logger.exception("utterance handling failed; returning to wake-word wait")
+                    logger.exception("microphone conversation handling failed; returning to wake-word wait")
                     await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             raise
         finally:
             endpoint.close()
-            agent_task.cancel()
+            session_task.cancel()
             with suppress(asyncio.CancelledError):
-                await agent_task
+                await session_task
             logger.info("microphone session ended")
 
-    async def _handle_utterance(
+    async def _capture_utterance(
+        self,
+        microphone: Microphone,
+        endpoint: MicrophoneAgentEndpoint,
+        logger: logging.Logger,
+        starts_new_conversation: bool,
+        timeout_seconds: float | None,
+    ) -> bool:
+        event = await self._wait_for_audio_start(microphone, logger, timeout_seconds)
+        if event is None:
+            return False
+
+        if starts_new_conversation:
+            await endpoint.send_to_session(NewConversation(attributes={}))
+
+        logger.info("wake_word=%r audio stream started", event.wake_word)
+        await endpoint.send_to_session(MessageBegin())
+        await self._send_transcript_message(microphone, endpoint, logger)
+        return True
+
+    async def _wait_for_audio_start(
+        self,
+        microphone: Microphone,
+        logger: logging.Logger,
+        timeout_seconds: float | None,
+    ) -> AudioStart | None:
+        while True:
+            try:
+                if timeout_seconds is None:
+                    event = await microphone.wait_for_event()
+                else:
+                    event = await asyncio.wait_for(microphone.wait_for_event(), timeout=timeout_seconds)
+            except TimeoutError:
+                return None
+
+            if isinstance(event, AudioStart):
+                return event
+            logger.warning("ignored microphone event before audio start event=%s", type(event).__name__)
+
+    async def _send_transcript_message(
         self,
         microphone: Microphone,
         endpoint: MicrophoneAgentEndpoint,
@@ -86,30 +162,49 @@ class MicrophoneManager:
     ) -> None:
         event = await microphone.wait_for_event()
         if not isinstance(event, AudioStart):
-            logger.warning("ignored microphone event before audio start event=%s", type(event).__name__)
+            await self._send_audio_stream_to_stt(microphone, endpoint, logger, first_event=event)
             return
 
         logger.info("wake_word=%r audio stream started", event.wake_word)
+        await self._send_audio_stream_to_stt(microphone, endpoint, logger, first_event=None)
+
+    async def _send_audio_stream_to_stt(
+        self,
+        microphone: Microphone,
+        endpoint: MicrophoneAgentEndpoint,
+        logger: logging.Logger,
+        first_event,
+    ) -> None:
         stt_session = await self._stt.create_session(microphone.context.name)
         text_task = asyncio.create_task(self._forward_text_to_agent(endpoint, stt_session, logger))
-        await endpoint.send_to_agent(MessageBegin())
         try:
-            while True:
-                event = await microphone.wait_for_event()
-                if isinstance(event, AudioChunk):
-                    await stt_session.send_audio(event)
+            audio_done = False
+            if isinstance(first_event, AudioChunk):
+                await stt_session.send_audio(first_event)
+            elif isinstance(first_event, AudioEnd):
+                await stt_session.end_audio()
+                audio_done = True
+            elif first_event is not None:
+                logger.warning("ignored microphone event in audio stream event=%s", type(first_event).__name__)
+
+            while not audio_done:
+                next_event = await microphone.wait_for_event()
+                if isinstance(next_event, AudioChunk):
+                    await stt_session.send_audio(next_event)
                     continue
-                if isinstance(event, AudioEnd):
+                if isinstance(next_event, AudioEnd):
                     await stt_session.end_audio()
+                    audio_done = True
                     break
-                if isinstance(event, AudioStart):
+                if isinstance(next_event, AudioStart):
                     logger.warning("received nested audio start; ending current stream")
                     await stt_session.end_audio()
+                    audio_done = True
                     break
 
             await text_task
             await stt_session.close()
-            await endpoint.send_to_agent(MessageEnd())
+            await endpoint.send_to_session(MessageEnd())
         except Exception:
             text_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -117,7 +212,12 @@ class MicrophoneManager:
             await stt_session.close()
             raise
 
-        reply = await self._receive_agent_reply(endpoint)
+    async def _speak_reply(
+        self,
+        microphone: Microphone,
+        reply: TextMessage,
+        logger: logging.Logger,
+    ) -> None:
         if not reply.text:
             logger.info("empty agent reply; returning to wake-word wait")
             return
@@ -174,25 +274,36 @@ class MicrophoneManager:
             if isinstance(event, TextFragment):
                 logger.info("transcription fragment chars=%s", len(event.text))
                 logger.debug("transcript_fragment=%r", event.text)
-                await endpoint.send_to_agent(MessageFragment(text=event.text))
+                await endpoint.send_to_session(MessageFragment(text=event.text))
                 continue
             if isinstance(event, TextEnd):
                 return
             raise ValueError(f"unsupported STT event: {type(event).__name__}")
 
-    async def _receive_agent_reply(self, endpoint: MicrophoneAgentEndpoint) -> UserMessage:
+    async def _receive_agent_reply(
+        self,
+        endpoint: MicrophoneAgentEndpoint,
+        first_event: MessageBegin,
+    ) -> TextMessage:
         text_parts: list[str] = []
+        event = first_event
         while True:
-            event = await endpoint.receive_reply()
             if isinstance(event, MessageBegin):
                 text_parts.clear()
-                continue
-            if isinstance(event, MessageFragment):
+            elif isinstance(event, MessageFragment):
                 text_parts.append(event.text)
-                continue
-            if isinstance(event, MessageEnd):
-                return UserMessage(text="".join(text_parts))
-            raise ValueError(f"unsupported agent reply event: {type(event).__name__}")
+            elif isinstance(event, MessageEnd):
+                return TextMessage(text="".join(text_parts))
+            else:
+                raise ValueError(f"unsupported agent reply event: {type(event).__name__}")
+
+            event = await endpoint.receive_from_session()
+
+    def _follow_up_timeout_for(self, microphone: Microphone) -> float:
+        return self._microphone_follow_up_timeouts.get(
+            microphone.context.name,
+            self._follow_up_timeout_seconds,
+        )
 
     @property
     def microphone_count(self) -> int:
@@ -203,6 +314,7 @@ async def init_mics(
     mic_configs: tuple[MicrophoneConfig, ...],
     stt_config: SttConfig,
     tts_config: TtsConfig,
+    conversation_config: ConversationConfig,
     agent: Agent,
 ) -> MicrophoneManager | None:
     if not mic_configs:
@@ -215,6 +327,12 @@ async def init_mics(
         stt=WyomingFasterWhisperSpeechToText(stt_config),
         tts=PiperTextToSpeech(tts_config),
         agent=agent,
+        follow_up_timeout_seconds=conversation_config.follow_up_timeout_seconds,
+        microphone_follow_up_timeouts={
+            mic_config.name: mic_config.follow_up_timeout_seconds
+            for mic_config in mic_configs
+            if mic_config.follow_up_timeout_seconds is not None
+        },
     )
     await manager.start()
     return manager

@@ -7,10 +7,9 @@ from aiohttp import ClientError, ClientSession
 
 from ai_server.ai_tools.interfaces import BaseTool
 from ai_server.config import AgentConfig
-from ai_server.interfaces import CommunicationEndpoint
-from ai_server.messages import UserMessage
+from ai_server.interfaces import ConversationEndpoint
+from ai_server.messages import TextMessage
 from ai_server.ollama import OllamaClient
-from ai_server.streaming import send_user_message
 
 
 HOME_ASSISTANT_LANGUAGE = "pl"
@@ -29,7 +28,7 @@ class HomeAssistantTool(BaseTool):
         super().__init__(config, ollama_client)
         self._home_assistant = _parse_home_assistant_options(self._config.options)
 
-    async def run(self, endpoint: CommunicationEndpoint, request: UserMessage) -> None:
+    async def run(self, endpoint: ConversationEndpoint, request: TextMessage) -> None:
         self._logger.info("incoming request text=%r", request.text)
         try:
             response_body = await _process_conversation(
@@ -43,7 +42,7 @@ class HomeAssistantTool(BaseTool):
             self._logger.exception("Home Assistant conversation request failed")
             reply = HOME_ASSISTANT_FAILURE_REPLY
 
-        await send_user_message(endpoint, UserMessage(text=reply))
+        await endpoint.send_message(TextMessage(text=reply))
 
 
 @dataclass(frozen=True)

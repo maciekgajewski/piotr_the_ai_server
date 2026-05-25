@@ -1,0 +1,157 @@
+# AI Server Conversation Protocol
+
+This document describes the state machine shared by websocket and microphone input methods. The Session owns lifecycle state. Agents only handle an active Conversation through a limited ConversationEndpoint.
+
+## Entities
+
+- Session: top-level connection or microphone session. It has optional string attributes such as `user` and `location`.
+- Conversation: at most one active per Session. It has a generated `conversation_id`, effective attributes, and per-conversation mutable state.
+- ConversationEndpoint: limited agent API for active conversation message streams. It can receive user message events and send assistant message events. It cannot send lifecycle events.
+
+Attributes are string key/value pairs. Empty keys and empty values are invalid. Conversation attributes override Session attributes only when provided.
+
+## Session States
+
+### Handshake
+
+Websocket sessions start in Handshake. The first client event must be `SessionAttributes`, even when attributes are empty.
+
+Allowed transitions:
+
+- `SessionAttributes` -> WaitingForNewConversation
+- endpoint closed -> Closed
+
+Microphone sessions skip Handshake because their local Session is created with attributes directly.
+
+### WaitingForNewConversation
+
+Session sends `WaitForNewConversation`.
+
+Allowed client events:
+
+- `NewConversation` -> ReceivingMessage
+- endpoint closed -> Closed
+
+For microphone input, wake-word detection causes `NewConversation` and the first message stream to be sent automatically.
+
+### ReceivingMessage
+
+Session expects one complete user message stream.
+
+Allowed client events:
+
+- `MessageBegin` -> ReceivingMessageFragments
+- `ConversationEnded` -> WaitingForNewConversation
+- endpoint closed -> Closed
+
+### ReceivingMessageFragments
+
+Session forwards user message fragments to the agent's ConversationEndpoint.
+
+Allowed client events:
+
+- `MessageFragment` -> ReceivingMessageFragments
+- `MessageEnd` -> AgentRunning
+- endpoint closed -> Closed
+
+Invalid streams, such as a fragment before begin or end before begin, are protocol violations. Internal components use asserts. Websocket clients are closed with a protocol error.
+
+### AgentRunning
+
+The agent coroutine processes the active Conversation. It may send zero or more assistant messages:
+
+- `MessageBegin`
+- zero or more `MessageFragment`
+- `MessageEnd`
+
+The agent gives the floor to the user by awaiting the next input event or by iterating to the next message through `ConversationEndpoint.messages()`.
+
+Allowed transitions:
+
+- agent awaits next input -> WaitingForNewMessage
+- agent coroutine returns -> WaitingForNewConversation
+- endpoint sends `ConversationEnded` -> WaitingForNewConversation
+- endpoint closed -> Closed
+
+Session asserts that no assistant message is left open when the agent coroutine returns.
+
+### WaitingForNewMessage
+
+Session sends `WaitForNewMessage`.
+
+Allowed client events:
+
+- `MessageBegin` -> ReceivingMessageFragments
+- `ConversationEnded` -> WaitingForNewConversation
+- endpoint closed -> Closed
+
+For microphone input, timeout while waiting for a follow-up sends `ConversationEnded`. The global default is `conversation.follow_up_timeout_seconds`, with per-microphone `follow_up_timeout_seconds` overrides.
+
+### Closed
+
+The endpoint is gone and the Session is removed from the SessionManager.
+
+## Agent API
+
+Agents implement a conversation coroutine:
+
+```python
+async def run_conversation(
+    self,
+    conversation: Conversation,
+    endpoint: ConversationEndpoint,
+) -> None:
+    ...
+```
+
+Simple agents can use assembled messages:
+
+```python
+async for message in endpoint.messages():
+    await endpoint.send_message(TextMessage(text=f"reply: {message.text}"))
+```
+
+Streaming agents can use low-level message events:
+
+```python
+event = await endpoint.receive()
+await endpoint.send(MessageBegin())
+await endpoint.send(MessageFragment(text="partial"))
+await endpoint.send(MessageEnd())
+```
+
+`ConversationEndpoint.receive()` raises `ConversationEnded` when the input side ends the conversation. `ConversationEndpoint.messages()` stops normally in the same case.
+
+## Websocket JSON Appendix
+
+Each websocket text frame contains exactly one JSON event object. Event type names use snake_case.
+
+Client to server:
+
+```json
+{"type":"session_attributes","attributes":{"user":"Maciek","location":"office"}}
+{"type":"new_conversation","attributes":{"location":"kitchen"}}
+{"type":"message_begin"}
+{"type":"message_fragment","text":"cześć"}
+{"type":"message_end"}
+{"type":"conversation_ended"}
+```
+
+Server to client:
+
+```json
+{"type":"wait_for_new_conversation"}
+{"type":"wait_for_new_message"}
+{"type":"message_begin"}
+{"type":"message_fragment","text":"odpowiedź"}
+{"type":"message_end"}
+```
+
+The websocket chat client sends `SessionAttributes` immediately after connecting. When it receives `WaitForNewConversation`, the next user text is sent as `NewConversation` plus a message stream. When it receives `WaitForNewMessage`, the next user text is sent as only a message stream.
+
+Interactive prompts are:
+
+- `waiting for new conversation> `
+- `waiting for next message> `
+
+Scripted mode uses repeated `--message` arguments. After all scripted messages are sent, the client exits when the next wait-state event arrives, either `WaitForNewMessage` or `WaitForNewConversation`.

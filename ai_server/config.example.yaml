@@ -20,4 +20,15 @@ tts:
   voice: pl_PL-bass-high
   volume: 1.0
 
+conversation:
+  follow_up_timeout_seconds: 15
+
+# Example microphone override:
+# microphones:
+#   - type: box3_esphome
+#     name: box3-office
+#     location: office
+#     follow_up_timeout_seconds: 20
+#     address: piotr-box3.local
+#     api_key: secret
 microphones: []

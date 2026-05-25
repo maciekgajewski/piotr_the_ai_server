@@ -2,20 +2,18 @@ import asyncio
 
 import pytest
 
-from ai_server.config import MicrophoneConfig, SttConfig, TtsConfig
-from ai_server.messages import UserMessage
+from ai_server.config import ConversationConfig, MicrophoneConfig, SttConfig, TtsConfig
+from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, TextMessage, WaitForNewConversation
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.manager import MicrophoneManager, init_mics
 from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, TextEnd, TextFragment
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
-from ai_server.streaming import receive_user_message, send_user_message
 
 
 class FakeAgent:
-    async def run(self, endpoint, session_id: str) -> None:
-        while True:
-            message = await receive_user_message(endpoint)
-            await send_user_message(endpoint, UserMessage(text=f"reply:{message.text}"))
+    async def run_conversation(self, conversation, endpoint) -> None:
+        async for message in endpoint.messages():
+            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
 
     async def close(self) -> None:
         pass
@@ -139,15 +137,16 @@ def test_microphone_agent_endpoint_exchanges_one_message() -> None:
     async def run() -> None:
         endpoint = MicrophoneAgentEndpoint()
 
-        async def agent() -> None:
-            message = await receive_user_message(endpoint)
-            await send_user_message(endpoint, UserMessage(text=f"reply:{message.text}"))
+        await endpoint.send_to_session(MessageBegin())
+        await endpoint.send_to_session(MessageFragment(text="hello"))
+        await endpoint.send_to_session(MessageEnd())
 
-        task = asyncio.create_task(agent())
-        reply = await endpoint.exchange(UserMessage(text="hello"))
-        await task
+        assert await endpoint.receive() == MessageBegin()
+        assert await endpoint.receive() == MessageFragment(text="hello")
+        assert await endpoint.receive() == MessageEnd()
 
-        assert reply == UserMessage(text="reply:hello")
+        await endpoint.send(WaitForNewConversation())
+        assert await endpoint.receive_from_session() == WaitForNewConversation()
 
     asyncio.run(run())
 
@@ -162,6 +161,7 @@ def test_microphone_manager_sends_transcript_to_agent_and_speaks_reply() -> None
             stt=stt,
             tts=tts,
             agent=FakeAgent(),
+            follow_up_timeout_seconds=0.1,
         )
 
         await manager.start()
@@ -195,6 +195,7 @@ def test_microphone_manager_keeps_session_alive_after_tts_error() -> None:
             stt=FakeStt(),
             tts=tts,
             agent=FakeAgent(),
+            follow_up_timeout_seconds=0.1,
         )
 
         await manager.start()
@@ -218,6 +219,7 @@ def test_microphone_manager_cleans_up_when_start_fails() -> None:
             stt=stt,
             tts=tts,
             agent=FakeAgent(),
+            follow_up_timeout_seconds=0.1,
         )
 
         with pytest.raises(RuntimeError, match="tts startup failed"):
@@ -234,7 +236,13 @@ def test_microphone_manager_cleans_up_when_start_fails() -> None:
 
 
 def test_init_mics_rejects_unknown_microphone_type() -> None:
-    mic_config = MicrophoneConfig(type="unknown", name="mic", location=None, options={})
+    mic_config = MicrophoneConfig(
+        type="unknown",
+        name="mic",
+        location=None,
+        follow_up_timeout_seconds=None,
+        options={},
+    )
 
     with pytest.raises(ValueError, match="unsupported microphone type: unknown"):
-        asyncio.run(init_mics((mic_config,), SttConfig(), TtsConfig(), FakeAgent()))
+        asyncio.run(init_mics((mic_config,), SttConfig(), TtsConfig(), ConversationConfig(), FakeAgent()))

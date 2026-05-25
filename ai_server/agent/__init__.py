@@ -6,14 +6,15 @@ from typing import Protocol
 from ai_server.ai_tools import create_tools
 from ai_server.agent.assitant import AssistantAgent
 from ai_server.agent.echo import EchoAgent
+from ai_server.agent.interrogator import InterrogatorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.config import AgentConfig
-from ai_server.interfaces import CommunicationEndpoint
+from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.ollama import OllamaClient
 
 
 class Agent(Protocol):
-    async def run(self, endpoint: CommunicationEndpoint, session_id: str) -> None:
+    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
         raise NotImplementedError
 
     async def close(self) -> None:
@@ -26,6 +27,10 @@ async def create_agent(config: AgentConfig, ollama_url: str) -> Agent:
     if config.type == "echo":
         logger.info("Created agent type=echo")
         return EchoAgent()
+
+    if config.type == "interrogator":
+        logger.info("Created agent type=interrogator")
+        return InterrogatorAgent()
 
     if config.type == "polite_reply":
         model = config.options["model"]

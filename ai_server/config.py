@@ -17,6 +17,7 @@ DEFAULT_STT_BEAM_SIZE = 5
 DEFAULT_STT_CAPTURE_SECONDS = 5.0
 DEFAULT_TTS_VOICE = "pl_PL-bass-high"
 DEFAULT_TTS_VOLUME = 1.0
+DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS = 15.0
 LOG_LEVELS = frozenset(("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"))
 STT_DEVICES = frozenset(("auto", "cuda", "cpu"))
 
@@ -50,11 +51,17 @@ class TtsConfig:
 
 
 @dataclass(frozen=True)
+class ConversationConfig:
+    follow_up_timeout_seconds: float = DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS
+
+
+@dataclass(frozen=True)
 class MicrophoneConfig:
     type: str
     name: str
     location: str | None
     options: dict[str, Any]
+    follow_up_timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,7 @@ class Config:
     log_level: str = DEFAULT_LOG_LEVEL
     stt: SttConfig = SttConfig()
     tts: TtsConfig = TtsConfig()
+    conversation: ConversationConfig = ConversationConfig()
     microphones: tuple[MicrophoneConfig, ...] = ()
 
 
@@ -91,6 +99,7 @@ def load_config_from_yaml(path: str | Path) -> Config:
         log_level=_parse_log_level(raw_config),
         stt=_parse_stt_config(raw_config.get("stt", {})),
         tts=_parse_tts_config(raw_config.get("tts", {})),
+        conversation=_parse_conversation_config(raw_config.get("conversation", {})),
         microphones=_parse_microphone_configs(raw_config.get("microphones", [])),
     )
 
@@ -184,6 +193,24 @@ def _parse_tts_config(raw_config: Any) -> TtsConfig:
     return TtsConfig(voice=voice, volume=float(volume))
 
 
+def _parse_conversation_config(raw_config: Any) -> ConversationConfig:
+    if not isinstance(raw_config, dict):
+        raise ValueError("conversation must be a mapping")
+
+    follow_up_timeout_seconds = raw_config.get(
+        "follow_up_timeout_seconds",
+        DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS,
+    )
+    if (
+        not isinstance(follow_up_timeout_seconds, (int, float))
+        or isinstance(follow_up_timeout_seconds, bool)
+        or follow_up_timeout_seconds <= 0
+    ):
+        raise ValueError("conversation.follow_up_timeout_seconds must be a positive number")
+
+    return ConversationConfig(follow_up_timeout_seconds=float(follow_up_timeout_seconds))
+
+
 def _parse_microphone_configs(raw_config: Any) -> tuple[MicrophoneConfig, ...]:
     if raw_config is None:
         return ()
@@ -207,10 +234,18 @@ def _parse_microphone_configs(raw_config: Any) -> tuple[MicrophoneConfig, ...]:
         if location is not None and (not isinstance(location, str) or not location):
             raise ValueError(f"microphones[{index}].location must be a non-empty string when provided")
 
+        follow_up_timeout_seconds = raw_microphone.get("follow_up_timeout_seconds")
+        if follow_up_timeout_seconds is not None and (
+            not isinstance(follow_up_timeout_seconds, (int, float))
+            or isinstance(follow_up_timeout_seconds, bool)
+            or follow_up_timeout_seconds <= 0
+        ):
+            raise ValueError(f"microphones[{index}].follow_up_timeout_seconds must be a positive number")
+
         options = {
             key: value
             for key, value in raw_microphone.items()
-            if key not in ("type", "name", "location")
+            if key not in ("type", "name", "location", "follow_up_timeout_seconds")
         }
         if microphone_type == "box3_esphome":
             address = options.get("address")
@@ -226,6 +261,9 @@ def _parse_microphone_configs(raw_config: Any) -> tuple[MicrophoneConfig, ...]:
                 type=microphone_type,
                 name=name,
                 location=location,
+                follow_up_timeout_seconds=(
+                    None if follow_up_timeout_seconds is None else float(follow_up_timeout_seconds)
+                ),
                 options=options,
             )
         )

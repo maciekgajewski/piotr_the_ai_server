@@ -60,7 +60,7 @@ async def run_server(config: Config, ollama_url: str) -> None:
 
     try:
         agent = await create_agent(config.agent, ollama_url)
-        microphone_manager = await init_mics(config.microphones, config.stt, config.tts, agent)
+        microphone_manager = await init_mics(config.microphones, config.stt, config.tts, config.conversation, agent)
         app = create_app(config, agent)
         runner = web.AppRunner(app)
         await runner.setup()

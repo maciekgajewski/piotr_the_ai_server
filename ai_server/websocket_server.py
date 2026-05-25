@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import logging
-from collections import deque
 
 from aiohttp import ClientConnectionResetError, WSCloseCode, WSMsgType, web
 
 from ai_server.agent import Agent
 from ai_server.config import Config
 from ai_server.interfaces import CommunicationEndpoint, EndpointClosed
-from ai_server.messages import MessageBegin, MessageEnd, MessageEvent, MessageFragment, UserMessage
-from ai_server.messages import user_message_from_json, user_message_to_json
+from ai_server.messages import EndpointToSessionEvent, SessionToEndpointEvent
+from ai_server.messages import endpoint_event_from_json, session_event_to_json
 from ai_server.sessions import SessionManager
 
 
@@ -17,21 +16,20 @@ class WebsocketCommunicationEndpoint(CommunicationEndpoint):
     def __init__(self, websocket: web.WebSocketResponse, peer: str) -> None:
         self._websocket = websocket
         self._logger = logging.getLogger(f"{__name__}.WebsocketCommunicationEndpoint[{peer}]")
-        self._incoming_events: deque[MessageEvent] = deque()
-        self._outgoing_text_parts: list[str] = []
 
-    async def receive(self) -> MessageEvent:
-        if self._incoming_events:
-            return self._incoming_events.popleft()
-
+    async def receive(self) -> EndpointToSessionEvent:
         message = await self._websocket.receive()
 
         if message.type == WSMsgType.TEXT:
-            user_message = user_message_from_json(message.data)
-            self._logger.debug("received websocket message: %s", user_message_to_json(user_message))
-            self._incoming_events.append(MessageFragment(text=user_message.text))
-            self._incoming_events.append(MessageEnd())
-            return MessageBegin()
+            try:
+                event = endpoint_event_from_json(message.data)
+            except ValueError as exc:
+                self._logger.warning("closing websocket after invalid protocol event: %s", exc)
+                await self._websocket.close(code=WSCloseCode.PROTOCOL_ERROR, message=str(exc).encode())
+                raise EndpointClosed() from exc
+
+            self._logger.debug("received websocket event: %s", message.data)
+            return event
 
         if message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
             raise EndpointClosed()
@@ -41,25 +39,13 @@ class WebsocketCommunicationEndpoint(CommunicationEndpoint):
 
         raise ValueError(f"unsupported websocket message type: {message.type}")
 
-    async def send(self, event: MessageEvent) -> None:
-        if isinstance(event, MessageBegin):
-            self._outgoing_text_parts.clear()
-            return
-        if isinstance(event, MessageFragment):
-            self._outgoing_text_parts.append(event.text)
-            return
-        if isinstance(event, MessageEnd):
-            payload = user_message_to_json(UserMessage(text="".join(self._outgoing_text_parts)))
-            self._logger.debug("sending websocket message: %s", payload)
-            try:
-                await self._websocket.send_str(payload)
-            except ClientConnectionResetError as exc:
-                raise EndpointClosed() from exc
-            finally:
-                self._outgoing_text_parts.clear()
-            return
-
-        raise ValueError(f"unsupported message event: {type(event).__name__}")
+    async def send(self, event: SessionToEndpointEvent) -> None:
+        payload = session_event_to_json(event)
+        self._logger.debug("sending websocket event: %s", payload)
+        try:
+            await self._websocket.send_str(payload)
+        except ClientConnectionResetError as exc:
+            raise EndpointClosed() from exc
 
 
 def create_app(
@@ -81,7 +67,11 @@ def create_app(
 
         try:
             endpoint = WebsocketCommunicationEndpoint(websocket, peer)
-            await manager.run_session(endpoint)
+            await manager.run_session(endpoint, require_session_attributes=True)
+            return websocket
+        except AssertionError as exc:
+            connection_logger.warning("websocket protocol violation: %s", exc)
+            await websocket.close(code=WSCloseCode.PROTOCOL_ERROR, message=str(exc).encode())
             return websocket
         finally:
             websockets.discard(websocket)

@@ -14,9 +14,9 @@ from ai_server.ai_tools.weather import WeatherTool
 from ai_server.ai_tools.web_search import WebSearchTool
 from ai_server.ai_tools.wikipedia import WikipediaTool
 from ai_server.config import AgentConfig
-from ai_server.interfaces import EndpointClosed
-from ai_server.messages import MessageEvent, UserMessage, user_message_to_events
+from ai_server.messages import TextMessage, text_message_to_events
 from ai_server.ollama import OllamaClient
+from conftest import FakeConversationEndpoint
 
 
 def test_create_tools_builds_static_dictionary(caplog) -> None:
@@ -60,11 +60,11 @@ def test_tool_run_stubs_send_default_reply() -> None:
     config = AgentConfig(type="assistant", options={"intent_router_model": "llama3.2:3b"})
     ollama_client = OllamaClient(session=FakeSession())
     tool = CalculatorTool(config, ollama_client)
-    endpoint = FakeEndpoint([])
+    endpoint = FakeConversationEndpoint([])
 
-    asyncio.run(tool.run(endpoint, UserMessage(text="zrób coś")))
+    asyncio.run(tool.run(endpoint, TextMessage(text="zrób coś")))
 
-    assert endpoint.sent == list(user_message_to_events(UserMessage(text=TOOL_NOT_IMPLEMENTED_REPLY)))
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text=TOOL_NOT_IMPLEMENTED_REPLY)))
 
 
 def test_time_tool_logs_locale_failure(monkeypatch, caplog) -> None:
@@ -78,10 +78,10 @@ def test_time_tool_logs_locale_failure(monkeypatch, caplog) -> None:
     monkeypatch.setattr(locale, "setlocale", fake_setlocale)
     config = AgentConfig(type="assistant", options={"intent_router_model": "llama3.2:3b"})
     tool = TimeTool(config, FakeOllamaClient())
-    endpoint = FakeEndpoint([])
+    endpoint = FakeConversationEndpoint([])
 
     with caplog.at_level("ERROR"):
-        asyncio.run(tool.run(endpoint, UserMessage(text="która godzina?")))
+        asyncio.run(tool.run(endpoint, TextMessage(text="która godzina?")))
 
     assert "failed to set locale pl_PL.utf8" in caplog.text
 
@@ -115,9 +115,9 @@ def test_home_assistant_tool_forwards_polish_conversation(monkeypatch) -> None:
         },
     )
     tool = HomeAssistantTool(config, FakeOllamaClient())
-    endpoint = FakeEndpoint([])
+    endpoint = FakeConversationEndpoint([])
 
-    asyncio.run(tool.run(endpoint, UserMessage(text="włącz światło w kuchni")))
+    asyncio.run(tool.run(endpoint, TextMessage(text="włącz światło w kuchni")))
 
     assert fake_session.headers == {"Authorization": "Bearer secret-token"}
     assert fake_session.url == "http://ha.local:8123/api/conversation/process"
@@ -125,7 +125,7 @@ def test_home_assistant_tool_forwards_polish_conversation(monkeypatch) -> None:
         "text": "włącz światło w kuchni",
         "language": "pl",
     }
-    assert endpoint.sent == list(user_message_to_events(UserMessage(text="Włączono światło.")))
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Włączono światło.")))
 
 
 def test_home_assistant_tool_requires_config() -> None:
@@ -153,12 +153,12 @@ def test_home_assistant_tool_sends_fallback_on_request_failure(monkeypatch) -> N
         },
     )
     tool = HomeAssistantTool(config, FakeOllamaClient())
-    endpoint = FakeEndpoint([])
+    endpoint = FakeConversationEndpoint([])
 
-    asyncio.run(tool.run(endpoint, UserMessage(text="włącz światło w kuchni")))
+    asyncio.run(tool.run(endpoint, TextMessage(text="włącz światło w kuchni")))
 
     assert endpoint.sent == list(
-        user_message_to_events(UserMessage(text="Przepraszam, nie udało mi się połączyć z Home Assistant."))
+        text_message_to_events(TextMessage(text="Przepraszam, nie udało mi się połączyć z Home Assistant."))
     )
 
 
@@ -210,18 +210,3 @@ class FakeHomeAssistantSession:
     async def json(self):
         return self.response_body
 
-
-class FakeEndpoint:
-    def __init__(self, incoming: list[UserMessage]) -> None:
-        self._incoming: list[MessageEvent] = []
-        for message in incoming:
-            self._incoming.extend(user_message_to_events(message))
-        self.sent = []
-
-    async def receive(self) -> MessageEvent:
-        if not self._incoming:
-            raise EndpointClosed()
-        return self._incoming.pop(0)
-
-    async def send(self, event: MessageEvent) -> None:
-        self.sent.append(event)

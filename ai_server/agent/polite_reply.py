@@ -5,10 +5,9 @@ import time
 
 from aiohttp import ClientSession
 
-from ai_server.interfaces import CommunicationEndpoint
-from ai_server.messages import UserMessage
+from ai_server.interfaces import Conversation, ConversationEndpoint
+from ai_server.messages import TextMessage
 from ai_server.ollama import OLLAMA_BASE_URL, OllamaClient, OllamaError
-from ai_server.streaming import receive_user_message, send_user_message
 
 
 POLITE_REPLY_PROMPT = (
@@ -51,10 +50,9 @@ class PoliteReplyAgent:
         except Exception as exc:
             raise OllamaError(f"failed to preload Ollama model {self._model}") from exc
 
-    async def run(self, endpoint: CommunicationEndpoint, session_id: str) -> None:
-        logger = logging.getLogger(f"{__name__}.PoliteReplyAgent[{session_id}]")
-        while True:
-            message = await receive_user_message(endpoint)
+    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
+        logger = logging.getLogger(f"{__name__}.PoliteReplyAgent[{conversation.conversation_id}]")
+        async for message in endpoint.messages():
             started_at = time.perf_counter()
 
             try:
@@ -66,7 +64,7 @@ class PoliteReplyAgent:
                     len(message.text),
                     elapsed_ms,
                 )
-                await send_user_message(endpoint, UserMessage(text=GENERATION_FAILURE_MESSAGE))
+                await endpoint.send_message(TextMessage(text=GENERATION_FAILURE_MESSAGE))
                 continue
 
             elapsed_ms = _elapsed_ms(started_at)
@@ -76,7 +74,7 @@ class PoliteReplyAgent:
                 len(reply),
                 elapsed_ms,
             )
-            await send_user_message(endpoint, UserMessage(text=reply))
+            await endpoint.send_message(TextMessage(text=reply))
 
     async def close(self) -> None:
         if self._owns_ollama:

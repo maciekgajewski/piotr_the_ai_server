@@ -5,6 +5,7 @@ import pytest
 from ai_server.agent import create_agent
 from ai_server.agent.assitant import AssistantAgent, _build_user_prompt_template
 from ai_server.agent.echo import EchoAgent
+from ai_server.agent.interrogator import InterrogatorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.ai_tools.calculator import CalculatorTool
 from ai_server.config import AgentConfig
@@ -15,6 +16,12 @@ def test_create_agent_returns_echo_agent() -> None:
     agent = asyncio.run(create_agent(AgentConfig(type="echo", options={}), "http://ollama:11434"))
 
     assert isinstance(agent, EchoAgent)
+
+
+def test_create_agent_returns_interrogator_agent() -> None:
+    agent = asyncio.run(create_agent(AgentConfig(type="interrogator", options={}), "http://ollama:11434"))
+
+    assert isinstance(agent, InterrogatorAgent)
 
 
 def test_create_agent_returns_polite_reply_agent(monkeypatch) -> None:
@@ -47,10 +54,16 @@ def test_create_agent_returns_assistant_agent_with_loaded_tools(monkeypatch) -> 
 
     async def create_and_check_agent() -> None:
         agent = await create_agent(
-            AgentConfig(
-                type="assistant",
-                options={"intent_router_model": "llama3.2:3b"},
-            ),
+                AgentConfig(
+                    type="assistant",
+                    options={
+                        "intent_router_model": "llama3.2:3b",
+                        "home_assistant": {
+                            "url": "http://ha.local:8123",
+                            "token": "secret-token",
+                        },
+                    },
+                ),
             "http://ollama:11434",
         )
 
