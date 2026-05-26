@@ -11,7 +11,8 @@ from ai_server.config import MicrophoneConfig
 import ai_server.microphones.drivers.box3_esphome as box3_esphome
 from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.drivers.box3_esphome import Box3EsphomeMicrophone
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart
+from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, MessageEndCue, StartFollowUpListening
+from ai_server.microphones.messages import StartWakeWordListening
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 
 
@@ -56,13 +57,14 @@ def test_create_microphone_returns_box3_esphome_microphone() -> None:
     assert isinstance(microphone, Box3EsphomeMicrophone)
 
 
-def test_box3_microphone_emits_audio_events_and_sends_run_end(monkeypatch) -> None:
+def test_box3_microphone_emits_audio_events_without_automatic_run_end(monkeypatch) -> None:
     async def run() -> None:
         microphone = Box3EsphomeMicrophone.from_config(
             MicrophoneConfig(
                 type="box3_esphome",
                 name="box3-office",
                 location=None,
+                end_silence_seconds=0.01,
                 options={"address": "box.local", "api_key": "secret"},
             )
         )
@@ -76,8 +78,6 @@ def test_box3_microphone_emits_audio_events_and_sends_run_end(monkeypatch) -> No
 
         monkeypatch.setattr(microphone, "_ensure_connected", fake_ensure_connected)
         monkeypatch.setattr(microphone, "_send_voice_assistant_event", fake_send_voice_assistant_event)
-        monkeypatch.setattr(box3_esphome, "VOICE_ASSISTANT_REARM_DELAY_SECONDS", 0)
-
         start_task = asyncio.create_task(microphone.wait_for_event())
         await asyncio.sleep(0)
         await microphone._handle_start("conversation", 0, object(), "Ryszardzie")
@@ -89,8 +89,8 @@ def test_box3_microphone_emits_audio_events_and_sends_run_end(monkeypatch) -> No
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=b"one")
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=b"two")
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioEnd()
-        await _wait_for_rearm(microphone)
-        assert events == ["VOICE_ASSISTANT_RUN_END"]
+        await asyncio.sleep(0)
+        assert events == []
 
     asyncio.run(run())
 
@@ -102,6 +102,7 @@ def test_box3_microphone_detects_end_of_speech_and_stops_stream(monkeypatch) -> 
                 type="box3_esphome",
                 name="box3-office",
                 location=None,
+                end_silence_seconds=0.01,
                 options={"address": "box.local", "api_key": "secret"},
             )
         )
@@ -117,8 +118,7 @@ def test_box3_microphone_detects_end_of_speech_and_stops_stream(monkeypatch) -> 
 
         monkeypatch.setattr(microphone, "_ensure_connected", fake_ensure_connected)
         monkeypatch.setattr(microphone, "_send_voice_assistant_event", fake_send_voice_assistant_event)
-        monkeypatch.setattr(box3_esphome, "END_SILENCE_SECONDS", 0.01)
-        monkeypatch.setattr(box3_esphome, "START_GRACE_SECONDS", 0.0)
+        monkeypatch.setattr(box3_esphome, "SPEECH_START_SECONDS", 0.01)
         monkeypatch.setattr(box3_esphome, "VOICE_ASSISTANT_REARM_DELAY_SECONDS", 0)
 
         start_task = asyncio.create_task(microphone.wait_for_event())
@@ -127,13 +127,17 @@ def test_box3_microphone_detects_end_of_speech_and_stops_stream(monkeypatch) -> 
         start_event = await asyncio.wait_for(start_task, timeout=1)
         await microphone._handle_audio(_pcm16_chunk(2000))
         await asyncio.sleep(0.02)
+        await microphone._handle_audio(_pcm16_chunk(2000))
+        await asyncio.sleep(0.02)
         await microphone._handle_audio(_pcm16_chunk(0))
 
         assert start_event == AudioStart(wake_word="Ryszardzie")
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=_pcm16_chunk(2000))
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=_pcm16_chunk(2000))
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=_pcm16_chunk(0))
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioEnd()
-        await _wait_for_rearm(microphone)
+        assert events == ["VOICE_ASSISTANT_STT_VAD_END"]
+        await microphone.send_output_event(StartWakeWordListening())
         assert events == ["VOICE_ASSISTANT_STT_VAD_END", "VOICE_ASSISTANT_RUN_END"]
 
     asyncio.run(run())
@@ -146,6 +150,7 @@ def test_box3_microphone_drops_audio_chunks_after_audio_end(monkeypatch) -> None
                 type="box3_esphome",
                 name="box3-office",
                 location=None,
+                end_silence_seconds=0.01,
                 options={"address": "box.local", "api_key": "secret"},
             )
         )
@@ -158,6 +163,7 @@ def test_box3_microphone_drops_audio_chunks_after_audio_end(monkeypatch) -> None
 
         monkeypatch.setattr(microphone, "_ensure_connected", fake_ensure_connected)
         monkeypatch.setattr(microphone, "_send_voice_assistant_event", fake_send_voice_assistant_event)
+        monkeypatch.setattr(box3_esphome, "SPEECH_START_SECONDS", 0.01)
 
         await microphone._handle_start("conversation", 0, object(), "Ryszardzie")
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioStart(wake_word="Ryszardzie")
@@ -171,6 +177,43 @@ def test_box3_microphone_drops_audio_chunks_after_audio_end(monkeypatch) -> None
     asyncio.run(run())
 
 
+def test_box3_microphone_detects_initial_silence_timeout(monkeypatch) -> None:
+    async def run() -> None:
+        microphone = Box3EsphomeMicrophone.from_config(
+            MicrophoneConfig(
+                type="box3_esphome",
+                name="box3-office",
+                location=None,
+                initial_silence_seconds=0.01,
+                options={"address": "box.local", "api_key": "secret"},
+            )
+        )
+        events = []
+
+        async def fake_ensure_connected() -> None:
+            pass
+
+        def fake_send_voice_assistant_event(event_name: str) -> None:
+            events.append(event_name)
+
+        monkeypatch.setattr(microphone, "_ensure_connected", fake_ensure_connected)
+        monkeypatch.setattr(microphone, "_send_voice_assistant_event", fake_send_voice_assistant_event)
+        monkeypatch.setattr(box3_esphome, "SPEECH_START_SECONDS", 0.01)
+
+        await microphone._handle_start("conversation", 0, object(), "Ryszardzie")
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioStart(wake_word="Ryszardzie")
+
+        await asyncio.sleep(0.02)
+        silence_chunk = _pcm16_chunk(0)
+        await microphone._handle_audio(silence_chunk)
+
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=silence_chunk)
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioEnd()
+        assert events == ["VOICE_ASSISTANT_STT_VAD_END"]
+
+    asyncio.run(run())
+
+
 def test_box3_microphone_drops_second_callback_chunk_if_first_chunk_ends_audio(monkeypatch) -> None:
     async def run() -> None:
         microphone = Box3EsphomeMicrophone.from_config(
@@ -178,6 +221,7 @@ def test_box3_microphone_drops_second_callback_chunk_if_first_chunk_ends_audio(m
                 type="box3_esphome",
                 name="box3-office",
                 location=None,
+                end_silence_seconds=0.01,
                 options={"address": "box.local", "api_key": "secret"},
             )
         )
@@ -190,8 +234,7 @@ def test_box3_microphone_drops_second_callback_chunk_if_first_chunk_ends_audio(m
 
         monkeypatch.setattr(microphone, "_ensure_connected", fake_ensure_connected)
         monkeypatch.setattr(microphone, "_send_voice_assistant_event", fake_send_voice_assistant_event)
-        monkeypatch.setattr(box3_esphome, "END_SILENCE_SECONDS", 0.01)
-        monkeypatch.setattr(box3_esphome, "START_GRACE_SECONDS", 0.0)
+        monkeypatch.setattr(box3_esphome, "SPEECH_START_SECONDS", 0.01)
 
         await microphone._handle_start("conversation", 0, object(), "Ryszardzie")
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioStart(wake_word="Ryszardzie")
@@ -200,12 +243,58 @@ def test_box3_microphone_drops_second_callback_chunk_if_first_chunk_ends_audio(m
         silence_chunk = _pcm16_chunk(0)
         await microphone._handle_audio(speech_chunk)
         await asyncio.sleep(0.02)
+        await microphone._handle_audio(speech_chunk)
+        await asyncio.sleep(0.02)
         await microphone._handle_audio(silence_chunk, b"late-second")
 
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=speech_chunk)
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=speech_chunk)
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=silence_chunk)
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioEnd()
         assert microphone._events.empty()
+
+    asyncio.run(run())
+
+
+def test_box3_microphone_ignores_short_startup_audio_blip(monkeypatch) -> None:
+    async def run() -> None:
+        microphone = Box3EsphomeMicrophone.from_config(
+            MicrophoneConfig(
+                type="box3_esphome",
+                name="box3-office",
+                location=None,
+                initial_silence_seconds=0.05,
+                end_silence_seconds=0.01,
+                options={"address": "box.local", "api_key": "secret"},
+            )
+        )
+        events = []
+
+        async def fake_ensure_connected() -> None:
+            pass
+
+        def fake_send_voice_assistant_event(event_name: str) -> None:
+            events.append(event_name)
+
+        monkeypatch.setattr(microphone, "_ensure_connected", fake_ensure_connected)
+        monkeypatch.setattr(microphone, "_send_voice_assistant_event", fake_send_voice_assistant_event)
+
+        await microphone._handle_start("conversation", 0, object(), "follow_up")
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioStart(wake_word="follow_up")
+
+        blip = _pcm16_chunk(8000)
+        silence = _pcm16_chunk(0)
+        await microphone._handle_audio(blip)
+        await asyncio.sleep(0.02)
+        await microphone._handle_audio(silence)
+        await asyncio.sleep(0.04)
+        await microphone._handle_audio(silence)
+
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=blip)
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=silence)
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=silence)
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioEnd()
+        assert events == ["VOICE_ASSISTANT_STT_VAD_END"]
 
     asyncio.run(run())
 
@@ -292,19 +381,73 @@ def test_box3_microphone_streams_audio_events_over_http(monkeypatch) -> None:
             )
         )
 
-        await microphone.send_audio_event(AudioStart(rate=22050, width=2, channels=1, volume=0.7))
+        await microphone.send_output_event(AudioStart(rate=22050, width=2, channels=1, volume=0.7))
         client = FakeClient.instances[-1]
         assert client.commands[0] == {"volume": 0.7}
         url = client.commands[1]["media_url"]
 
         read_task = asyncio.create_task(asyncio.to_thread(_read_url, url))
         await asyncio.sleep(0)
-        await microphone.send_audio_event(AudioChunk(data=b"abc"))
-        await microphone.send_audio_event(AudioEnd())
+        await microphone.send_output_event(AudioChunk(data=b"abc"))
+        await microphone.send_output_event(AudioEnd())
         data = await asyncio.wait_for(read_task, timeout=1)
 
         assert data[:4] == b"RIFF"
         assert data[44:] == b"abc"
+
+    asyncio.run(run())
+
+
+def test_box3_microphone_executes_cue_and_follow_up_services(monkeypatch) -> None:
+    class UserService:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.key = 1
+            self.args = []
+
+    class FakeClient:
+        connected_address = "127.0.0.1"
+
+        def __init__(self, *args, **kwargs) -> None:
+            self.executed = []
+
+        async def connect(self, login: bool) -> None:
+            assert login is True
+
+        def subscribe_voice_assistant(self, **kwargs):
+            return lambda: None
+
+        async def list_entities_services(self):
+            return [], [
+                UserService("play_message_end_cue"),
+                UserService("start_follow_up_listening"),
+            ]
+
+        async def execute_service(self, service, data):
+            self.executed.append((service.name, data))
+
+    fake_module = SimpleNamespace(APIClient=FakeClient)
+    monkeypatch.setitem(sys.modules, "aioesphomeapi", fake_module)
+    monkeypatch.setattr(box3_esphome, "aioesphomeapi", fake_module)
+
+    async def run() -> None:
+        microphone = Box3EsphomeMicrophone.from_config(
+            MicrophoneConfig(
+                type="box3_esphome",
+                name="box3-office",
+                location=None,
+                options={"address": "box.local", "api_key": "secret"},
+            )
+        )
+
+        await microphone.send_output_event(MessageEndCue())
+        await microphone.send_output_event(StartWakeWordListening())
+        await microphone.send_output_event(StartFollowUpListening())
+
+        assert microphone._client.executed == [
+            ("play_message_end_cue", {}),
+            ("start_follow_up_listening", {}),
+        ]
 
     asyncio.run(run())
 
@@ -331,11 +474,6 @@ def test_box3_playback_stream_estimates_remaining_speaker_drain_time() -> None:
 
 def _pcm16_chunk(value: int, samples: int = 512) -> bytes:
     return struct.pack("<" + "h" * samples, *([value] * samples))
-
-
-async def _wait_for_rearm(microphone: Box3EsphomeMicrophone) -> None:
-    assert microphone._rearm_task is not None
-    await asyncio.wait_for(microphone._rearm_task, timeout=1)
 
 
 def _read_url(url: str) -> bytes:

@@ -21,8 +21,12 @@ tts:
   volume: 1.0
 
 microphones:
-  # - type: box3_esphome
-  #   name: box3-office
-  #   address: piotr-box3-01-cbfaA8.local
-  #   api_key: replace-with-esphome-api-key
-  #   location: office
+  initial_silence_seconds: 3
+  end_silence_seconds: 0.9
+  follow_up_timeout_seconds: 15
+  devices:
+    # - type: box3_esphome
+    #   name: box3-office
+    #   address: piotr-box3-01-cbfaA8.local
+    #   api_key: replace-with-esphome-api-key
+    #   location: office

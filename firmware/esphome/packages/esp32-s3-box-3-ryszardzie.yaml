@@ -70,6 +70,19 @@ psram:
   speed: 80MHz
 
 api:
+  services:
+    - service: play_message_end_cue
+      then:
+        - script.execute: play_message_end_cue
+        - script.wait: play_message_end_cue
+    - service: play_conversation_timeout_cue
+      then:
+        - script.execute: play_conversation_timeout_cue
+        - script.wait: play_conversation_timeout_cue
+    - service: start_follow_up_listening
+      then:
+        - script.execute: start_follow_up_listening
+        - script.wait: start_follow_up_listening
   on_client_connected:
     - script.execute: draw_display
   on_client_disconnected:
@@ -218,6 +231,14 @@ media_player:
     files:
       - id: timer_finished_sound
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
+      - id: wake_recognized_sound
+        file: sounds/wake_recognized.wav
+      - id: message_end_sound
+        file: sounds/message_end.wav
+      - id: follow_up_listening_sound
+        file: sounds/follow_up_listening.wav
+      - id: conversation_timeout_sound
+        file: sounds/conversation_timeout.wav
     on_announcement:
       # Stop the wake word (mWW or VA) if the mic is capturing
       - if:
@@ -245,8 +266,10 @@ media_player:
       # Since VA isn't running, this is the end of user-intiated media playback. Restart the wake word.
       - if:
           condition:
-            not:
-              voice_assistant.is_running:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - lambda: return !id(server_controlled_follow_up_starting);
           then:
             - script.execute: start_wake_word
             - script.execute: set_idle_or_mute_phase
@@ -260,6 +283,8 @@ micro_wake_word:
     - id: okay_nabu_wake_word
       model: okay_nabu
   on_wake_word_detected:
+    - script.execute: play_wake_recognized_cue
+    - script.wait: play_wake_recognized_cue
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
 
@@ -364,6 +389,106 @@ voice_assistant:
     - script.execute: draw_display
 
 script:
+  - id: play_wake_recognized_cue
+    mode: restart
+    then:
+      - media_player.speaker.play_on_device_media_file:
+          media_file: wake_recognized_sound
+          announcement: true
+      - wait_until:
+          condition:
+            media_player.is_announcing:
+          timeout: 2s
+      - wait_until:
+          condition:
+            and:
+              - not:
+                  media_player.is_announcing:
+              - not:
+                  speaker.is_playing:
+          timeout: 2s
+
+  - id: play_message_end_cue
+    mode: restart
+    then:
+      - media_player.speaker.play_on_device_media_file:
+          media_file: message_end_sound
+          announcement: true
+      - wait_until:
+          condition:
+            media_player.is_announcing:
+          timeout: 2s
+      - wait_until:
+          condition:
+            and:
+              - not:
+                  media_player.is_announcing:
+              - not:
+                  speaker.is_playing:
+          timeout: 2s
+
+  - id: play_conversation_timeout_cue
+    mode: restart
+    then:
+      - media_player.speaker.play_on_device_media_file:
+          media_file: conversation_timeout_sound
+          announcement: true
+      - wait_until:
+          condition:
+            media_player.is_announcing:
+          timeout: 2s
+      - wait_until:
+          condition:
+            and:
+              - not:
+                  media_player.is_announcing:
+              - not:
+                  speaker.is_playing:
+          timeout: 2s
+
+  - id: start_follow_up_listening
+    mode: restart
+    then:
+      - lambda: id(server_controlled_follow_up_starting) = true;
+      - script.execute: stop_wake_word
+      - wait_until:
+          condition:
+            and:
+              - not:
+                  media_player.is_announcing:
+              - not:
+                  speaker.is_playing:
+          timeout: 5s
+      - script.execute: play_follow_up_listening_cue
+      - script.wait: play_follow_up_listening_cue
+      - if:
+          condition:
+            switch.is_off: mute
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - voice_assistant.start:
+                wake_word: follow_up
+      - lambda: id(server_controlled_follow_up_starting) = false;
+
+  - id: play_follow_up_listening_cue
+    mode: restart
+    then:
+      - media_player.speaker.play_on_device_media_file:
+          media_file: follow_up_listening_sound
+          announcement: true
+      - wait_until:
+          condition:
+            media_player.is_announcing:
+          timeout: 2s
+      - wait_until:
+          condition:
+            and:
+              - not:
+                  media_player.is_announcing:
+              - not:
+                  speaker.is_playing:
+          timeout: 2s
+
   - id: draw_display
     then:
       - if:
@@ -674,6 +799,10 @@ globals:
     type: int
     restore_value: false
     initial_value: ${voice_assist_not_ready_phase_id}
+  - id: server_controlled_follow_up_starting
+    type: bool
+    restore_value: false
+    initial_value: "false"
   - id: global_first_active_timer
     type: voice_assistant::Timer
     restore_value: false

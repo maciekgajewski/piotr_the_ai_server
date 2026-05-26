@@ -24,6 +24,26 @@ class AudioEnd:
 
 
 @dataclass(frozen=True)
+class MessageEndCue:
+    pass
+
+
+@dataclass(frozen=True)
+class StartWakeWordListening:
+    pass
+
+
+@dataclass(frozen=True)
+class StartFollowUpListening:
+    pass
+
+
+@dataclass(frozen=True)
+class ConversationTimeoutCue:
+    pass
+
+
+@dataclass(frozen=True)
 class TextFragment:
     text: str
 
@@ -34,4 +54,13 @@ class TextEnd:
 
 
 AudioEvent: TypeAlias = AudioStart | AudioChunk | AudioEnd
+MicrophoneOutputEvent: TypeAlias = (
+    AudioStart
+    | AudioChunk
+    | AudioEnd
+    | MessageEndCue
+    | StartWakeWordListening
+    | StartFollowUpListening
+    | ConversationTimeoutCue
+)
 TextEvent: TypeAlias = TextFragment | TextEnd

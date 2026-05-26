@@ -5,6 +5,7 @@ import pytest
 from ai_server.config import (
     AgentConfig,
     ConversationConfig,
+    MicrophoneDefaultsConfig,
     DEFAULT_LOG_LEVEL,
     DEFAULT_WEBSOCKET_HOST,
     DEFAULT_WEBSOCKET_PATH,
@@ -169,20 +170,59 @@ microphones:
             type="box3_esphome",
             name="box3-office",
             location="office",
-            follow_up_timeout_seconds=None,
+            initial_silence_seconds=3.0,
+            end_silence_seconds=0.9,
+            follow_up_timeout_seconds=15.0,
             options={"address": "piotr-box3-01-cbfaA8.local", "api_key": "abc"},
         ),
         MicrophoneConfig(
             type="box3_esphome",
             name="box3-roaming",
             location=None,
-            follow_up_timeout_seconds=None,
+            initial_silence_seconds=3.0,
+            end_silence_seconds=0.9,
+            follow_up_timeout_seconds=15.0,
             options={"address": "192.168.1.42", "api_key": "def"},
         ),
     )
 
 
-def test_load_config_with_explicit_conversation_and_microphone_timeout(tmp_path: Path) -> None:
+def test_load_config_with_explicit_microphone_defaults_and_device_timing_overrides(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+websocket:
+  port: 2137
+agent:
+  type: echo
+microphones:
+  initial_silence_seconds: 4
+  end_silence_seconds: 1.2
+  follow_up_timeout_seconds: 12.5
+  devices:
+    - type: box3_esphome
+      name: box3-office
+      address: box.local
+      api_key: abc
+      initial_silence_seconds: 5
+      end_silence_seconds: 0.8
+      follow_up_timeout_seconds: 3
+""",
+    )
+
+    config = load_config_from_yaml(config_path)
+
+    assert config.microphone_defaults == MicrophoneDefaultsConfig(
+        initial_silence_seconds=4.0,
+        end_silence_seconds=1.2,
+        follow_up_timeout_seconds=12.5,
+    )
+    assert config.microphones[0].initial_silence_seconds == 5.0
+    assert config.microphones[0].end_silence_seconds == 0.8
+    assert config.microphones[0].follow_up_timeout_seconds == 3.0
+
+
+def test_load_config_uses_legacy_conversation_timeout_as_microphone_default(tmp_path: Path) -> None:
     config_path = write_config(
         tmp_path,
         """
@@ -197,14 +237,14 @@ microphones:
     name: box3-office
     address: box.local
     api_key: abc
-    follow_up_timeout_seconds: 3
 """,
     )
 
     config = load_config_from_yaml(config_path)
 
     assert config.conversation == ConversationConfig(follow_up_timeout_seconds=12.5)
-    assert config.microphones[0].follow_up_timeout_seconds == 3.0
+    assert config.microphone_defaults.follow_up_timeout_seconds == 12.5
+    assert config.microphones[0].follow_up_timeout_seconds == 12.5
 
 
 def test_load_config_with_explicit_voice_values(tmp_path: Path) -> None:
@@ -293,8 +333,16 @@ agent:
             "tts.volume must be between",
         ),
         (
-            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones: {}",
-            "microphones must be a list",
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  devices: nope",
+            "microphones.devices must be a list",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  initial_silence_seconds: 0",
+            "microphones.initial_silence_seconds must be a positive number",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  devices:\n    - type: box3_esphome\n      name: box\n      address: host\n      api_key: key\n      end_silence_seconds: nope",
+            r"microphones\[0\].end_silence_seconds must be a positive number",
         ),
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  - name: box",

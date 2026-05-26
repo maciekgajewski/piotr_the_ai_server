@@ -6,7 +6,9 @@ from ai_server.config import ConversationConfig, MicrophoneConfig, SttConfig, Tt
 from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, TextMessage, WaitForNewConversation
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.manager import MicrophoneManager, init_mics
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, TextEnd, TextFragment
+from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, MessageEndCue, StartFollowUpListening
+from ai_server.microphones.messages import StartWakeWordListening
+from ai_server.microphones.messages import TextEnd, TextFragment
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 
 
@@ -41,7 +43,7 @@ class FakeMicrophone:
             await asyncio.sleep(3600)
         return self._events.pop(0)
 
-    async def send_audio_event(self, event) -> None:
+    async def send_output_event(self, event) -> None:
         self.sent_audio_events.append(event)
 
     async def close(self) -> None:
@@ -178,9 +180,12 @@ def test_microphone_manager_sends_transcript_to_agent_and_speaks_reply() -> None
         assert stt.sessions[0].ended is True
         assert tts.synthesized == ["reply:cześć"]
         assert microphone.sent_audio_events == [
+            StartWakeWordListening(),
+            MessageEndCue(),
             AudioStart(rate=22050, width=2, channels=1, volume=1.0),
             AudioChunk(data=b"reply-audio"),
             AudioEnd(),
+            StartFollowUpListening(),
         ]
 
     asyncio.run(run())
@@ -240,7 +245,6 @@ def test_init_mics_rejects_unknown_microphone_type() -> None:
         type="unknown",
         name="mic",
         location=None,
-        follow_up_timeout_seconds=None,
         options={},
     )
 

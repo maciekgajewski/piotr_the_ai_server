@@ -738,6 +738,41 @@ No firmware flashing has been done yet.
   - `/dev/ttyACM0` still exists.
   - Ping to `192.168.0.180` succeeded with 2/2 replies.
 
+## 2026-05-25T14:25:34Z - Conversation cue timing firmware reflashed
+
+- Manual mic-protocol test showed the wake cue was heard after speech capture, and the test harness sent `MessageEndCue` only after operator questions.
+- Fixed the test harness to send `MessageEndCue` immediately after `AudioEnd`, before asking the operator about the captured turn.
+- Updated cue scripts so local media playback waits briefly for `media_player.is_announcing` to become true before waiting for playback to finish.
+- Removed unbounded pre-cue idle waits from short cue scripts and follow-up start.
+- Validated ESPHome configuration.
+- Rebuilt firmware and verified generated `main.cpp` contains the cue playback-start waits.
+- Flashed the Box over OTA to `192.168.0.180`.
+- ESPHome reported `OTA successful` and `Successfully uploaded program.`
+- Post-flash check:
+  - Ping to `192.168.0.180` succeeded with 2/2 replies.
+
+## 2026-05-25T11:05:42Z - Conversation cue firmware flashed
+
+- Added local on-device cue sounds for:
+  - wake-word recognized
+  - user message end detected
+  - follow-up microphone open
+  - conversation timeout
+- Added ESPHome API actions used by the AI server:
+  - `play_message_end_cue`
+  - `play_conversation_timeout_cue`
+  - `start_follow_up_listening`
+- `start_follow_up_listening` waits for speaker playback to be idle, plays the follow-up cue, and starts `voice_assistant` with synthetic wake word `follow_up`.
+- Validated ESPHome configuration.
+- Rebuilt firmware and verified generated `main.cpp` contains:
+  - local cue audio files
+  - the new API actions
+  - `VoiceAssistantStartAction` with wake word `follow_up`
+- USB serial was not visible as `/dev/ttyACM*` or `/dev/ttyUSB*`; flashed over OTA to `192.168.0.180`.
+- ESPHome reported `OTA successful` and `Successfully uploaded program.`
+- Post-flash check:
+  - Ping to `192.168.0.180` succeeded with 2/2 replies.
+
 ## 2026-05-22T16:21:31Z - Add Okay Nabu fallback wake word
 
 - Live `Ryszardzie` wake-word behavior is still hit and miss.
@@ -798,4 +833,40 @@ No firmware flashing has been done yet.
 - ESPHome reported `Successfully uploaded program.`
 - Post-flash checks:
   - `/dev/ttyACM0` still exists.
+  - Ping to `192.168.0.180` succeeded with 2/2 replies.
+
+## 2026-05-26T09:38:02Z - Follow-up listening chime flashed
+
+- Decision: follow-up capture should be announced with a chime, using a separate firmware media file so the sound can diverge later.
+- Replaced `follow_up_listening.wav` with the same sample as `wake_recognized.wav`.
+- Added 2s safety timeouts to cue playback completion waits, so a stuck media-player/speaker state cannot block follow-up listening forever.
+- Updated the microphone protocol test to ask about the follow-up chime before requesting the message-end cue.
+- Updated the conversation protocol document to state that `StartFollowUpListening` includes the follow-up cue.
+- Validated ESPHome configuration.
+- Rebuilt firmware and verified generated `main.cpp` contains:
+  - `follow_up_listening_sound`
+  - `play_follow_up_listening_cue`
+  - `VoiceAssistantStartAction` with wake word `follow_up`
+  - 2s cue wait timeouts
+- USB serial was not visible as `/dev/ttyACM0`; flashed over OTA to `192.168.0.180`.
+- ESPHome reported `OTA successful` and `Successfully uploaded program.`
+- Post-flash check:
+  - Ping to `192.168.0.180` succeeded with 2/2 replies.
+
+## 2026-05-26T10:33:43Z - Guard follow-up cue startup
+
+- User observed intermittent follow-up failures where no follow-up cue was audible, capture opened later, and the stream ended on initial silence before speech.
+- User also observed a delayed chime when interrupting the test, suggesting the cue was queued or blocked behind media/voice-assistant state.
+- Added `server_controlled_follow_up_starting` firmware state.
+- While follow-up startup is active, `media_player.on_idle` no longer restarts wake-word detection.
+- `start_follow_up_listening` now waits for media player and speaker idle before playing the follow-up cue.
+- Increased cue-start waits from 500ms to 2s.
+- Validated ESPHome configuration.
+- Rebuilt firmware and verified generated `main.cpp` contains:
+  - `server_controlled_follow_up_starting`
+  - `start_follow_up_listening` idle wait before `play_follow_up_listening_cue`
+  - `VoiceAssistantStartAction` with wake word `follow_up`
+- USB serial was not visible as `/dev/ttyACM0`; flashed over OTA to `192.168.0.180`.
+- ESPHome reported `OTA successful` and `Successfully uploaded program.`
+- Post-flash check:
   - Ping to `192.168.0.180` succeeded with 2/2 replies.

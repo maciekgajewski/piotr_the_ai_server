@@ -32,7 +32,10 @@ Allowed client events:
 - `NewConversation` -> ReceivingMessage
 - endpoint closed -> Closed
 
-For microphone input, wake-word detection causes `NewConversation` and the first message stream to be sent automatically.
+For microphone input, `WaitForNewConversation` maps to a silent `StartWakeWordListening` microphone
+output event. Wake-word detection then causes `NewConversation` and the first message stream to be sent
+automatically. Microphone drivers must not return to wake-word mode implicitly after a message or timeout;
+the transition is owned by this state.
 
 ### ReceivingMessage
 
@@ -85,7 +88,38 @@ Allowed client events:
 - `ConversationEnded` -> WaitingForNewConversation
 - endpoint closed -> Closed
 
-For microphone input, timeout while waiting for a follow-up sends `ConversationEnded`. The global default is `conversation.follow_up_timeout_seconds`, with per-microphone `follow_up_timeout_seconds` overrides.
+For microphone input, timeout while waiting for a follow-up sends `ConversationEnded`. The default lives under
+`microphones.follow_up_timeout_seconds`, with per-device `follow_up_timeout_seconds` overrides. The legacy
+`conversation.follow_up_timeout_seconds` value is still accepted as a fallback for old configs.
+
+## Microphone Event Mapping
+
+Microphone drivers expose raw audio input events to the server:
+
+- `AudioStart`
+- `AudioChunk`
+- `AudioEnd`
+
+The server sends microphone output/control events:
+
+- `StartWakeWordListening`: silent transition into wake-word mode. Sent only when Session has emitted `WaitForNewConversation`.
+- `StartFollowUpListening`: audible cue followed by transition into follow-up listening mode. Sent only when Session has emitted `WaitForNewMessage`.
+- `MessageEndCue`: audible cue after a complete user audio stream has been captured.
+- `ConversationTimeoutCue`: audible cue when follow-up input times out.
+- `AudioStart`, `AudioChunk`, `AudioEnd`: assistant audio playback.
+
+Mapping:
+
+| Session or conversation event | Microphone event/action |
+|---|---|
+| `WaitForNewConversation` | `StartWakeWordListening` |
+| first microphone `AudioStart` | `NewConversation`, then `MessageBegin` |
+| microphone `AudioChunk` stream | STT input; transcript fragments become `MessageFragment` |
+| microphone `AudioEnd` and transcript end | `MessageEnd`, then `MessageEndCue` |
+| assistant `MessageBegin` / `MessageFragment` / `MessageEnd` | playback `AudioStart` / `AudioChunk` / `AudioEnd` |
+| `WaitForNewMessage` | `StartFollowUpListening`, including the follow-up cue |
+| follow-up microphone `AudioStart` / `AudioChunk` / `AudioEnd` | `MessageBegin` / `MessageFragment` / `MessageEnd`, then `MessageEndCue` |
+| follow-up timeout | `ConversationTimeoutCue`, then `ConversationEnded` |
 
 ### Closed
 

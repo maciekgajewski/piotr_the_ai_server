@@ -12,7 +12,8 @@ from ai_server.messages import WaitForNewConversation, WaitForNewMessage
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.interfaces import Microphone, SpeechToText, SttSession, TextToSpeech
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, TextEnd, TextFragment
+from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, ConversationTimeoutCue, MessageEndCue
+from ai_server.microphones.messages import StartFollowUpListening, StartWakeWordListening, TextEnd, TextFragment
 from ai_server.microphones.stt import WyomingFasterWhisperSpeechToText
 from ai_server.microphones.tts import PiperTextToSpeech
 from ai_server.sessions import Session
@@ -75,6 +76,8 @@ class MicrophoneManager:
                 try:
                     event = await endpoint.receive_from_session()
                     if isinstance(event, WaitForNewConversation):
+                        logger.info("opening microphone for wake-word listening")
+                        await microphone.send_output_event(StartWakeWordListening())
                         await self._capture_utterance(
                             microphone=microphone,
                             endpoint=endpoint,
@@ -84,15 +87,19 @@ class MicrophoneManager:
                         )
                         continue
                     if isinstance(event, WaitForNewMessage):
+                        follow_up_timeout = self._follow_up_timeout_for(microphone)
+                        logger.info("opening microphone for follow-up timeout_seconds=%s", follow_up_timeout)
+                        await microphone.send_output_event(StartFollowUpListening())
                         captured = await self._capture_utterance(
                             microphone=microphone,
                             endpoint=endpoint,
                             logger=logger,
                             starts_new_conversation=False,
-                            timeout_seconds=self._follow_up_timeout_for(microphone),
+                            timeout_seconds=follow_up_timeout,
                         )
                         if not captured:
                             logger.info("follow-up timed out; ending conversation")
+                            await microphone.send_output_event(ConversationTimeoutCue())
                             await endpoint.send_to_session(ConversationEnded())
                         continue
                     if isinstance(event, MessageBegin):
@@ -133,6 +140,7 @@ class MicrophoneManager:
         logger.info("wake_word=%r audio stream started", event.wake_word)
         await endpoint.send_to_session(MessageBegin())
         await self._send_transcript_message(microphone, endpoint, logger)
+        await microphone.send_output_event(MessageEndCue())
         return True
 
     async def _wait_for_audio_start(
@@ -255,7 +263,7 @@ class MicrophoneManager:
                     audio_chunk_count,
                     audio_byte_count,
                 )
-            await microphone.send_audio_event(audio_event)
+            await microphone.send_output_event(audio_event)
         logger.info(
             "TTS stream finished starts=%s chunks=%s bytes=%s",
             audio_start_count,
@@ -331,7 +339,6 @@ async def init_mics(
         microphone_follow_up_timeouts={
             mic_config.name: mic_config.follow_up_timeout_seconds
             for mic_config in mic_configs
-            if mic_config.follow_up_timeout_seconds is not None
         },
     )
     await manager.start()

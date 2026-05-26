@@ -14,7 +14,9 @@ import time
 from typing import Any
 
 from ai_server.config import MicrophoneConfig
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioEvent, AudioStart
+from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioEvent, AudioStart, ConversationTimeoutCue
+from ai_server.microphones.messages import MessageEndCue, MicrophoneOutputEvent, StartFollowUpListening
+from ai_server.microphones.messages import StartWakeWordListening
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 
 try:
@@ -31,10 +33,11 @@ STREAM_REQUEST_TIMEOUT_SECONDS = 5.0
 STREAM_DONE_TIMEOUT_SECONDS = 30.0
 PLAYBACK_DRAIN_GRACE_SECONDS = 0.2
 SPEECH_PEAK_THRESHOLD = 500
-END_SILENCE_SECONDS = 0.9
-START_GRACE_SECONDS = 0.5
-VOICE_ASSISTANT_STOP_TIMEOUT_SECONDS = 5.0
+SPEECH_START_SECONDS = 0.2
 VOICE_ASSISTANT_REARM_DELAY_SECONDS = 0.2
+PLAY_MESSAGE_END_CUE_SERVICE = "play_message_end_cue"
+PLAY_CONVERSATION_TIMEOUT_CUE_SERVICE = "play_conversation_timeout_cue"
+START_FOLLOW_UP_LISTENING_SERVICE = "start_follow_up_listening"
 
 
 class Box3EsphomeMicrophone:
@@ -42,11 +45,15 @@ class Box3EsphomeMicrophone:
         self,
         context: MicrophoneContext,
         playback_target: PlaybackTarget,
+        initial_silence_seconds: float,
+        end_silence_seconds: float,
         client_info: str = "ai-server-box3-mic",
     ) -> None:
         self.context = context
         self.playback_target = playback_target
         self._logger = logging.getLogger(f"{__name__}.Box3EsphomeMicrophone[{context.instance_id}]")
+        self._initial_silence_seconds = initial_silence_seconds
+        self._end_silence_seconds = end_silence_seconds
         self._client_info = client_info
         self._client = None
         self._unsubscribe = None
@@ -58,13 +65,14 @@ class Box3EsphomeMicrophone:
         self._byte_count = 0
         self._audio_chunk_count = 0
         self._speech_started = False
+        self._speech_candidate_started_at: float | None = None
         self._last_speech_at: float | None = None
         self._stream_started_at: float | None = None
         self._speech_done = asyncio.Event()
         self._audio_ended = False
         self._late_audio_chunk_count = 0
         self._run_end_sent = False
-        self._rearm_task: asyncio.Task[None] | None = None
+        self._voice_assistant_run_active = False
         self._playback_stream: Box3PlaybackStream | None = None
 
     @classmethod
@@ -81,19 +89,23 @@ class Box3EsphomeMicrophone:
             api_key=config.options["api_key"],
             expected_name=expected_name,
         )
-        return cls(context=context, playback_target=playback_target)
+        return cls(
+            context=context,
+            playback_target=playback_target,
+            initial_silence_seconds=config.initial_silence_seconds,
+            end_silence_seconds=config.end_silence_seconds,
+        )
 
     async def wait_for_event(self) -> AudioEvent:
         await self._ensure_connected()
         return await self._events.get()
 
-    async def send_audio_event(self, event: AudioEvent) -> None:
+    async def send_output_event(self, event: MicrophoneOutputEvent) -> None:
         if isinstance(event, AudioStart):
             self._logger.debug("sending audio start event to BOX-3")
             await self._start_playback(event)
             return
         if isinstance(event, AudioChunk):
-            self._logger.debug("sending audio chunk event to BOX-3")
             if self._playback_stream is None:
                 raise RuntimeError("cannot send audio chunk before audio start")
             self._playback_stream.write(event.data)
@@ -102,15 +114,27 @@ class Box3EsphomeMicrophone:
             self._logger.debug("sending audio end event to BOX-3")
             await self._finish_playback()
             return
-        raise ValueError(f"unsupported audio event: {type(event).__name__}")
+        if isinstance(event, MessageEndCue):
+            self._logger.info("requesting BOX-3 message-end cue")
+            await self._execute_api_service(PLAY_MESSAGE_END_CUE_SERVICE)
+            return
+        if isinstance(event, StartWakeWordListening):
+            self._logger.info("requesting BOX-3 wake-word listening")
+            await self._start_wake_word_listening()
+            return
+        if isinstance(event, StartFollowUpListening):
+            self._logger.info("requesting BOX-3 follow-up listening")
+            await self._finish_voice_assistant_run()
+            await self._execute_api_service(START_FOLLOW_UP_LISTENING_SERVICE)
+            return
+        if isinstance(event, ConversationTimeoutCue):
+            self._logger.info("requesting BOX-3 conversation-timeout cue")
+            await self._execute_api_service(PLAY_CONVERSATION_TIMEOUT_CUE_SERVICE)
+            return
+        raise ValueError(f"unsupported microphone output event: {type(event).__name__}")
 
     async def close(self) -> None:
         await self._finish_playback()
-        if self._rearm_task is not None:
-            self._rearm_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._rearm_task
-            self._rearm_task = None
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
@@ -243,12 +267,14 @@ class Box3EsphomeMicrophone:
         self._byte_count = 0
         self._audio_chunk_count = 0
         self._speech_started = False
+        self._speech_candidate_started_at = None
         self._last_speech_at = None
         self._stream_started_at = time.monotonic()
         self._speech_done.clear()
         self._audio_ended = False
         self._late_audio_chunk_count = 0
         self._run_end_sent = False
+        self._voice_assistant_run_active = True
         self._stream_done.clear()
         self._stream_started.set()
         self._events.put_nowait(AudioStart(wake_word=wake_word_phrase))
@@ -289,6 +315,7 @@ class Box3EsphomeMicrophone:
             self._byte_count,
         )
         self._stream_done.set()
+        self._voice_assistant_run_active = False
         self._finish_audio_stream()
 
     def _drop_late_audio_chunk(self) -> None:
@@ -305,6 +332,31 @@ class Box3EsphomeMicrophone:
         event = getattr(aioesphomeapi.VoiceAssistantEventType, event_name)
         self._client.send_voice_assistant_event(event, None)
 
+    async def _execute_api_service(self, service_name: str) -> None:
+        await self._ensure_connected()
+        _, services = await self._client.list_entities_services()
+        for service in services:
+            if service.name == service_name:
+                await self._client.execute_service(service, {})
+                self._logger.debug("executed BOX-3 API service=%s", service_name)
+                return
+
+        raise RuntimeError(f"BOX-3 API service not found: {service_name}")
+
+    async def _start_wake_word_listening(self) -> None:
+        await self._finish_voice_assistant_run()
+        if self._client is not None:
+            self._unsubscribe_voice_assistant()
+            self._subscribe_voice_assistant()
+            self._logger.info("BOX-3 wake-word listening armed")
+
+    async def _finish_voice_assistant_run(self) -> None:
+        await self._ensure_connected()
+        if self._voice_assistant_run_active:
+            self._send_run_end_once()
+            self._voice_assistant_run_active = False
+            await asyncio.sleep(VOICE_ASSISTANT_REARM_DELAY_SECONDS)
+
     def _send_run_end_once(self) -> None:
         if self._run_end_sent:
             return
@@ -320,36 +372,6 @@ class Box3EsphomeMicrophone:
             self._send_voice_assistant_event("VOICE_ASSISTANT_STT_VAD_END")
             self._logger.debug("sent VOICE_ASSISTANT_STT_VAD_END")
         self._events.put_nowait(AudioEnd())
-        self._start_rearm_task()
-
-    def _start_rearm_task(self) -> None:
-        if self._rearm_task is not None and not self._rearm_task.done():
-            return
-        self._rearm_task = asyncio.create_task(self._rearm_after_audio_end())
-
-    async def _rearm_after_audio_end(self) -> None:
-        try:
-            if not self._stream_done.is_set():
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(
-                        self._stream_done.wait(),
-                        timeout=VOICE_ASSISTANT_STOP_TIMEOUT_SECONDS,
-                    )
-            if not self._stream_done.is_set():
-                self._logger.debug(
-                    "BOX-3 stream stop was not observed within %.1fs; forcing run end",
-                    VOICE_ASSISTANT_STOP_TIMEOUT_SECONDS,
-                )
-            self._send_run_end_once()
-            await asyncio.sleep(VOICE_ASSISTANT_REARM_DELAY_SECONDS)
-            if self._client is not None:
-                self._unsubscribe_voice_assistant()
-                self._subscribe_voice_assistant()
-                self._logger.info("BOX-3 voice assistant rearmed")
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            self._logger.exception("failed to rearm BOX-3 voice assistant")
 
     async def _wait_for_end_of_speech(self, capture_seconds: float) -> None:
         stream_done_task = asyncio.create_task(self._stream_done.wait())
@@ -380,20 +402,37 @@ class Box3EsphomeMicrophone:
         now = time.monotonic()
         if peak >= SPEECH_PEAK_THRESHOLD:
             if not self._speech_started:
+                if self._speech_candidate_started_at is None:
+                    self._speech_candidate_started_at = now
+                    return
+                candidate_seconds = now - self._speech_candidate_started_at
+                if candidate_seconds < SPEECH_START_SECONDS:
+                    return
                 self._logger.info("speech detected peak=%s", peak)
             self._speech_started = True
             self._last_speech_at = now
             return
 
         if not self._speech_started:
-            return
-        if self._stream_started_at is not None and now - self._stream_started_at < START_GRACE_SECONDS:
+            self._speech_candidate_started_at = None
+            if (
+                self._stream_started_at is not None
+                and now - self._stream_started_at >= self._initial_silence_seconds
+                and not self._speech_done.is_set()
+            ):
+                self._logger.info(
+                    "initial silence timeout seconds=%.2f peak=%s",
+                    self._initial_silence_seconds,
+                    peak,
+                )
+                self._speech_done.set()
+                self._finish_audio_stream()
             return
         if self._last_speech_at is None:
             return
 
         silence_seconds = now - self._last_speech_at
-        if silence_seconds >= END_SILENCE_SECONDS and not self._speech_done.is_set():
+        if silence_seconds >= self._end_silence_seconds and not self._speech_done.is_set():
             self._logger.info(
                 "end of speech detected silence_seconds=%.2f peak=%s",
                 silence_seconds,

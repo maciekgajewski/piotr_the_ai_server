@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Protocol
 
-from ai_server.microphones.messages import AudioChunk, AudioEvent, TextEvent
+from ai_server.microphones.messages import AudioChunk, AudioEvent, MicrophoneOutputEvent, TextEvent
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 
 
@@ -14,7 +14,7 @@ class Microphone(Protocol):
     async def wait_for_event(self) -> AudioEvent:
         raise NotImplementedError
 
-    async def send_audio_event(self, event: AudioEvent) -> None:
+    async def send_output_event(self, event: MicrophoneOutputEvent) -> None:
         raise NotImplementedError
 
     async def close(self) -> None:
