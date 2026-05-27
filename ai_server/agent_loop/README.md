@@ -5,16 +5,16 @@ It does not use the existing `ai_server.ollama.OllamaClient`.
 
 ## Tool conventions
 
-Inherit from `ToolClass` and decorate async instance methods. The convention
+Inherit from `AgentCallableSet` and decorate async instance methods. The convention
 form uses the method name as the tool name and the method docstring as the tool
 description.
 
 ```python
-from ai_server.agent_loop import ToolClass
+from ai_server.agent_loop import AgentCallableSet
 
 
-class MathTools(ToolClass):
-    @ToolClass.tool
+class MathTools(AgentCallableSet):
+    @AgentCallableSet.tool
     async def add(self, a: int, b: int) -> int:
         """Add two numbers."""
         return a + b
@@ -26,11 +26,11 @@ The explicit form lets you override name and description. Use
 ```python
 from typing import Annotated
 
-from ai_server.agent_loop import ToolClass
+from ai_server.agent_loop import AgentCallableSet
 
 
-class MathTools(ToolClass):
-    @ToolClass.tool(name="multiply_numbers", description="Multiply two numbers.")
+class MathTools(AgentCallableSet):
+    @AgentCallableSet.tool(name="multiply_numbers", description="Multiply two numbers.")
     async def multiply(
         self,
         a: Annotated[int, "The first number"],

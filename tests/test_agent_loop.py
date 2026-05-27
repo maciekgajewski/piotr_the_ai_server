@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 import pytest
 
-from ai_server.agent_loop import AgentLoop, AgentLoopConfig, MODEL_FAILURE_REPLY, ToolClass
+from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, MODEL_FAILURE_REPLY
 
 
 class FakeResponse:
@@ -43,11 +43,11 @@ class LightMode(Enum):
     EVENING = "evening"
 
 
-class ExampleTools(ToolClass):
+class ExampleTools(AgentCallableSet):
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    @ToolClass.tool
+    @AgentCallableSet.tool
     async def add(
         self,
         a: Annotated[int, "The first number"],
@@ -58,12 +58,12 @@ class ExampleTools(ToolClass):
         self.calls.append(("add", {"a": a, "b": b, "label": label}))
         return {"label": label, "value": a + b}
 
-    @ToolClass.tool(name="set_light_mode", description="Set a light mode.")
+    @AgentCallableSet.tool(name="set_light_mode", description="Set a light mode.")
     async def set_mode(self, mode: Annotated[LightMode, "The desired light mode"]) -> str:
         self.calls.append(("set_mode", {"mode": mode}))
         return mode.value
 
-    @ToolClass.tool
+    @AgentCallableSet.tool
     async def collect(self, values: list[int], metadata: dict[str, str]) -> list[int]:
         """Collect values."""
         self.calls.append(("collect", {"values": values, "metadata": metadata}))
@@ -146,8 +146,8 @@ def test_call_tool_rejects_invalid_arguments() -> None:
 
 
 def test_call_tool_rejects_non_json_return_value() -> None:
-    class BadReturnTools(ToolClass):
-        @ToolClass.tool
+    class BadReturnTools(AgentCallableSet):
+        @AgentCallableSet.tool
         async def broken(self) -> float:
             return float("nan")
 
@@ -158,8 +158,8 @@ def test_call_tool_rejects_non_json_return_value() -> None:
 def test_tool_decorator_rejects_non_async_method() -> None:
     with pytest.raises(TypeError, match="async methods"):
 
-        class BadTools(ToolClass):
-            @ToolClass.tool
+        class BadTools(AgentCallableSet):
+            @AgentCallableSet.tool
             def broken(self, value: str) -> str:
                 return value
 
@@ -167,8 +167,8 @@ def test_tool_decorator_rejects_non_async_method() -> None:
 def test_tool_registry_rejects_unsupported_annotation() -> None:
     with pytest.raises(TypeError, match="unsupported JSON tool type annotation"):
 
-        class BadTools(ToolClass):
-            @ToolClass.tool
+        class BadTools(AgentCallableSet):
+            @AgentCallableSet.tool
             async def broken(self, value: tuple[str, ...]) -> str:
                 return ",".join(value)
 

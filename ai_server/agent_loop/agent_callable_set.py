@@ -32,7 +32,7 @@ class ToolMetadata:
     description: str | None
 
 
-class ToolClass:
+class AgentCallableSet:
     __agent_loop_tools__: dict[str, ToolMethod] = {}
 
     def __init_subclass__(cls) -> None:
@@ -69,7 +69,7 @@ class ToolClass:
             return lambda decorated: cls.tool(decorated, name=name, description=description)
 
         if not inspect.iscoroutinefunction(method):
-            raise TypeError("@ToolClass.tool can only decorate async methods")
+            raise TypeError("@AgentCallableSet.tool can only decorate async methods")
         if name is not None and not name:
             raise ValueError("tool name must be a non-empty string")
 
@@ -99,9 +99,9 @@ def _unwrap_method(raw_member: object) -> object:
 
 def _build_tool_method(cls: type, method_name: str, method: object, metadata: ToolMetadata) -> ToolMethod:
     if isinstance(cls.__dict__[method_name], (classmethod, staticmethod)):
-        raise TypeError("@ToolClass.tool supports regular instance methods only")
+        raise TypeError("@AgentCallableSet.tool supports regular instance methods only")
     if not callable(method):
-        raise TypeError("@ToolClass.tool can only decorate methods")
+        raise TypeError("@AgentCallableSet.tool can only decorate methods")
 
     signature = inspect.signature(method)
     parameters = list(signature.parameters.values())

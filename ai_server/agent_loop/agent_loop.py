@@ -10,7 +10,7 @@ from aiohttp import ClientSession, ClientTimeout
 from ai_server.agent_loop.config import AgentLoopConfig
 from ai_server.agent_loop.interfaces import HttpSession
 from ai_server.agent_loop.messages import AgentReply
-from ai_server.agent_loop.tool_class import ToolClass
+from ai_server.agent_loop.agent_callable_set import AgentCallableSet
 
 
 MODEL_FAILURE_REPLY = "Model się zesrał"
@@ -21,7 +21,7 @@ class AgentLoop:
         self,
         config: AgentLoopConfig,
         system_prompt: str,
-        tools: ToolClass,
+        tools: AgentCallableSet,
         session: HttpSession | None = None,
     ) -> None:
         self._config = config
