@@ -28,13 +28,14 @@ class AgentLoop:
         self._system_prompt = system_prompt
         self._tools = tools
         self._tool_schemas = tools.get_tool_schemas()
-        self._messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+        self._messages: list[dict[str, Any]] = []
         self._session = session
         self._owns_session = session is None
         self._eval_count = 0
         self._turn_number = 0
         self._instance_id = f"{id(self):x}"
         self._logger = logging.getLogger(f"{__name__}.AgentLoop[{self._instance_id}:{config.model}]")
+        self._append_context_message({"role": "system", "content": system_prompt})
 
     @property
     def eval_count(self) -> int:
@@ -48,10 +49,17 @@ class AgentLoop:
 
     async def close(self) -> None:
         if self._owns_session and self._session is not None:
+            self._logger.debug("closing owned AgentLoop HTTP session")
             await self._session.close()
 
     async def send_user_message(self, message: str) -> AgentReply:
-        self._messages.append({"role": "user", "content": message})
+        self._logger.debug(
+            "received user message message_len=%s message=%r history_len_before=%s",
+            len(message),
+            message,
+            len(self._messages),
+        )
+        self._append_context_message({"role": "user", "content": message})
         tool_calls_this_message = 0
         repair_attempts = 0
 
@@ -61,7 +69,7 @@ class AgentLoop:
                 response = await self._send_chat_request()
                 elapsed_ms = round((time.perf_counter() - started_at) * 1000)
                 assistant_message = _parse_assistant_message(response)
-                self._messages.append(assistant_message)
+                self._append_context_message(assistant_message)
 
                 self._record_eval_count(response, elapsed_ms)
                 tool_calls = _extract_tool_calls(assistant_message)
@@ -69,15 +77,30 @@ class AgentLoop:
                     content = assistant_message.get("content", "")
                     if not isinstance(content, str):
                         raise ValueError("assistant message content must be a string")
+                    self._logger.debug(
+                        "returning final assistant reply reply_len=%s reply=%r history_len=%s eval_count=%s",
+                        len(content),
+                        content,
+                        len(self._messages),
+                        self._eval_count,
+                    )
                     return AgentReply(reply_text=content, end_conversation=False)
 
                 tool_calls_this_message += len(tool_calls)
+                self._logger.debug(
+                    "assistant requested tool calls count=%s total_tool_calls_this_message=%s tool_calls=%s",
+                    len(tool_calls),
+                    tool_calls_this_message,
+                    tool_calls,
+                )
                 if tool_calls_this_message > self._config.max_tool_calls_per_message:
                     raise RuntimeError("model exceeded max_tool_calls_per_message")
 
                 for tool_call in tool_calls:
                     try:
                         tool_name, arguments = _parse_tool_call(tool_call)
+                        self._logger.info("tool call requested tool=%s arguments=%s", tool_name, arguments)
+                        self._logger.debug("calling tool tool=%s arguments=%s", tool_name, arguments)
                     except ValueError as exc:
                         repair_attempts += 1
                         self._logger.warning(
@@ -88,7 +111,9 @@ class AgentLoop:
                         )
                         if repair_attempts > self._config.max_tool_repair_attempts:
                             raise RuntimeError("model exceeded max_tool_repair_attempts") from exc
-                        self._messages.append(_tool_error_message("invalid_tool_call", str(exc)))
+                        tool_error_message = _tool_error_message("invalid_tool_call", str(exc))
+                        self._logger.debug("appending corrective tool message message=%s", tool_error_message)
+                        self._append_context_message(tool_error_message)
                         continue
 
                     try:
@@ -104,19 +129,30 @@ class AgentLoop:
                         )
                         if repair_attempts > self._config.max_tool_repair_attempts:
                             raise RuntimeError("model exceeded max_tool_repair_attempts") from exc
-                        self._messages.append(_tool_error_message(tool_name, str(exc)))
+                        tool_error_message = _tool_error_message(tool_name, str(exc))
+                        self._logger.debug("appending corrective tool message tool=%s message=%s", tool_name, tool_error_message)
+                        self._append_context_message(tool_error_message)
                         continue
                     except Exception as exc:
                         self._logger.exception("tool execution failed tool=%s", tool_name)
-                        self._messages.append(_tool_error_message(tool_name, str(exc)))
+                        tool_error_message = _tool_error_message(tool_name, str(exc))
+                        self._logger.debug("appending tool execution error message tool=%s message=%s", tool_name, tool_error_message)
+                        self._append_context_message(tool_error_message)
                         continue
 
                     serialized_result = json.dumps(result, ensure_ascii=False)
+                    self._logger.info("tool call completed tool=%s result=%s", tool_name, serialized_result)
                     self._logger.debug("tool call completed tool=%s result=%s", tool_name, serialized_result)
-                    self._messages.append({"role": "tool", "tool_name": tool_name, "content": serialized_result})
+                    tool_result_message = {"role": "tool", "tool_name": tool_name, "content": serialized_result}
+                    self._logger.debug("appending tool result message message=%s", tool_result_message)
+                    self._append_context_message(tool_result_message)
         except Exception:
             self._logger.exception("unrecoverable agent loop error")
             return AgentReply(reply_text=MODEL_FAILURE_REPLY, end_conversation=True)
+
+    def _append_context_message(self, message: dict[str, Any]) -> None:
+        self._messages.append(message)
+        self._logger.info("context message appended message=%s", message)
 
     async def _send_chat_request(self) -> dict[str, Any]:
         payload: dict[str, Any] = {

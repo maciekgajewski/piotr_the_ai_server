@@ -86,6 +86,8 @@ services:
       - ./.whisper-cache:/app/.whisper-cache
       - ./audio:/app/audio
     entrypoint:
+      - /usr/local/bin/ai-server-entrypoint.sh
+    command:
       - python3
       - -m
       - ai_server.server

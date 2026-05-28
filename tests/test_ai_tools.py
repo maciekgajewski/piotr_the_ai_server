@@ -224,6 +224,7 @@ class FakeAgentLoop:
         self.system_prompt = None
         self.tools = None
         self.messages = []
+        self.eval_count = 0
 
     def factory(self, config, system_prompt, tools):
         self.config = config

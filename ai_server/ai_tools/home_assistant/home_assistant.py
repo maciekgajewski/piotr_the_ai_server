@@ -19,6 +19,7 @@ from ai_server.messages import TextMessage
 HOME_ASSISTANT_FAILURE_REPLY = "Przepraszam, nie udało mi się połączyć z Home Assistant."
 DEFAULT_CONTROLLABLE_DOMAINS = ("climate", "light", "switch", "fan", "cover")
 DEFAULT_INVENTORY_REFRESH_SECONDS = 30.0
+DEFAULT_INVENTORY_SUMMARY_SECONDS = 300.0
 HOME_ASSISTANT_WEBSOCKET_PATH = "/api/websocket"
 
 JsonScalar: TypeAlias = str | int | float | bool
@@ -49,11 +50,30 @@ class HomeAssistantTool(BaseTool, AgentCallableSet):
         self._home_assistant = _parse_home_assistant_options(self._config.options)
         self._inventory: HomeAssistantInventory | None = None
         self._refresh_task: asyncio.Task[None] | None = None
+        self._last_inventory_summary_at: float | None = None
+        self._logger.debug(
+            "configured HomeAssistantTool url=%s controllable_domains=%s inventory_refresh_seconds=%s inventory_summary_seconds=%s agent_loop_model=%s ollama_url=%s",
+            self._home_assistant.url,
+            self._home_assistant.controllable_domains,
+            self._home_assistant.inventory_refresh_seconds,
+            self._home_assistant.inventory_summary_seconds,
+            self._home_assistant.agent_loop_model,
+            self._home_assistant.ollama_url,
+        )
         self._start_background_refresh()
 
     async def run(self, conversation: Conversation, endpoint: ConversationEndpoint, request: TextMessage) -> None:
         self._start_background_refresh()
         system_prompt = _build_system_prompt(self._inventory, conversation)
+        self._logger.debug(
+            "starting Home Assistant conversation conversation_id=%s user=%s location=%s initial_request=%r inventory_ready=%s system_prompt=%r",
+            conversation.conversation_id,
+            conversation.user,
+            conversation.location,
+            request.text,
+            self._inventory is not None,
+            system_prompt,
+        )
         loop_config = AgentLoopConfig(
             model=self._home_assistant.agent_loop_model,
             ollama_url=self._home_assistant.ollama_url,
@@ -61,40 +81,73 @@ class HomeAssistantTool(BaseTool, AgentCallableSet):
 
         async with AgentLoop(config=loop_config, system_prompt=system_prompt, tools=self) as loop:
             reply = await loop.send_user_message(request.text)
+            self._logger.debug(
+                "sending Home Assistant reply conversation_id=%s reply=%r end_conversation=%s loop_eval_count=%s",
+                conversation.conversation_id,
+                reply.reply_text,
+                reply.end_conversation,
+                loop.eval_count,
+            )
             await endpoint.send_message(TextMessage(text=reply.reply_text))
             if reply.end_conversation:
+                self._logger.debug("ending Home Assistant conversation after initial reply conversation_id=%s", conversation.conversation_id)
                 return
 
             async for follow_up in endpoint.messages():
+                self._logger.debug(
+                    "received Home Assistant follow-up conversation_id=%s message=%r",
+                    conversation.conversation_id,
+                    follow_up.text,
+                )
                 reply = await loop.send_user_message(follow_up.text)
+                self._logger.debug(
+                    "sending Home Assistant follow-up reply conversation_id=%s reply=%r end_conversation=%s loop_eval_count=%s",
+                    conversation.conversation_id,
+                    reply.reply_text,
+                    reply.end_conversation,
+                    loop.eval_count,
+                )
                 await endpoint.send_message(TextMessage(text=reply.reply_text))
                 if reply.end_conversation:
+                    self._logger.debug("ending Home Assistant conversation after follow-up conversation_id=%s", conversation.conversation_id)
                     return
+        self._logger.debug("Home Assistant conversation input stream ended conversation_id=%s", conversation.conversation_id)
 
     async def close(self) -> None:
         if self._refresh_task is None:
+            self._logger.debug("close requested; no Home Assistant inventory refresh task exists")
             return
+        self._logger.debug("cancelling Home Assistant inventory refresh task")
         self._refresh_task.cancel()
         try:
             await self._refresh_task
         except asyncio.CancelledError:
             pass
+        self._logger.debug("Home Assistant inventory refresh task stopped")
         self._refresh_task = None
 
-    @AgentCallableSet.tool(description="List controllable Home Assistant devices in an area or room.")
+    @AgentCallableSet.tool(
+        description=(
+            "Inspect only: list controllable Home Assistant devices in an area or room. "
+            "This does not modify anything. For an action request, call modify_device after selecting the device."
+        )
+    )
     async def list_devices(
         self,
         area_name: Annotated[str, "Area id, room name, or any Home Assistant-provided room alias."],
     ) -> list[dict[str, Any]] | dict[str, Any]:
+        self._logger.debug("list_devices called area_name=%r inventory_ready=%s", area_name, self._inventory is not None)
         inventory = self._inventory
         if inventory is None:
+            self._logger.debug("list_devices returning inventory-not-ready")
             return _inventory_not_ready()
 
         area = inventory.resolve_area(area_name)
         if isinstance(area, dict):
+            self._logger.debug("list_devices area resolution failed area_name=%r result=%s", area_name, area)
             return area
 
-        return [
+        result = [
             {
                 "device_id": device.device_id,
                 "name": device.name,
@@ -105,86 +158,147 @@ class HomeAssistantTool(BaseTool, AgentCallableSet):
             }
             for device in inventory.devices_by_area.get(area.area_id, ())
         ]
+        self._logger.debug("list_devices resolved area_id=%s area_name=%s devices=%s", area.area_id, area.name, result)
+        return result
 
-    @AgentCallableSet.tool(description="List modifiable properties for a Home Assistant device.")
+    @AgentCallableSet.tool(
+        description=(
+            "Inspect only: list modifiable properties for a Home Assistant device. "
+            "This does not modify anything. If the requested property and value are known, the next step must be modify_device."
+        )
+    )
     async def list_modifiable_properties(
         self,
         device: Annotated[str, "Device id, entity id, device name, entity name, or any entity alias."],
     ) -> list[dict[str, Any]] | dict[str, Any]:
+        self._logger.debug(
+            "list_modifiable_properties called device=%r inventory_ready=%s",
+            device,
+            self._inventory is not None,
+        )
         inventory = self._inventory
         if inventory is None:
+            self._logger.debug("list_modifiable_properties returning inventory-not-ready")
             return _inventory_not_ready()
 
         resolved_device = inventory.resolve_device(device)
         if isinstance(resolved_device, dict):
+            self._logger.debug("list_modifiable_properties device resolution failed device=%r result=%s", device, resolved_device)
             return resolved_device
 
-        return [_property_to_mapping(property_info) for property_info in resolved_device.properties]
+        result = [_property_to_mapping(property_info) for property_info in resolved_device.properties]
+        self._logger.debug(
+            "list_modifiable_properties resolved device_id=%s device_name=%s properties=%s",
+            resolved_device.device_id,
+            resolved_device.name,
+            result,
+        )
+        return result
 
-    @AgentCallableSet.tool(description="Modify one Home Assistant device property.")
+    @AgentCallableSet.tool(description="Modify one Home Assistant device property. This is the only tool that changes devices.")
     async def modify_device(
         self,
         device: Annotated[str, "Device id, entity id, device name, entity name, or any entity alias."],
         property_name: Annotated[str, "Property name returned by list_modifiable_properties."],
         value: Annotated[JsonScalar, "Desired property value. Common aliases are accepted."],
     ) -> dict[str, Any]:
+        self._logger.debug(
+            "modify_device called device=%r property_name=%r value=%r inventory_ready=%s",
+            device,
+            property_name,
+            value,
+            self._inventory is not None,
+        )
         inventory = self._inventory
         if inventory is None:
+            self._logger.debug("modify_device returning inventory-not-ready")
             return _inventory_not_ready()
 
         resolved_device = inventory.resolve_device(device)
         if isinstance(resolved_device, dict):
+            self._logger.debug("modify_device device resolution failed device=%r result=%s", device, resolved_device)
             return resolved_device
 
         property_info = resolved_device.property_by_name.get(property_name)
         if property_info is None:
-            return {
+            result = {
                 "error": "unknown_property",
                 "device_id": resolved_device.device_id,
                 "property_name": property_name,
                 "known_properties": sorted(resolved_device.property_by_name),
             }
+            self._logger.debug("modify_device property resolution failed result=%s", result)
+            return result
 
         try:
             service_call = _build_service_call(property_info, value)
         except ValueError as exc:
-            return {
+            result = {
                 "error": "invalid_property_value",
                 "device_id": resolved_device.device_id,
                 "property_name": property_name,
                 "message": str(exc),
             }
+            self._logger.debug("modify_device value validation failed result=%s", result)
+            return result
 
+        self._logger.debug(
+            "modify_device calling Home Assistant service device_id=%s property=%s service=%s.%s entity_id=%s service_data=%s",
+            resolved_device.device_id,
+            property_info.property_name,
+            service_call.domain,
+            service_call.service,
+            property_info.entity_id,
+            service_call.service_data,
+        )
         await _call_home_assistant_service(self._home_assistant, service_call, self._logger)
-        return {
+        result = {
             "status": "ok",
             "service": f"{service_call.domain}.{service_call.service}",
             "entity_id": property_info.entity_id,
         }
+        self._logger.debug("modify_device completed result=%s", result)
+        return result
 
     def _start_background_refresh(self) -> None:
         if self._refresh_task is not None and not self._refresh_task.done():
+            self._logger.debug("Home Assistant inventory refresh task already running")
             return
         try:
             asyncio.get_running_loop()
         except RuntimeError:
+            self._logger.debug("not starting Home Assistant inventory refresh task; no running event loop")
             return
+        self._logger.debug("starting Home Assistant inventory refresh task interval_seconds=%s", self._home_assistant.inventory_refresh_seconds)
         self._refresh_task = asyncio.create_task(self._refresh_inventory_loop())
 
     async def _refresh_inventory_loop(self) -> None:
         while True:
             try:
                 self._inventory = await _fetch_inventory(self._home_assistant, self._logger)
-                self._logger.info(
-                    "refreshed Home Assistant inventory areas=%s devices=%s",
-                    len(self._inventory.areas_by_id),
-                    len(self._inventory.devices_by_id),
-                )
+                self._log_inventory_summary_if_due(self._inventory)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self._logger.exception("failed to refresh Home Assistant inventory")
             await asyncio.sleep(self._home_assistant.inventory_refresh_seconds)
+
+    def _log_inventory_summary_if_due(self, inventory: "HomeAssistantInventory") -> None:
+        now = asyncio.get_running_loop().time()
+        if self._last_inventory_summary_at is None:
+            self._logger.debug(
+                "refreshed Home Assistant inventory initial_summary=%s",
+                _inventory_debug_summary(inventory),
+            )
+            self._last_inventory_summary_at = now
+            return
+        if now - self._last_inventory_summary_at >= self._home_assistant.inventory_summary_seconds:
+            self._logger.debug(
+                "refreshed Home Assistant inventory heartbeat areas=%s devices=%s",
+                len(inventory.areas_by_id),
+                len(inventory.devices_by_id),
+            )
+            self._last_inventory_summary_at = now
 
 
 @dataclass(frozen=True)
@@ -193,6 +307,7 @@ class HomeAssistantOptions:
     token: str
     controllable_domains: tuple[str, ...]
     inventory_refresh_seconds: float
+    inventory_summary_seconds: float
     agent_loop_model: str
     ollama_url: str
 
@@ -323,6 +438,14 @@ def _parse_home_assistant_options(options: dict[str, Any]) -> HomeAssistantOptio
     ):
         raise ValueError("agent.home_assistant.inventory_refresh_seconds must be a positive number")
 
+    inventory_summary_seconds = raw_options.get("inventory_summary_seconds", DEFAULT_INVENTORY_SUMMARY_SECONDS)
+    if (
+        not isinstance(inventory_summary_seconds, (int, float))
+        or isinstance(inventory_summary_seconds, bool)
+        or inventory_summary_seconds <= 0
+    ):
+        raise ValueError("agent.home_assistant.inventory_summary_seconds must be a positive number")
+
     agent_loop_model = options.get("model")
     if not isinstance(agent_loop_model, str) or not agent_loop_model:
         raise ValueError("agent.model must be a non-empty string for HomeAssistantTool")
@@ -336,13 +459,14 @@ def _parse_home_assistant_options(options: dict[str, Any]) -> HomeAssistantOptio
         token=token,
         controllable_domains=tuple(dict.fromkeys(domains)),
         inventory_refresh_seconds=float(inventory_refresh_seconds),
+        inventory_summary_seconds=float(inventory_summary_seconds),
         agent_loop_model=agent_loop_model,
         ollama_url=ollama_url,
     )
 
 
 async def _fetch_inventory(options: HomeAssistantOptions, logger: logging.Logger) -> HomeAssistantInventory:
-    async with _HomeAssistantWebSocket(options, logger) as client:
+    async with _HomeAssistantWebSocket(options, logger, log_traffic=False) as client:
         areas = await client.command({"type": "config/area_registry/list"})
         devices = await client.command({"type": "config/device_registry/list"})
         entity_registry = await client.command({"type": "config/entity_registry/list"})
@@ -359,13 +483,14 @@ async def _fetch_inventory(options: HomeAssistantOptions, logger: logging.Logger
                 continue
             entity_details.append(await client.command({"type": "config/entity_registry/get", "entity_id": entity_id}))
 
-    return _build_inventory(
+    inventory = _build_inventory(
         raw_areas=areas,
         raw_devices=devices,
         raw_entity_details=entity_details,
         raw_states=states,
         controllable_domains=options.controllable_domains,
     )
+    return inventory
 
 
 async def _call_home_assistant_service(
@@ -382,34 +507,53 @@ async def _call_home_assistant_service(
     if service_call.service_data:
         payload["service_data"] = service_call.service_data
 
-    async with _HomeAssistantWebSocket(options, logger) as client:
+    logger.debug(
+        "calling Home Assistant service domain=%s service=%s entity_id=%s service_data=%s",
+        service_call.domain,
+        service_call.service,
+        service_call.entity_id,
+        service_call.service_data,
+    )
+    async with _HomeAssistantWebSocket(options, logger, log_traffic=True) as client:
         await client.command(payload)
+    logger.debug(
+        "Home Assistant service call completed domain=%s service=%s entity_id=%s",
+        service_call.domain,
+        service_call.service,
+        service_call.entity_id,
+    )
 
 
 class _HomeAssistantWebSocket:
-    def __init__(self, options: HomeAssistantOptions, logger: logging.Logger) -> None:
+    def __init__(self, options: HomeAssistantOptions, logger: logging.Logger, *, log_traffic: bool) -> None:
         self._options = options
         self._logger = logger
+        self._log_traffic = log_traffic
         self._session: ClientSession | None = None
         self._websocket = None
         self._next_id = 1
 
     async def __aenter__(self) -> "_HomeAssistantWebSocket":
         self._session = ClientSession()
-        websocket_url = _websocket_url(self._options.url)
-        self._logger.debug("Home Assistant WS connecting url=%s", websocket_url)
-        self._websocket = await self._session.ws_connect(websocket_url, heartbeat=30)
+        try:
+            websocket_url = _websocket_url(self._options.url)
+            if self._log_traffic:
+                self._logger.debug("Home Assistant WS connecting url=%s", websocket_url)
+            self._websocket = await self._session.ws_connect(websocket_url, heartbeat=30)
 
-        auth_required = await self._websocket.receive_json(timeout=15)
-        if auth_required.get("type") != "auth_required":
-            raise ValueError("Home Assistant WebSocket did not request auth")
+            auth_required = await self._websocket.receive_json(timeout=15)
+            if auth_required.get("type") != "auth_required":
+                raise ValueError("Home Assistant WebSocket did not request auth")
 
-        await self._websocket.send_json({"type": "auth", "access_token": self._options.token})
-        auth_result = await self._websocket.receive_json(timeout=15)
-        if auth_result.get("type") != "auth_ok":
-            raise ValueError("Home Assistant WebSocket auth failed")
+            await self._websocket.send_json({"type": "auth", "access_token": self._options.token})
+            auth_result = await self._websocket.receive_json(timeout=15)
+            if auth_result.get("type") != "auth_ok":
+                raise ValueError("Home Assistant WebSocket auth failed")
 
-        return self
+            return self
+        except BaseException:
+            await self.__aexit__(None, None, None)
+            raise
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         if self._websocket is not None:
@@ -424,7 +568,8 @@ class _HomeAssistantWebSocket:
         command_id = self._next_id
         self._next_id += 1
         command_payload = {"id": command_id, **payload}
-        self._logger.debug("Home Assistant WS request type=%s id=%s", payload.get("type"), command_id)
+        if self._log_traffic:
+            self._logger.debug("Home Assistant WS request type=%s id=%s payload=%s", payload.get("type"), command_id, payload)
         await self._websocket.send_json(command_payload)
 
         while True:
@@ -436,8 +581,15 @@ class _HomeAssistantWebSocket:
                 continue
             if not body.get("success"):
                 raise ValueError(f"Home Assistant command failed type={payload.get('type')} error={body.get('error')}")
-            self._logger.debug("Home Assistant WS response type=%s id=%s", payload.get("type"), command_id)
-            return body.get("result")
+            result = body.get("result")
+            if self._log_traffic:
+                self._logger.debug(
+                    "Home Assistant WS response type=%s id=%s result_summary=%s",
+                    payload.get("type"),
+                    command_id,
+                    _summarize_ws_result(result),
+                )
+            return result
 
 
 def _build_inventory(
@@ -538,6 +690,47 @@ def _build_inventory(
         area_lookup=_build_area_lookup(areas_by_id),
         device_lookup=_build_device_lookup(devices_by_id),
     )
+
+
+def _summarize_ws_result(result: Any) -> Any:
+    if isinstance(result, list):
+        return {
+            "type": "list",
+            "count": len(result),
+            "sample": result[:2],
+        }
+    if isinstance(result, dict):
+        return {
+            "type": "object",
+            "keys": sorted(result)[:20],
+            "value": result if len(result) <= 10 else None,
+        }
+    return result
+
+
+def _inventory_debug_summary(inventory: HomeAssistantInventory) -> dict[str, Any]:
+    return {
+        "areas": [
+            {
+                "area_id": area.area_id,
+                "name": area.name,
+                "aliases": list(area.aliases),
+                "device_count": len(inventory.devices_by_area.get(area.area_id, ())),
+            }
+            for area in sorted(inventory.areas_by_id.values(), key=lambda item: item.name.casefold())
+        ],
+        "devices": [
+            {
+                "device_id": device.device_id,
+                "name": device.name,
+                "type": device.device_type,
+                "area": inventory.areas_by_id[device.area_id].name,
+                "aliases": list(device.aliases),
+                "properties": [property_info.property_name for property_info in device.properties],
+            }
+            for device in sorted(inventory.devices_by_id.values(), key=lambda item: item.name.casefold())
+        ],
+    }
 
 
 def _properties_for_entity(entity: HomeAssistantEntity) -> tuple[ModifiableProperty, ...]:
@@ -754,6 +947,18 @@ def _build_system_prompt(inventory: HomeAssistantInventory | None, conversation:
             "You are a Home Assistant control agent.",
             "Reply in Polish. Use tools to inspect devices and perform modifications.",
             "If the user does not name a room, prefer the current location when it is known.",
+            "Critical action rules:",
+            "- list_devices and list_modifiable_properties only inspect Home Assistant; they never change devices.",
+            "- For user requests to turn on, turn off, set, change, open, close, dim, brighten, heat, cool, or adjust a device, you must call modify_device.",
+            "- Never claim that a device was changed unless modify_device returned status=ok for that exact requested change.",
+            "- If you inspected devices but did not call modify_device, say that you found the device but have not changed it yet.",
+            "- If the current room has exactly one device matching the requested type or alias, that device is specific enough; call modify_device without asking for confirmation.",
+            "- Do not ask for confirmation for ordinary reversible smart-home changes unless multiple matching devices or values remain ambiguous.",
+            "- If you cannot choose the device, property, or value after inspecting available devices/properties, ask a clarification question instead of claiming success.",
+            "- For requests about klimatyzacja, klima, air conditioning, or AC, prefer devices with type=climate.",
+            "- To turn climate or air conditioning off, prefer modify_device with property_name=hvac_mode and value=off when hvac_mode is available.",
+            "- After list_modifiable_properties returns the needed property for an action request, your next assistant response must be a modify_device tool call, not text.",
+            '- Example: user says "wyłącz klimatyzację" in Office, list_devices shows one climate device "Study air conditioner", and list_modifiable_properties shows hvac_mode with off; then call modify_device(device="Study air conditioner", property_name="hvac_mode", value="off").',
             f"Current user: {user}",
             f"Current location: {location}",
             "Known rooms and aliases:",
