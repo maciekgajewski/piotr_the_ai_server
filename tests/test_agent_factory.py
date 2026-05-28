@@ -8,8 +8,8 @@ from ai_server.agent.echo import EchoAgent
 from ai_server.agent.interrogator import InterrogatorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.ai_tools.calculator import CalculatorTool
+from ai_server.ai_tools.home_assistant import HomeAssistantTool
 from ai_server.config import AgentConfig
-from ai_server.ollama import OllamaClient
 
 
 def test_create_agent_returns_echo_agent() -> None:
@@ -58,6 +58,7 @@ def test_create_agent_returns_assistant_agent_with_loaded_tools(monkeypatch) -> 
                     type="assistant",
                     options={
                         "intent_router_model": "llama3.2:3b",
+                        "model": "qwen3:8b",
                         "home_assistant": {
                             "url": "http://ha.local:8123",
                             "token": "secret-token",
@@ -69,6 +70,7 @@ def test_create_agent_returns_assistant_agent_with_loaded_tools(monkeypatch) -> 
 
         try:
             assert isinstance(agent, AssistantAgent)
+            assert agent._tools["home_assistant"]._config.options["ollama_url"] == "http://ollama:11434"
             assert "calculator" in agent._tools
             assert "- calculator: A tool for performing mathematical calculations." in agent._user_prompt_template
             assert "User input: {user_input}" in agent._user_prompt_template
@@ -76,13 +78,14 @@ def test_create_agent_returns_assistant_agent_with_loaded_tools(monkeypatch) -> 
             await agent.close()
 
     monkeypatch.setattr(AssistantAgent, "preload", fake_preload)
+    monkeypatch.setattr(HomeAssistantTool, "_start_background_refresh", lambda self: None)
 
     asyncio.run(create_and_check_agent())
 
 
 def test_assistant_prompt_template_preserves_json_schema_braces() -> None:
     config = AgentConfig(type="assistant", options={"intent_router_model": "llama3.2:3b"})
-    tool = CalculatorTool(config, OllamaClient(session=FakeSession()))
+    tool = CalculatorTool(config)
     template = _build_user_prompt_template({"calculator": tool})
 
     prompt = template.format(user_input="która godzina?")

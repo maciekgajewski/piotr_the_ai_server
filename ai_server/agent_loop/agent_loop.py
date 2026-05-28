@@ -40,6 +40,12 @@ class AgentLoop:
     def eval_count(self) -> int:
         return self._eval_count
 
+    async def __aenter__(self) -> "AgentLoop":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.close()
+
     async def close(self) -> None:
         if self._owns_session and self._session is not None:
             await self._session.close()

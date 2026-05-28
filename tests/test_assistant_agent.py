@@ -7,7 +7,6 @@ from ai_server.ai_tools.interfaces import TOOL_NOT_IMPLEMENTED_REPLY
 from ai_server.config import AgentConfig
 from ai_server.interfaces import Conversation
 from ai_server.messages import TextMessage, text_message_to_events
-from ai_server.ollama import OllamaClient
 from conftest import FakeConversationEndpoint
 
 
@@ -35,8 +34,7 @@ def test_parse_tool_route_rejects_invalid_response(content: str, error: str) -> 
 
 def test_assistant_routes_message_to_selected_tool() -> None:
     config = AgentConfig(type="assistant", options={"intent_router_model": "llama3.2:3b"})
-    ollama_client = OllamaClient(session=FakeSession())
-    tool = RecordingTool(config, ollama_client)
+    tool = RecordingTool(config)
     agent = AssistantAgent(
         intent_router_model="llama3.2:3b",
         tools={"time": tool},
@@ -51,19 +49,23 @@ def test_assistant_routes_message_to_selected_tool() -> None:
 
     assert endpoint.sent == list(text_message_to_events(TextMessage(text=TOOL_NOT_IMPLEMENTED_REPLY)))
     assert tool.request == request
+    assert tool.conversation == conversation
 
 
 class RecordingTool:
     name = "time"
     description = "Time tool."
 
-    def __init__(self, config: AgentConfig, ollama_client: OllamaClient) -> None:
+    def __init__(self, config: AgentConfig) -> None:
         self._config = config
-        self._ollama = ollama_client
 
-    async def run(self, endpoint, request: TextMessage) -> None:
+    async def run(self, conversation, endpoint, request: TextMessage) -> None:
+        self.conversation = conversation
         self.request = request
         await endpoint.send_message(TextMessage(text=TOOL_NOT_IMPLEMENTED_REPLY))
+
+    async def close(self) -> None:
+        pass
 
 
 class FakeOllamaClient:
@@ -75,9 +77,3 @@ class FakeOllamaClient:
 
     async def close(self) -> None:
         pass
-
-
-class FakeSession:
-    def post(self, url: str, json: dict):
-        raise AssertionError("unexpected HTTP request")
-

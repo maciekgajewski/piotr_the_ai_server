@@ -119,11 +119,15 @@ class AssistantAgent:
                 len(message.text),
                 elapsed_ms,
             )
-            await tool.run(endpoint, message)
+            await tool.run(conversation, endpoint, message)
 
     async def close(self) -> None:
-        if self._owns_ollama:
-            await self._ollama.close()
+        try:
+            for tool in self._tools.values():
+                await tool.close()
+        finally:
+            if self._owns_ollama:
+                await self._ollama.close()
 
     async def _route_message(self, user_input: str) -> ToolRoute:
         response = await self._ollama.chat(

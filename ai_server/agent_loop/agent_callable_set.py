@@ -227,6 +227,7 @@ def _schema_for_type(annotation: object) -> dict[str, Any]:
         if len(union_args) == 2 and NoneType in union_args:
             value_type = next(arg for arg in union_args if arg is not NoneType)
             return {"anyOf": [_schema_for_type(value_type), {"type": "null"}]}
+        return {"anyOf": [_schema_for_type(arg) for arg in union_args]}
 
     raise TypeError(f"unsupported JSON tool type annotation: {annotation!r}")
 
@@ -295,6 +296,14 @@ def _validate_value(annotation: object, value: Any, path: str) -> Any:
                 return None
             value_type = next(arg for arg in union_args if arg is not NoneType)
             return _validate_value(value_type, value, path)
+
+        errors = []
+        for value_type in union_args:
+            try:
+                return _validate_value(value_type, value, path)
+            except ValueError as exc:
+                errors.append(str(exc))
+        raise ValueError(f"{path} does not match any allowed type: {'; '.join(errors)}")
 
     raise TypeError(f"unsupported JSON tool type annotation: {annotation!r}")
 

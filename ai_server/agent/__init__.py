@@ -50,7 +50,8 @@ async def create_agent(config: AgentConfig, ollama_url: str) -> Agent:
         intent_router_model = config.options["intent_router_model"]
         logger.info("Creating assistant agent intent_router_model=%s", intent_router_model)
         ollama_client = OllamaClient(base_url=ollama_url)
-        tools = create_tools(config, ollama_client)
+        tool_config = AgentConfig(type=config.type, options={**config.options, "ollama_url": ollama_url})
+        tools = create_tools(tool_config)
         logger.info("Loaded %s assistant tools", len(tools))
         agent = AssistantAgent(intent_router_model=intent_router_model, tools=tools, ollama_client=ollama_client)
         try:

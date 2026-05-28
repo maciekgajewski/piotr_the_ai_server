@@ -9,7 +9,6 @@ from ai_server.ai_tools.weather.weather import WeatherTool
 from ai_server.ai_tools.web_search.web_search import WebSearchTool
 from ai_server.ai_tools.wikipedia.wikipedia import WikipediaTool
 from ai_server.config import AgentConfig
-from ai_server.ollama import OllamaClient
 
 
 TOOL_CLASSES = (
@@ -23,11 +22,11 @@ TOOL_CLASSES = (
 )
 
 
-def create_tools(config: AgentConfig, ollama_client: OllamaClient) -> dict[str, Tool]:
+def create_tools(config: AgentConfig) -> dict[str, Tool]:
     logger = logging.getLogger(f"{__name__}.factory")
     tools: dict[str, Tool] = {}
     for tool_class in TOOL_CLASSES:
-        tool = tool_class(config, ollama_client)
+        tool = tool_class(config)
         if tool.name in tools:
             raise ValueError(f"duplicate AI tool name: {tool.name}")
 

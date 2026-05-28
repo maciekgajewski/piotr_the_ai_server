@@ -9,6 +9,7 @@ from aiohttp import ClientSession
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
 
+# TODO: remove this module when the remaining legacy agents stop using it.
 class OllamaError(Exception):
     """Raised when Ollama cannot serve a request."""
 
