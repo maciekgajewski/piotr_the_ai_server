@@ -5,6 +5,7 @@ from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, ServerConfig
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
 from ai_server.domain_agents.interfaces import DomainAgent, DomainTask
+from ai_server.domain_agents.wikipedia import WikipediaDomainAgent
 from ai_server.home_assistant import HomeAssistantConnection
 
 
@@ -38,6 +39,11 @@ def create_domain_agents(
                 timezone=_optional_domain_string(raw_options, domain, "timezone", server_config.timezone),
                 location=_optional_domain_string(raw_options, domain, "location", server_config.location),
                 cache_dir=_domain_cache_dir(raw_options, domain, cache_dir),
+            )
+            continue
+        if domain == "wikipedia":
+            domain_agents[domain] = WikipediaDomainAgent(
+                languages=_domain_languages(raw_options, domain),
             )
             continue
         domain_agents[domain] = _UnsupportedConfiguredDomainAgent(domain)
@@ -85,6 +91,21 @@ def _domain_cache_dir(domain_options: dict[str, Any], domain: str, default: Path
     if not isinstance(value, str) or not value:
         raise ValueError(f"agent.domain_agents.{domain}.cache_dir must be a non-empty string when provided")
     return Path(value).expanduser()
+
+
+def _domain_languages(domain_options: dict[str, Any], domain: str) -> tuple[str, ...]:
+    raw_languages = domain_options.get("languages", domain_options.get("language", ("pl", "en")))
+    if isinstance(raw_languages, str) and raw_languages:
+        return (raw_languages,)
+    if (
+        isinstance(raw_languages, list)
+        and raw_languages
+        and all(isinstance(language, str) and language for language in raw_languages)
+    ):
+        return tuple(raw_languages)
+    if isinstance(raw_languages, tuple) and raw_languages and all(isinstance(language, str) and language for language in raw_languages):
+        return raw_languages
+    raise ValueError(f"agent.domain_agents.{domain}.languages must be a non-empty string or list of strings")
 
 
 __all__ = ["DomainAgent", "DomainTask", "create_domain_agents"]

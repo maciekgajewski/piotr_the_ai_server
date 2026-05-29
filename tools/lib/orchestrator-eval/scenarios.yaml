@@ -42,20 +42,28 @@ scenarios:
             active_domain: null
           needs_clarification: false
           clarification_question: null
-      - final_reply: Włączyłem klimatyzację w salonie, ale Wikipedia nie jest jeszcze podłączona.
+      - final_reply: "Włączyłem klimatyzację w salonie i znalazłem rok urodzenia Einsteina: 1879."
     domain_results:
       home_assistant:
         t1:
           status: ok
           text: Włączono klimatyzację w salonie.
+      wikipedia:
+        t2:
+          status: ok
+          text: Albert Einstein urodził się w 1879 roku.
+          fact: birth_year
+          value: 1879
     expected_tasks:
       - domain: home_assistant
         command:
           operation:
             intent: turn_on
       - domain: wikipedia
+        command:
+          topic: Albert Einstein
     expected_replies:
-      - Włączyłem klimatyzację w salonie, ale Wikipedia nie jest jeszcze podłączona.
+      - "Włączyłem klimatyzację w salonie i znalazłem rok urodzenia Einsteina: 1879."
 
   - name: followup-uses-active-context
     messages:

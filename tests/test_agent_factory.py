@@ -13,6 +13,7 @@ from ai_server.ai_tools.calculator import CalculatorTool
 from ai_server.ai_tools.home_assistant import HomeAssistantTool
 from ai_server.config import AgentConfig, ServerConfig
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
+from ai_server.domain_agents.wikipedia import WikipediaDomainAgent
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 
 
@@ -102,6 +103,7 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
                 "domain_agents": {
                     "home_assistant": {"model": "qwen3:8b"},
                     "time": {},
+                    "wikipedia": {},
                 },
                 "home_assistant": {
                     "url": "http://ha.local:8123",
@@ -129,6 +131,8 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert isinstance(agent._domain_agents["time"], CurrentTimeDomainAgent)
             assert agent._domain_agents["time"]._timezone == "Europe/Warsaw"
             assert agent._domain_agents["time"]._location == "Wrocław"
+            assert isinstance(agent._domain_agents["wikipedia"], WikipediaDomainAgent)
+            assert agent._domain_agents["wikipedia"]._languages == ("pl", "en")
         finally:
             await agent.close()
 

@@ -15,6 +15,7 @@ agent:
 #   model: qwen3:4b-instruct
 #   domain_agents:
 #     time: {}
+#     wikipedia: {}
 #     home_assistant:
 #       model: qwen3:4b-instruct
 

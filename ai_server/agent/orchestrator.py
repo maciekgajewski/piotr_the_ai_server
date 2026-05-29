@@ -77,6 +77,9 @@ For home_assistant tasks, command must use this envelope:
 
 For time tasks, command should include any known location or timezone:
 {"query": "original time question", "location": "optional", "timezone": "optional"}
+
+For wikipedia tasks, command should be:
+{"intent": "lookup_fact|summary|where_is|coordinates", "topic": "article/search topic", "fact": "birth_year|coordinates|location optional"}
 """
 
 FINAL_REPLY_SYSTEM_PROMPT = """
