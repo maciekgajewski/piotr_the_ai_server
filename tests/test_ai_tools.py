@@ -194,6 +194,35 @@ def test_home_assistant_modify_device_normalizes_vocabulary_and_calls_ws(monkeyp
     ]
 
 
+def test_home_assistant_modify_device_resolves_domain_area_context_reference(monkeypatch) -> None:
+    calls = []
+
+    async def fake_call_home_assistant_service(options, service_call: HomeAssistantServiceCall, logger) -> None:
+        calls.append(service_call)
+
+    monkeypatch.setattr(
+        "ai_server.home_assistant.connection._call_home_assistant_service",
+        fake_call_home_assistant_service,
+    )
+    tool = _sample_tool(_sample_inventory())
+
+    result = asyncio.run(tool.modify_device("climate.living_room", "target_temperature", 22))
+
+    assert result == {
+        "status": "ok",
+        "service": "climate.set_temperature",
+        "entity_id": "climate.living_room_air_conditioner",
+    }
+    assert calls == [
+        HomeAssistantServiceCall(
+            domain="climate",
+            service="set_temperature",
+            entity_id="climate.living_room_air_conditioner",
+            service_data={"temperature": 22},
+        )
+    ]
+
+
 def test_home_assistant_modify_device_rejects_invalid_value() -> None:
     tool = _sample_tool(_sample_inventory())
 

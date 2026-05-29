@@ -28,7 +28,7 @@ from ai_server.home_assistant import (
 )
 
 
-DEFAULT_SCENARIOS = Path("tools/agent-tool-eval/home_assistant.yaml")
+DEFAULT_SCENARIOS = Path("tools/lib/agent-tool-eval/home_assistant.yaml")
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen3:8b"
 GLOBAL_SCOPE_TERMS = (

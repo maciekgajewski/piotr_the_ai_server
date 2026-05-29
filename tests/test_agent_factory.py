@@ -93,18 +93,32 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
         pass
 
     async def create_and_check_agent() -> None:
+        config = AgentConfig(
+            type="orchestrator",
+            options={
+                "model": "qwen3:4b-instruct",
+                "domain_agents": {"home_assistant": {"model": "qwen3:8b"}},
+                "home_assistant": {
+                    "url": "http://ha.local:8123",
+                    "token": "secret-token",
+                },
+            },
+        )
+        home_assistant_connection = HomeAssistantConnection(parse_home_assistant_options(config.options))
         agent = await create_agent(
             AgentConfig(
                 type="orchestrator",
-                options={"model": "qwen3:4b-instruct", "domain_agents": {"home_assistant": {"model": "qwen3:8b"}}},
+                options=config.options,
             ),
             "http://ollama:11434",
+            home_assistant_connection=home_assistant_connection,
         )
 
         try:
             assert isinstance(agent, OrchestratorAgent)
             assert agent._model == "qwen3:4b-instruct"
             assert agent._ollama._base_url == "http://ollama:11434"
+            assert agent._domain_agents["home_assistant"]._model == "qwen3:8b"
         finally:
             await agent.close()
 

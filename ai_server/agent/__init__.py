@@ -10,6 +10,7 @@ from ai_server.agent.interrogator import InterrogatorAgent
 from ai_server.agent.orchestrator import OrchestratorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.config import AgentConfig
+from ai_server.domain_agents import create_domain_agents
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.ollama import OllamaClient
@@ -74,7 +75,13 @@ async def create_agent(
         model = config.options["model"]
         logger.info("Creating orchestrator agent model=%s", model)
         ollama_client = OllamaClient(base_url=ollama_url)
-        agent = OrchestratorAgent(model=model, ollama_client=ollama_client)
+        domain_agents = create_domain_agents(
+            config,
+            ollama_url,
+            home_assistant_connection=home_assistant_connection,
+        )
+        logger.info("Loaded %s orchestrator domain agents", len(domain_agents))
+        agent = OrchestratorAgent(model=model, domain_agents=domain_agents, ollama_client=ollama_client)
         try:
             logger.info("Preloading orchestrator agent model=%s", model)
             await agent.preload()

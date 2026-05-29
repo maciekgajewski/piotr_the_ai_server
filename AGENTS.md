@@ -17,6 +17,7 @@ Rules:
 # File naming
 
 - always add .sh suffix to shell scripts
+- Python code used by tools belongs under `tools/lib/`; keep top-level `tools/` entries as shell wrappers or non-Python assets.
 
 # AI server
 

@@ -19,7 +19,7 @@ def load_agent_tool_eval_module():
 def test_home_assistant_scenario_file_loads() -> None:
     agent_tool_eval = load_agent_tool_eval_module()
 
-    config = agent_tool_eval._load_eval_config(Path("tools/agent-tool-eval/home_assistant.yaml"))
+    config = agent_tool_eval._load_eval_config(Path("tools/lib/agent-tool-eval/home_assistant.yaml"))
     scenarios = agent_tool_eval._load_scenarios(config)
 
     assert config["domain"] == "home_assistant"
@@ -65,7 +65,7 @@ def test_results_include_duration(capsys) -> None:
 
 def test_home_assistant_call_matching_accepts_device_and_value_aliases() -> None:
     agent_tool_eval = load_agent_tool_eval_module()
-    config = agent_tool_eval._load_eval_config(Path("tools/agent-tool-eval/home_assistant.yaml"))
+    config = agent_tool_eval._load_eval_config(Path("tools/lib/agent-tool-eval/home_assistant.yaml"))
     inventory = agent_tool_eval._build_inventory(config["home_assistant"])
 
     assert agent_tool_eval._arguments_match(
@@ -85,7 +85,7 @@ def test_home_assistant_call_matching_accepts_device_and_value_aliases() -> None
 
 def test_home_assistant_call_matching_accepts_yaml_boolean_off_for_hvac_mode() -> None:
     agent_tool_eval = load_agent_tool_eval_module()
-    config = agent_tool_eval._load_eval_config(Path("tools/agent-tool-eval/home_assistant.yaml"))
+    config = agent_tool_eval._load_eval_config(Path("tools/lib/agent-tool-eval/home_assistant.yaml"))
     inventory = agent_tool_eval._build_inventory(config["home_assistant"])
 
     assert agent_tool_eval._arguments_match(
@@ -105,7 +105,7 @@ def test_home_assistant_call_matching_accepts_yaml_boolean_off_for_hvac_mode() -
 
 def test_home_assistant_call_matching_accepts_area_aliases_and_type_aliases() -> None:
     agent_tool_eval = load_agent_tool_eval_module()
-    config = agent_tool_eval._load_eval_config(Path("tools/agent-tool-eval/home_assistant.yaml"))
+    config = agent_tool_eval._load_eval_config(Path("tools/lib/agent-tool-eval/home_assistant.yaml"))
     inventory = agent_tool_eval._build_inventory(config["home_assistant"])
 
     assert agent_tool_eval._arguments_match(
@@ -124,7 +124,7 @@ def test_home_assistant_call_matching_accepts_area_aliases_and_type_aliases() ->
 
 def test_home_assistant_turn_off_all_climate_log_shape_scores_as_success() -> None:
     agent_tool_eval = load_agent_tool_eval_module()
-    config = agent_tool_eval._load_eval_config(Path("tools/agent-tool-eval/home_assistant.yaml"))
+    config = agent_tool_eval._load_eval_config(Path("tools/lib/agent-tool-eval/home_assistant.yaml"))
     inventory = agent_tool_eval._build_inventory(config["home_assistant"])
     scenario = next(
         scenario
@@ -161,7 +161,7 @@ def test_home_assistant_turn_off_all_climate_log_shape_scores_as_success() -> No
 
 def test_home_assistant_scoring_rejects_missing_effect_and_multi_sentence_reply() -> None:
     agent_tool_eval = load_agent_tool_eval_module()
-    config = agent_tool_eval._load_eval_config(Path("tools/agent-tool-eval/home_assistant.yaml"))
+    config = agent_tool_eval._load_eval_config(Path("tools/lib/agent-tool-eval/home_assistant.yaml"))
     inventory = agent_tool_eval._build_inventory(config["home_assistant"])
     scenario = next(
         scenario

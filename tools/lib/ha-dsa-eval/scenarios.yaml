@@ -1,0 +1,179 @@
+domain: home_assistant_dsa
+
+defaults:
+  model: qwen3:4b-instruct
+  ollama_url: http://127.0.0.1:11434
+  location: Office
+  user: Maciek
+  inventory: tools/lib/agent-tool-eval/home_assistant.yaml
+
+scenarios:
+  - name: dsa-office-turn-off-climate-from-current-location
+    task:
+      id: t1
+      domain: home_assistant
+      command:
+        selection:
+          include:
+            - domain: climate
+              scope: single
+              area: Office
+          exclude: []
+        operation:
+          intent: turn_off
+          description: wyłącz klimatyzację w biurze
+          parameters: {}
+      depends_on: []
+      status: ready
+      clarification_question: null
+    expected_calls:
+      - tool: modify_device
+        arguments:
+          device: Study air conditioner
+          property_name: hvac_mode
+          value: "off"
+    expected_effects:
+      - device: Study air conditioner
+        property_name: hvac_mode
+        value: "off"
+    confirmation:
+      contains_all: [klimatyz, wyłącz]
+
+  - name: dsa-turn-off-all-climate-devices
+    task:
+      id: t1
+      domain: home_assistant
+      command:
+        selection:
+          include:
+            - domain: climate
+              scope: all
+          exclude: []
+        operation:
+          intent: turn_off
+          description: wyłącz wszystkie klimatyzacje
+          parameters: {}
+      depends_on: []
+      status: ready
+      clarification_question: null
+    expected_calls:
+      - tool: modify_devices
+        arguments:
+          devices:
+            - Study air conditioner
+            - Living room air conditioner
+            - Bedroom air conditioner
+          property_name: hvac_mode
+          value: "off"
+    expected_effects:
+      - device: Study air conditioner
+        property_name: hvac_mode
+        value: "off"
+      - device: Living room air conditioner
+        property_name: hvac_mode
+        value: "off"
+      - device: Bedroom air conditioner
+        property_name: hvac_mode
+        value: "off"
+    confirmation:
+      contains_all: [wszystkie, klimatyz, wyłącz]
+
+  - name: dsa-living-room-climate-fan-only-by-room-alias
+    task:
+      id: t1
+      domain: home_assistant
+      command:
+        selection:
+          include:
+            - domain: climate
+              scope: single
+              area: salon
+          exclude: []
+        operation:
+          intent: set_hvac_mode
+          description: włącz klimatyzator w salonie w trybie wentylacji
+          parameters:
+            hvac_mode: fan_only
+      depends_on: []
+      status: ready
+      clarification_question: null
+    expected_calls:
+      - tool: modify_device
+        arguments:
+          device: Living room air conditioner
+          property_name: hvac_mode
+          value: fan_only
+    expected_effects:
+      - device: Living room air conditioner
+        property_name: hvac_mode
+        value: fan_only
+    confirmation:
+      contains_all: [salon, wentylac]
+
+  - name: dsa-current-location-set-climate-temperature
+    task:
+      id: t1
+      domain: home_assistant
+      command:
+        selection:
+          include:
+            - domain: climate
+              scope: single
+              area: Office
+          exclude: []
+        operation:
+          intent: set_temperature
+          description: ustaw klimę na 26 stopni
+          parameters:
+            temperature: 26
+      depends_on: []
+      status: ready
+      clarification_question: null
+    expected_calls:
+      - tool: modify_device
+        arguments:
+          device: Study air conditioner
+          property_name: target_temperature
+          value: 26
+    expected_effects:
+      - device: Study air conditioner
+        property_name: target_temperature
+        value: 26
+    confirmation:
+      contains_all: ["26"]
+
+  - name: dsa-follow-up-uses-existing-climate-context
+    active_context:
+      salient_entities:
+        - climate.salon
+      active_domain: home_assistant
+    task:
+      id: t1
+      domain: home_assistant
+      command:
+        selection:
+          include:
+            - domain: climate
+              scope: single
+              area: salon
+          exclude: []
+        operation:
+          intent: set_temperature
+          description: ustaw ją na 22 stopnie
+          parameters:
+            temperature: 22
+      depends_on: []
+      status: ready
+      clarification_question: null
+    expected_calls:
+      - tool: modify_device
+        arguments:
+          device: Living room air conditioner
+          property_name: target_temperature
+          value: 22
+    expected_effects:
+      - device: Living room air conditioner
+        property_name: target_temperature
+        value: 22
+    confirmation:
+      contains_all: [salon, "22"]
