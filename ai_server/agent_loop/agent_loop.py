@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import ClientSession, ClientTimeout
 
@@ -23,6 +23,7 @@ class AgentLoop:
         system_prompt: str,
         tools: AgentCallableSet,
         session: HttpSession | None = None,
+        context_message_observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._config = config
         self._system_prompt = system_prompt
@@ -30,6 +31,7 @@ class AgentLoop:
         self._tool_schemas = tools.get_tool_schemas()
         self._messages: list[dict[str, Any]] = []
         self._session = session
+        self._context_message_observer = context_message_observer
         self._owns_session = session is None
         self._eval_count = 0
         self._turn_number = 0
@@ -153,6 +155,8 @@ class AgentLoop:
     def _append_context_message(self, message: dict[str, Any]) -> None:
         self._messages.append(message)
         self._logger.info("context message appended message=%s", message)
+        if self._context_message_observer is not None:
+            self._context_message_observer(message)
 
     async def _send_chat_request(self) -> dict[str, Any]:
         payload: dict[str, Any] = {

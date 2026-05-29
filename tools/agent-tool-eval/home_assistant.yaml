@@ -1,0 +1,234 @@
+domain: home_assistant
+
+defaults:
+  model: qwen3:8b
+  ollama_url: http://127.0.0.1:11434
+  location: Office
+  user: Maciek
+  think: false
+  request_timeout_seconds: 60
+  max_tool_calls_per_message: 8
+  max_tool_repair_attempts: 2
+
+home_assistant:
+  inventory:
+    areas:
+      - area_id: office
+        name: Office
+        aliases: [biuro, gabinet]
+      - area_id: living_room
+        name: Living room
+        aliases: [salon, pokój dzienny]
+      - area_id: bedroom
+        name: Bedroom
+        aliases: [sypialnia]
+    devices:
+      - device_id: office_ac
+        area_id: office
+        name: Study air conditioner
+        type: climate
+        aliases: [office air conditioner, klima w biurze, klimatyzacja w biurze]
+        entities:
+          - entity_id: climate.study_air_conditioner
+            name: Study air conditioner
+            aliases: [office air conditioner, klima w biurze, klimatyzacja w biurze]
+            state: cool
+            attributes:
+              temperature: 24
+              hvac_modes: ["off", cool, heat, fan_only]
+        properties:
+          - property_name: hvac_mode
+            entity_id: climate.study_air_conditioner
+            domain: climate
+            value_type: string
+            description: HVAC mode
+            allowed_values: ["off", cool, heat, fan_only]
+          - property_name: target_temperature
+            entity_id: climate.study_air_conditioner
+            domain: climate
+            value_type: number
+            description: Target temperature in Celsius
+            min_value: 16
+            max_value: 30
+            step: 0.5
+      - device_id: living_room_ac
+        area_id: living_room
+        name: Living room air conditioner
+        type: climate
+        aliases: [salon air conditioner, klima w salonie, klimatyzacja w salonie]
+        entities:
+          - entity_id: climate.living_room_air_conditioner
+            name: Living room air conditioner
+            aliases: [salon air conditioner, klima w salonie, klimatyzacja w salonie]
+            state: cool
+            attributes:
+              temperature: 24
+              hvac_modes: ["off", cool, heat, fan_only]
+        properties:
+          - property_name: hvac_mode
+            entity_id: climate.living_room_air_conditioner
+            domain: climate
+            value_type: string
+            description: HVAC mode
+            allowed_values: ["off", cool, heat, fan_only]
+          - property_name: target_temperature
+            entity_id: climate.living_room_air_conditioner
+            domain: climate
+            value_type: number
+            description: Target temperature in Celsius
+            min_value: 16
+            max_value: 30
+            step: 0.5
+      - device_id: bedroom_ac
+        area_id: bedroom
+        name: Bedroom air conditioner
+        type: climate
+        aliases: [bedroom air conditioner, klima w sypialni, klimatyzacja w sypialni]
+        entities:
+          - entity_id: climate.bedroom_air_conditioner
+            name: Bedroom air conditioner
+            aliases: [bedroom air conditioner, klima w sypialni, klimatyzacja w sypialni]
+            state: cool
+            attributes:
+              temperature: 24
+              hvac_modes: ["off", cool, heat, fan_only]
+        properties:
+          - property_name: hvac_mode
+            entity_id: climate.bedroom_air_conditioner
+            domain: climate
+            value_type: string
+            description: HVAC mode
+            allowed_values: ["off", cool, heat, fan_only]
+          - property_name: target_temperature
+            entity_id: climate.bedroom_air_conditioner
+            domain: climate
+            value_type: number
+            description: Target temperature in Celsius
+            min_value: 16
+            max_value: 30
+            step: 0.5
+
+scenarios:
+  - name: office-turn-off-climate-from-current-location
+    location: Office
+    message: wyłącz klimatyzację
+    expected_calls:
+      - tool: list_devices
+        arguments:
+          area_name: Office
+      - tool: list_modifiable_properties
+        arguments:
+          device: Study air conditioner
+      - tool: modify_device
+        arguments:
+          device: Study air conditioner
+          property_name: hvac_mode
+          value: "off"
+        result:
+          status: ok
+          service: climate.set_hvac_mode
+          entity_id: climate.study_air_conditioner
+
+  - name: turn-off-all-climate-devices
+    location: Office
+    message: wyłącz wszystkie klimatyzacje
+    expected_calls:
+      - tool: find_devices
+        arguments:
+          device_type: climate
+      - tool: list_common_modifiable_properties
+        arguments:
+          devices:
+            - Study air conditioner
+            - Living room air conditioner
+            - Bedroom air conditioner
+      - tool: modify_devices
+        arguments:
+          devices:
+            - Study air conditioner
+            - Living room air conditioner
+            - Bedroom air conditioner
+          property_name: hvac_mode
+          value: "off"
+        result:
+          status: ok
+          results:
+            - device: Study air conditioner
+              result: {status: ok, service: climate.set_hvac_mode, entity_id: climate.study_air_conditioner}
+            - device: Living room air conditioner
+              result: {status: ok, service: climate.set_hvac_mode, entity_id: climate.living_room_air_conditioner}
+            - device: Bedroom air conditioner
+              result: {status: ok, service: climate.set_hvac_mode, entity_id: climate.bedroom_air_conditioner}
+
+  - name: living-room-climate-fan-only-by-room-alias
+    location: Office
+    message: włącz klimatyzator w salonie w trybie wentylacji
+    expected_calls:
+      - tool: find_devices
+        arguments:
+          device_type: climate
+          area_name: salon
+      - tool: list_modifiable_properties
+        arguments:
+          device: Living room air conditioner
+      - tool: modify_device
+        arguments:
+          device: Living room air conditioner
+          property_name: hvac_mode
+          value: fan_only
+        result:
+          status: ok
+          service: climate.set_hvac_mode
+          entity_id: climate.living_room_air_conditioner
+
+  - name: current-location-set-climate-temperature
+    location: Office
+    message: ustaw klimę na 26 stopni
+    expected_calls:
+      - tool: list_devices
+        arguments:
+          area_name: Office
+      - tool: list_modifiable_properties
+        arguments:
+          device: Study air conditioner
+      - tool: modify_device
+        arguments:
+          device: Study air conditioner
+          property_name: target_temperature
+          value: 26
+        result:
+          status: ok
+          service: climate.set_temperature
+          entity_id: climate.study_air_conditioner
+
+  - name: follow-up-uses-existing-climate-context
+    location: Living room
+    messages:
+      - Włącz klimatyzację w salonie
+      - Super! I ustaw ją na 22 stopnie
+    expected_calls:
+      - tool: find_devices
+        arguments:
+          device_type: climate
+          area_name: salon
+      - tool: list_modifiable_properties
+        arguments:
+          device: Living room air conditioner
+      - tool: modify_device
+        arguments:
+          device: Living room air conditioner
+          property_name: hvac_mode
+          value: cool
+        result:
+          status: ok
+          service: climate.set_hvac_mode
+          entity_id: climate.living_room_air_conditioner
+      - tool: modify_device
+        arguments:
+          device: Living room air conditioner
+          property_name: target_temperature
+          value: 22
+        result:
+          status: ok
+          service: climate.set_temperature
+          entity_id: climate.living_room_air_conditioner

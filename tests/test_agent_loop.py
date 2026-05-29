@@ -201,6 +201,37 @@ def test_agent_loop_returns_final_reply_without_tool_call() -> None:
     assert session.requests[0]["json"]["tools"] == ExampleTools().get_tool_schemas()
 
 
+def test_agent_loop_notifies_context_message_observer() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "done": True,
+                    "eval_count": 4,
+                    "message": {"role": "assistant", "thinking": "Rozważam.", "content": "Cześć!"},
+                }
+            )
+        ]
+    )
+    observed_messages: list[dict[str, Any]] = []
+    loop = AgentLoop(
+        AgentLoopConfig(model="qwen3:4b"),
+        "System.",
+        ExampleTools(),
+        session=session,
+        context_message_observer=observed_messages.append,
+    )
+
+    reply = asyncio.run(loop.send_user_message("hej"))
+
+    assert reply.reply_text == "Cześć!"
+    assert observed_messages == [
+        {"role": "system", "content": "System."},
+        {"role": "user", "content": "hej"},
+        {"role": "assistant", "thinking": "Rozważam.", "content": "Cześć!"},
+    ]
+
+
 def test_agent_loop_runs_multiple_tool_turns_and_tracks_history() -> None:
     session = FakeSession(
         [

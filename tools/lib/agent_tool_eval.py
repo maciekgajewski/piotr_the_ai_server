@@ -1,0 +1,1043 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import sys
+import time
+import unicodedata
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from ai_server.agent_loop import AgentLoop, AgentLoopConfig
+from ai_server.ai_tools.home_assistant.home_assistant import HomeAssistantTool
+from ai_server.config import AgentConfig
+from ai_server.home_assistant import (
+    DEVICE_TYPE_ALIASES,
+    PROPERTY_VALUE_ALIASES,
+    HomeAssistantArea,
+    HomeAssistantDevice,
+    HomeAssistantEntity,
+    HomeAssistantInventory,
+    JsonScalar,
+    ModifiableProperty,
+)
+
+
+DEFAULT_SCENARIOS = Path("tools/agent-tool-eval/home_assistant.yaml")
+DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+DEFAULT_MODEL = "qwen3:8b"
+
+
+@dataclass(frozen=True)
+class ExpectedCall:
+    tool: str
+    arguments: dict[str, Any]
+    result: Any = None
+
+
+@dataclass(frozen=True)
+class Scenario:
+    name: str
+    messages: tuple[str, ...]
+    expected_calls: tuple[ExpectedCall, ...]
+    location: str | None = None
+    user: str | None = None
+    strict: bool = False
+
+
+@dataclass(frozen=True)
+class ToolCallRecord:
+    tool: str
+    arguments: dict[str, Any]
+
+
+@dataclass
+class ScenarioResult:
+    scenario: Scenario
+    replies: list[str] = field(default_factory=list)
+    actual_calls: list[ToolCallRecord] = field(default_factory=list)
+    failures: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    eval_count: int = 0
+    duration_seconds: float = 0.0
+
+    @property
+    def passed(self) -> bool:
+        return not self.failures
+
+
+class FakeHomeAssistantConnection:
+    def __init__(
+        self,
+        inventory: HomeAssistantInventory,
+        expected_calls: tuple[ExpectedCall, ...],
+        *,
+        transcript: bool = False,
+    ) -> None:
+        self._inventory = inventory
+        self._expected_calls = expected_calls
+        self._transcript = transcript
+        self._used_expected_replies: set[int] = set()
+        self.calls: list[ToolCallRecord] = []
+        self._logger = logging.getLogger(f"{__name__}.FakeHomeAssistantConnection")
+
+    @property
+    def inventory(self) -> HomeAssistantInventory:
+        return self._inventory
+
+    def system_prompt_context(self, *, user: str | None, location: str | None) -> str:
+        area_lines = []
+        for area in sorted(self._inventory.areas_by_id.values(), key=lambda item: item.name.casefold()):
+            alias_text = ", ".join(area.aliases) if area.aliases else "none"
+            area_lines.append(f"- area_id={area.area_id}; name={area.name}; aliases={alias_text}")
+
+        return "\n".join(
+            [
+                "You are a Home Assistant control agent.",
+                "Reply in Polish. Use tools to inspect devices and perform modifications.",
+                "If the user does not name a room, prefer the current location when it is known.",
+                "Critical action rules:",
+                "- list_devices and list_modifiable_properties only inspect Home Assistant; they never change devices.",
+                "- For user requests to turn on, turn off, set, change, open, close, dim, brighten, heat, cool, or adjust a device, you must call modify_device.",
+                "- Never claim that a device was changed unless modify_device returned status=ok for that exact requested change.",
+                "- If you inspected devices but did not call modify_device, say that you found the device but have not changed it yet.",
+                "- If the current room has exactly one device matching the requested type or alias, that device is specific enough; call modify_device without asking for confirmation.",
+                "- Do not ask for confirmation for ordinary reversible smart-home changes unless multiple matching devices or values remain ambiguous.",
+                "- If you cannot choose the device, property, or value after inspecting available devices/properties, ask a clarification question instead of claiming success.",
+                "- For global or multi-device requests, use find_devices. If multiple devices match, inspect common properties with list_common_modifiable_properties, then call modify_devices.",
+                "- For requests about klimatyzacja, klima, air conditioning, or AC, prefer devices with type=climate.",
+                "- To turn climate or air conditioning off, prefer modify_device with property_name=hvac_mode and value=off when hvac_mode is available.",
+                "- To turn multiple climate or air conditioning devices off, prefer modify_devices with property_name=hvac_mode and value=off when hvac_mode is available.",
+                "- After list_modifiable_properties returns the needed property for an action request, your next assistant response must be a modify_device tool call, not text.",
+                'Example: user says "wyłącz klimatyzację" in Office, list_devices shows one climate device "Study air conditioner", and list_modifiable_properties shows hvac_mode with off; then call modify_device(device="Study air conditioner", property_name="hvac_mode", value="off").',
+                'Example: user says "wyłącz wszystkie klimatyzatory"; call find_devices(query="klimatyzator klima klimatyzacja", device_type="climate"), then list_common_modifiable_properties, then modify_devices for every matching device.',
+                "Scope rules:",
+                '- If the user names a room or area, restrict the action to that area.',
+                '- If the user does not name a room, prefer the current location only for singular or local requests.',
+                '- If the user says "all", "every", "wszystkie", "każde", "wszędzie", "w całym domu", or similar global wording, do not restrict to the current location. Search all areas.',
+                "- For requests about all devices of a type, find every matching device before modifying any of them.",
+                "- For multiple matching devices, modify every matching device unless the request is ambiguous or unsafe.",
+                '- Do not report success for "all" unless every matching device was attempted and the final response summarizes successes/failures.',
+                f"Current user: {user or 'unknown'}",
+                f"Current location: {location or 'unknown'}",
+                "Known rooms and aliases:",
+                *area_lines,
+                "Device type vocabulary:",
+                _format_device_type_vocabulary(),
+                "Value vocabulary:",
+                _format_value_vocabulary(),
+            ]
+        )
+
+    async def close(self) -> None:
+        return None
+
+    async def list_devices(self, area_name: str) -> list[dict[str, Any]] | dict[str, Any]:
+        return await self._record_and_reply("list_devices", {"area_name": area_name}, self._default_list_devices(area_name))
+
+    async def find_devices(
+        self,
+        query: str = "",
+        device_type: str = "",
+        area_name: str = "",
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        default = self._default_find_devices(query=query, device_type=device_type, area_name=area_name)
+        return await self._record_and_reply(
+            "find_devices",
+            {"query": query, "device_type": device_type, "area_name": area_name},
+            default,
+        )
+
+    async def list_modifiable_properties(self, device: str) -> list[dict[str, Any]] | dict[str, Any]:
+        return await self._record_and_reply(
+            "list_modifiable_properties",
+            {"device": device},
+            self._default_list_modifiable_properties(device),
+        )
+
+    async def list_common_modifiable_properties(self, devices: list[str]) -> dict[str, Any]:
+        return await self._record_and_reply(
+            "list_common_modifiable_properties",
+            {"devices": devices},
+            self._default_list_common_modifiable_properties(devices),
+        )
+
+    async def modify_device(self, device: str, property_name: str, value: JsonScalar) -> dict[str, Any]:
+        return await self._record_and_reply(
+            "modify_device",
+            {"device": device, "property_name": property_name, "value": value},
+            self._default_modify_device(device, property_name, value),
+        )
+
+    async def modify_devices(self, devices: list[str], property_name: str, value: JsonScalar) -> dict[str, Any]:
+        return await self._record_and_reply(
+            "modify_devices",
+            {"devices": devices, "property_name": property_name, "value": value},
+            self._default_modify_devices(devices, property_name, value),
+        )
+
+    async def _record_and_reply(self, tool: str, arguments: dict[str, Any], default_result: Any) -> Any:
+        self.calls.append(ToolCallRecord(tool=tool, arguments=arguments))
+        result = default_result
+        for index, expected in enumerate(self._expected_calls):
+            if index in self._used_expected_replies:
+                continue
+            if expected.tool != tool:
+                continue
+            if not _arguments_match(expected.arguments, arguments, self._inventory):
+                continue
+            self._used_expected_replies.add(index)
+            if expected.result is not None:
+                result = expected.result
+            break
+        if self._transcript:
+            _print_transcript_tool_call(tool, arguments, result)
+        return result
+
+    def _default_list_devices(self, area_name: str) -> list[dict[str, Any]] | dict[str, Any]:
+        area_id = self._resolve_area_id(area_name)
+        if area_id is None:
+            return {"error": "unknown_area", "area_name": area_name}
+        return [_device_to_mapping(device, self._inventory) for device in self._inventory.devices_by_area.get(area_id, ())]
+
+    def _default_find_devices(self, *, query: str, device_type: str, area_name: str) -> list[dict[str, Any]] | dict[str, Any]:
+        area_id = self._resolve_area_id(area_name) if area_name else None
+        normalized_type = _normalize_device_type(device_type) if device_type else ""
+        query_terms = set(_normalize_text(query).split()) - set(_device_type_alias_terms())
+        matches = []
+        for device in self._inventory.devices_by_id.values():
+            if area_id and device.area_id != area_id:
+                continue
+            if normalized_type and device.device_type != normalized_type:
+                continue
+            values = " ".join(_device_search_values(device, self._inventory))
+            normalized_values = _normalize_text(values)
+            if query_terms and not all(term in normalized_values for term in query_terms):
+                continue
+            matches.append(_device_to_mapping(device, self._inventory))
+        return matches
+
+    def _default_list_modifiable_properties(self, device: str) -> list[dict[str, Any]] | dict[str, Any]:
+        resolved = self._resolve_device(device)
+        if resolved is None:
+            return {"error": "unknown_device", "device": device}
+        return [_property_to_mapping(property_info) for property_info in resolved.properties]
+
+    def _default_list_common_modifiable_properties(self, devices: list[str]) -> dict[str, Any]:
+        resolved_devices = []
+        missing = []
+        for device in devices:
+            resolved = self._resolve_device(device)
+            if resolved is None:
+                missing.append(device)
+            else:
+                resolved_devices.append(resolved)
+        if missing:
+            return {"error": "unknown_device", "missing_devices": missing}
+        if not resolved_devices:
+            return {"devices": [], "properties": []}
+
+        common_names = set(resolved_devices[0].property_by_name)
+        for device in resolved_devices[1:]:
+            common_names &= set(device.property_by_name)
+        return {
+            "devices": [_device_to_mapping(device, self._inventory) for device in resolved_devices],
+            "properties": [
+                _property_to_mapping(resolved_devices[0].property_by_name[property_name])
+                for property_name in sorted(common_names)
+            ],
+        }
+
+    def _default_modify_device(self, device: str, property_name: str, value: JsonScalar) -> dict[str, Any]:
+        resolved = self._resolve_device(device)
+        if resolved is None:
+            return {"status": "failed", "error": "unknown_device", "device": device}
+        property_info = resolved.property_by_name.get(property_name)
+        if property_info is None:
+            return {"status": "skipped", "error": "unsupported_property", "property_name": property_name}
+        return {
+            "status": "ok",
+            "service": _service_for_property(property_info),
+            "entity_id": property_info.entity_id,
+        }
+
+    def _default_modify_devices(self, devices: list[str], property_name: str, value: JsonScalar) -> dict[str, Any]:
+        results = []
+        for device in devices:
+            results.append(
+                {
+                    "device": device,
+                    "result": self._default_modify_device(device, property_name, value),
+                }
+            )
+        return {"status": "ok", "results": results}
+
+    def _resolve_area_id(self, area_name: str) -> str | None:
+        normalized = _normalize_text(area_name)
+        for lookup_value, area_ids in self._inventory.area_lookup.items():
+            if _normalize_text(lookup_value) == normalized:
+                return area_ids[0]
+        return None
+
+    def _resolve_device(self, device_name: str) -> HomeAssistantDevice | None:
+        normalized = _normalize_text(device_name)
+        for lookup_value, device_ids in self._inventory.device_lookup.items():
+            if _normalize_text(lookup_value) == normalized:
+                return self._inventory.devices_by_id[device_ids[0]]
+        return None
+
+
+def main() -> int:
+    args = _parse_args()
+    _configure_logging(args.verbose)
+    try:
+        config = _load_eval_config(args.scenarios)
+        domain = args.domain or config["domain"]
+        if args.list:
+            for scenario in _load_scenarios(config):
+                print(scenario.name)
+            return 0
+        if domain != "home_assistant":
+            raise ValueError(f"unsupported domain: {domain}")
+        results = asyncio.run(_run_home_assistant_eval(config, args))
+    except Exception as exc:
+        print(f"agent-tool-eval failed: {exc}", file=sys.stderr)
+        return 2
+
+    _print_results(results, verbose=args.verbose)
+    return 0 if all(result.passed for result in results) else 1
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Evaluate how an Ollama model translates requests into agent tool calls.")
+    parser.add_argument("--domain", help="Domain adapter to run. Currently supported: home_assistant.")
+    parser.add_argument("--scenarios", type=Path, default=DEFAULT_SCENARIOS, help="YAML scenario file.")
+    parser.add_argument("--scenario", action="append", default=[], help="Run only scenarios with this exact name. May be repeated.")
+    parser.add_argument("--model", help=f"Ollama model name. Default from YAML or {DEFAULT_MODEL}.")
+    parser.add_argument("--ollama-url", help=f"Ollama URL. Default from YAML or {DEFAULT_OLLAMA_URL}.")
+    parser.add_argument("--think", choices=("true", "false", "none"), help="Override Ollama think setting for /api/chat.")
+    parser.add_argument("--timeout", type=float, help="Ollama request timeout in seconds.")
+    parser.add_argument("--list", action="store_true", help="List scenarios and exit.")
+    parser.add_argument("--no-transcript", action="store_true", help="Do not print the live model/tool transcript.")
+    parser.add_argument("--verbose", action="store_true", help="Print full replies, calls, and mismatch details.")
+    return parser.parse_args()
+
+
+def _configure_logging(verbose: bool) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.WARNING,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+def _load_eval_config(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as config_file:
+        config = yaml.safe_load(config_file)
+    if not isinstance(config, dict):
+        raise ValueError("scenario file must contain a YAML mapping")
+    if not isinstance(config.get("domain"), str):
+        raise ValueError("scenario file must contain domain")
+    return config
+
+
+async def _run_home_assistant_eval(config: dict[str, Any], args: argparse.Namespace) -> list[ScenarioResult]:
+    inventory = _build_inventory(config.get("home_assistant", {}))
+    scenarios = _load_scenarios(config)
+    if args.scenario:
+        selected = set(args.scenario)
+        scenarios = [scenario for scenario in scenarios if scenario.name in selected]
+        missing = selected - {scenario.name for scenario in scenarios}
+        if missing:
+            raise ValueError(f"unknown scenario(s): {', '.join(sorted(missing))}")
+
+    results = []
+    defaults = config.get("defaults", {})
+    if not isinstance(defaults, dict):
+        raise ValueError("defaults must be a mapping")
+
+    for scenario in scenarios:
+        transcript = not args.no_transcript
+        fake_connection = FakeHomeAssistantConnection(inventory, scenario.expected_calls, transcript=transcript)
+        tool_config = AgentConfig(
+            type="home_assistant",
+            options={
+                "model": args.model or defaults.get("model", DEFAULT_MODEL),
+                "ollama_url": args.ollama_url or defaults.get("ollama_url", DEFAULT_OLLAMA_URL),
+                "home_assistant": {
+                    "url": "http://fake-home-assistant.local:8123",
+                    "token": "fake",
+                },
+            },
+        )
+        tool = HomeAssistantTool(tool_config, connection=fake_connection)
+        loop_config = AgentLoopConfig(
+            model=args.model or defaults.get("model", DEFAULT_MODEL),
+            ollama_url=args.ollama_url or defaults.get("ollama_url", DEFAULT_OLLAMA_URL),
+            options=_dict_or_empty(defaults.get("options")),
+            think=_parse_think(args.think, defaults.get("think", False)),
+            request_timeout_seconds=args.timeout or _float_or_default(defaults.get("request_timeout_seconds"), 60.0),
+            max_tool_calls_per_message=_int_or_default(defaults.get("max_tool_calls_per_message"), 8),
+            max_tool_repair_attempts=_int_or_default(defaults.get("max_tool_repair_attempts"), 2),
+        )
+
+        location = scenario.location or _str_or_none(defaults.get("location"))
+        user = scenario.user or _str_or_none(defaults.get("user"))
+        system_prompt = fake_connection.system_prompt_context(user=user, location=location)
+        result = ScenarioResult(scenario=scenario)
+        if transcript:
+            _print_transcript_scenario_start(scenario, loop_config.model, loop_config.ollama_url, user, location)
+        started_at = time.perf_counter()
+        context_message_observer = _print_transcript_context_message if transcript and _think_enabled(loop_config.think) else None
+        async with AgentLoop(
+            loop_config,
+            system_prompt=system_prompt,
+            tools=tool,
+            context_message_observer=context_message_observer,
+        ) as loop:
+            for message in scenario.messages:
+                if transcript:
+                    _print_transcript_user_message(message)
+                reply = await loop.send_user_message(message)
+                result.replies.append(reply.reply_text)
+                if transcript:
+                    _print_transcript_assistant_reply(reply.reply_text, reply.end_conversation)
+                if reply.end_conversation:
+                    result.failures.append("agent loop ended conversation because of an unrecoverable error")
+                    break
+            result.eval_count = loop.eval_count
+        result.duration_seconds = time.perf_counter() - started_at
+
+        result.actual_calls.extend(fake_connection.calls)
+        _score_scenario(result, inventory)
+        if transcript:
+            _print_transcript_scenario_end(result)
+        results.append(result)
+    return results
+
+
+def _load_scenarios(config: dict[str, Any]) -> list[Scenario]:
+    raw_scenarios = config.get("scenarios")
+    if not isinstance(raw_scenarios, list):
+        raise ValueError("scenarios must be a list")
+    scenarios = []
+    for index, raw_scenario in enumerate(raw_scenarios):
+        if not isinstance(raw_scenario, dict):
+            raise ValueError(f"scenario #{index + 1} must be a mapping")
+        name = raw_scenario.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"scenario #{index + 1} must have a non-empty name")
+        messages = _parse_messages(raw_scenario)
+        expected_calls = _parse_expected_calls(raw_scenario.get("expected_calls", []), name)
+        scenarios.append(
+            Scenario(
+                name=name,
+                messages=messages,
+                expected_calls=expected_calls,
+                location=_str_or_none(raw_scenario.get("location")),
+                user=_str_or_none(raw_scenario.get("user")),
+                strict=bool(raw_scenario.get("strict", False)),
+            )
+        )
+    return scenarios
+
+
+def _parse_messages(raw_scenario: dict[str, Any]) -> tuple[str, ...]:
+    if "messages" in raw_scenario:
+        raw_messages = raw_scenario["messages"]
+        if not isinstance(raw_messages, list) or not raw_messages:
+            raise ValueError("scenario messages must be a non-empty list")
+        messages = tuple(message for message in raw_messages if isinstance(message, str) and message)
+        if len(messages) != len(raw_messages):
+            raise ValueError("scenario messages must contain only non-empty strings")
+        return messages
+    message = raw_scenario.get("message")
+    if not isinstance(message, str) or not message:
+        raise ValueError("scenario must contain message or messages")
+    return (message,)
+
+
+def _parse_expected_calls(raw_calls: Any, scenario_name: str) -> tuple[ExpectedCall, ...]:
+    if not isinstance(raw_calls, list):
+        raise ValueError(f"scenario {scenario_name}: expected_calls must be a list")
+    expected_calls = []
+    for index, raw_call in enumerate(raw_calls):
+        if not isinstance(raw_call, dict):
+            raise ValueError(f"scenario {scenario_name}: expected call #{index + 1} must be a mapping")
+        tool = raw_call.get("tool")
+        if not isinstance(tool, str) or not tool:
+            raise ValueError(f"scenario {scenario_name}: expected call #{index + 1} must contain tool")
+        arguments = raw_call.get("arguments", {})
+        if not isinstance(arguments, dict):
+            raise ValueError(f"scenario {scenario_name}: expected call #{index + 1} arguments must be a mapping")
+        expected_calls.append(ExpectedCall(tool=tool, arguments=arguments, result=raw_call.get("result")))
+    return tuple(expected_calls)
+
+
+def _score_scenario(result: ScenarioResult, inventory: HomeAssistantInventory) -> None:
+    actual_index = 0
+    matched_actual_indexes = set()
+    for expected_index, expected in enumerate(result.scenario.expected_calls):
+        match_index = _find_matching_call(expected, result.actual_calls, actual_index, inventory)
+        if match_index is None:
+            result.failures.append(
+                f"missing expected call #{expected_index + 1}: {expected.tool} {json.dumps(expected.arguments, ensure_ascii=False)}"
+            )
+            continue
+        matched_actual_indexes.add(match_index)
+        actual_index = match_index + 1
+
+    extra_indexes = [index for index in range(len(result.actual_calls)) if index not in matched_actual_indexes]
+    if result.scenario.strict and extra_indexes:
+        for index in extra_indexes:
+            actual = result.actual_calls[index]
+            result.failures.append(
+                f"unexpected call #{index + 1}: {actual.tool} {json.dumps(actual.arguments, ensure_ascii=False)}"
+            )
+    elif extra_indexes:
+        result.warnings.append(f"{len(extra_indexes)} extra model tool call(s) were ignored by subset matching")
+
+
+def _find_matching_call(
+    expected: ExpectedCall,
+    actual_calls: list[ToolCallRecord],
+    start_index: int,
+    inventory: HomeAssistantInventory,
+) -> int | None:
+    for index in range(start_index, len(actual_calls)):
+        actual = actual_calls[index]
+        if actual.tool != expected.tool:
+            continue
+        if _arguments_match(expected.arguments, actual.arguments, inventory):
+            return index
+    return None
+
+
+def _arguments_match(expected: dict[str, Any], actual: dict[str, Any], inventory: HomeAssistantInventory) -> bool:
+    for key, expected_value in expected.items():
+        if key not in actual:
+            return False
+        if not _value_matches(key, expected_value, actual[key], expected, actual, inventory):
+            return False
+    return True
+
+
+def _value_matches(
+    key: str,
+    expected: Any,
+    actual: Any,
+    expected_arguments: dict[str, Any],
+    actual_arguments: dict[str, Any],
+    inventory: HomeAssistantInventory,
+) -> bool:
+    if isinstance(expected, list):
+        if not isinstance(actual, list):
+            return False
+        normalized_actual = [_normalize_argument_value(key, item, actual_arguments, inventory) for item in actual]
+        return all(_normalize_argument_value(key, item, expected_arguments, inventory) in normalized_actual for item in expected)
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return False
+        return _arguments_match(expected, actual, inventory)
+    return _normalize_argument_value(key, expected, expected_arguments, inventory) == _normalize_argument_value(
+        key,
+        actual,
+        actual_arguments,
+        inventory,
+    )
+
+
+def _normalize_argument_value(
+    key: str,
+    value: Any,
+    arguments: dict[str, Any],
+    inventory: HomeAssistantInventory,
+) -> Any:
+    if key == "value":
+        property_name = arguments.get("property_name")
+        if isinstance(property_name, str):
+            return _normalize_property_value(property_name, value)
+    if not isinstance(value, str):
+        return value
+    if key in ("device", "devices"):
+        return _canonical_device_value(value, inventory)
+    if key == "area_name":
+        return _canonical_area_value(value, inventory)
+    if key == "device_type":
+        return _normalize_device_type(value)
+    if key == "query":
+        return frozenset(_normalize_text(value).split())
+    return _normalize_text(value)
+
+
+def _build_inventory(raw_home_assistant: Any) -> HomeAssistantInventory:
+    raw_inventory = {}
+    if isinstance(raw_home_assistant, dict):
+        raw_inventory = raw_home_assistant.get("inventory", {})
+    if not isinstance(raw_inventory, dict):
+        raw_inventory = {}
+
+    raw_areas = raw_inventory.get("areas", _default_areas())
+    raw_devices = raw_inventory.get("devices", _default_devices())
+    if not isinstance(raw_areas, list) or not isinstance(raw_devices, list):
+        raise ValueError("home_assistant.inventory.areas and devices must be lists")
+
+    areas_by_id = {}
+    area_lookup: dict[str, list[str]] = {}
+    for raw_area in raw_areas:
+        if not isinstance(raw_area, dict):
+            raise ValueError("area entries must be mappings")
+        area = HomeAssistantArea(
+            area_id=_required_str(raw_area, "area_id"),
+            name=_required_str(raw_area, "name"),
+            aliases=tuple(_str_list(raw_area.get("aliases", []))),
+        )
+        areas_by_id[area.area_id] = area
+        for lookup_value in (area.area_id, area.name, *area.aliases):
+            area_lookup.setdefault(lookup_value, []).append(area.area_id)
+
+    devices_by_id = {}
+    devices_by_area: dict[str, list[HomeAssistantDevice]] = {}
+    device_lookup: dict[str, list[str]] = {}
+    for raw_device in raw_devices:
+        if not isinstance(raw_device, dict):
+            raise ValueError("device entries must be mappings")
+        device = _build_device(raw_device)
+        devices_by_id[device.device_id] = device
+        devices_by_area.setdefault(device.area_id, []).append(device)
+        lookup_values = [device.device_id, device.name, *device.aliases]
+        for entity in device.entities:
+            lookup_values.extend([entity.entity_id, entity.name, *entity.aliases])
+        for lookup_value in lookup_values:
+            device_lookup.setdefault(lookup_value, []).append(device.device_id)
+
+    return HomeAssistantInventory(
+        areas_by_id=areas_by_id,
+        devices_by_id=devices_by_id,
+        devices_by_area={area_id: tuple(devices) for area_id, devices in devices_by_area.items()},
+        area_lookup={key: tuple(value) for key, value in area_lookup.items()},
+        device_lookup={key: tuple(value) for key, value in device_lookup.items()},
+    )
+
+
+def _build_device(raw_device: dict[str, Any]) -> HomeAssistantDevice:
+    device_id = _required_str(raw_device, "device_id")
+    area_id = _required_str(raw_device, "area_id")
+    device_type = _normalize_device_type(_required_str(raw_device, "type"))
+    raw_entities = raw_device.get("entities", [])
+    raw_properties = raw_device.get("properties", [])
+    if not isinstance(raw_entities, list) or not isinstance(raw_properties, list):
+        raise ValueError("device entities and properties must be lists")
+
+    entities = tuple(_build_entity(raw_entity, device_id, area_id, device_type) for raw_entity in raw_entities)
+    properties = tuple(_build_property(raw_property, device_type, entities) for raw_property in raw_properties)
+    return HomeAssistantDevice(
+        device_id=device_id,
+        area_id=area_id,
+        name=_required_str(raw_device, "name"),
+        aliases=tuple(_str_list(raw_device.get("aliases", []))),
+        device_type=device_type,
+        entities=entities,
+        properties=properties,
+    )
+
+
+def _build_entity(
+    raw_entity: dict[str, Any],
+    device_id: str,
+    area_id: str,
+    device_type: str,
+) -> HomeAssistantEntity:
+    if not isinstance(raw_entity, dict):
+        raise ValueError("entity entries must be mappings")
+    return HomeAssistantEntity(
+        entity_id=_required_str(raw_entity, "entity_id"),
+        device_id=device_id,
+        area_id=area_id,
+        domain=_str_or_default(raw_entity.get("domain"), device_type),
+        name=_required_str(raw_entity, "name"),
+        aliases=tuple(_str_list(raw_entity.get("aliases", []))),
+        state=_str_or_default(raw_entity.get("state"), "unknown"),
+        attributes=_dict_or_empty(raw_entity.get("attributes")),
+    )
+
+
+def _build_property(
+    raw_property: dict[str, Any],
+    device_type: str,
+    entities: tuple[HomeAssistantEntity, ...],
+) -> ModifiableProperty:
+    if not isinstance(raw_property, dict):
+        raise ValueError("property entries must be mappings")
+    entity_id = _str_or_none(raw_property.get("entity_id"))
+    if entity_id is None and entities:
+        entity_id = entities[0].entity_id
+    if entity_id is None:
+        raise ValueError("property entity_id is required when device has no entities")
+    return ModifiableProperty(
+        property_name=_required_str(raw_property, "property_name"),
+        entity_id=entity_id,
+        domain=_str_or_default(raw_property.get("domain"), device_type),
+        value_type=_str_or_default(raw_property.get("value_type"), "string"),
+        description=_str_or_default(raw_property.get("description"), ""),
+        min_value=_float_or_none(raw_property.get("min_value")),
+        max_value=_float_or_none(raw_property.get("max_value")),
+        step=_float_or_none(raw_property.get("step")),
+        allowed_values=tuple(raw_property.get("allowed_values", ())),
+    )
+
+
+def _print_results(results: list[ScenarioResult], *, verbose: bool) -> None:
+    passed = sum(1 for result in results if result.passed)
+    total_duration_seconds = sum(result.duration_seconds for result in results)
+    print(f"agent-tool-eval: {passed}/{len(results)} scenarios passed in {_format_duration(total_duration_seconds)}")
+    for result in results:
+        status = "PASS" if result.passed else "FAIL"
+        print(
+            f"\n[{status}] {result.scenario.name} "
+            f"duration={_format_duration(result.duration_seconds)} eval_count={result.eval_count} calls={len(result.actual_calls)}"
+        )
+        if result.failures:
+            for failure in result.failures:
+                print(f"  failure: {failure}")
+        if result.warnings:
+            for warning in result.warnings:
+                print(f"  warning: {warning}")
+        if verbose or not result.passed:
+            for index, call in enumerate(result.actual_calls, start=1):
+                print(f"  call {index}: {call.tool} {json.dumps(call.arguments, ensure_ascii=False)}")
+            for index, reply in enumerate(result.replies, start=1):
+                print(f"  reply {index}: {reply}")
+
+
+def _print_transcript_scenario_start(
+    scenario: Scenario,
+    model: str,
+    ollama_url: str,
+    user: str | None,
+    location: str | None,
+) -> None:
+    print("")
+    print(f"=== Scenario: {scenario.name} ===", flush=True)
+    print(f"model: {model}  ollama: {ollama_url}  user: {user or 'unknown'}  location: {location or 'unknown'}", flush=True)
+
+
+def _print_transcript_user_message(message: str) -> None:
+    print(f"> user: {message}", flush=True)
+
+
+def _print_transcript_tool_call(tool: str, arguments: dict[str, Any], result: Any) -> None:
+    print(f"> tool call: {tool} {json.dumps(arguments, ensure_ascii=False)}", flush=True)
+    print(f"< tool reply: {json.dumps(result, ensure_ascii=False)}", flush=True)
+
+
+def _print_transcript_context_message(message: dict[str, Any]) -> None:
+    if message.get("role") != "assistant":
+        return
+    thinking = _extract_thinking(message)
+    if thinking:
+        print(f"< thinking: {thinking}", flush=True)
+
+
+def _extract_thinking(message: dict[str, Any]) -> str:
+    thinking = message.get("thinking")
+    if isinstance(thinking, str) and thinking.strip():
+        return thinking.strip()
+
+    content = message.get("content")
+    if not isinstance(content, str):
+        return ""
+    start_tag = "<think>"
+    end_tag = "</think>"
+    start = content.find(start_tag)
+    end = content.find(end_tag)
+    if start == -1 or end == -1 or end <= start:
+        return ""
+    return content[start + len(start_tag) : end].strip()
+
+
+def _print_transcript_assistant_reply(reply_text: str, end_conversation: bool) -> None:
+    suffix = " end_conversation=true" if end_conversation else ""
+    print(f"< assistant{suffix}: {reply_text}", flush=True)
+
+
+def _print_transcript_scenario_end(result: ScenarioResult) -> None:
+    status = "PASS" if result.passed else "FAIL"
+    print(
+        f"=== {status}: {result.scenario.name} "
+        f"duration={_format_duration(result.duration_seconds)} eval_count={result.eval_count} ===",
+        flush=True,
+    )
+
+
+def _format_duration(duration_seconds: float) -> str:
+    if duration_seconds < 1:
+        return f"{duration_seconds * 1000:.0f}ms"
+    return f"{duration_seconds:.2f}s"
+
+
+def _format_device_type_vocabulary() -> str:
+    lines = []
+    for device_type, aliases in sorted(DEVICE_TYPE_ALIASES.items()):
+        lines.append(f"- {device_type}: {', '.join(aliases)}")
+    return "\n".join(lines)
+
+
+def _format_value_vocabulary() -> str:
+    lines = []
+    for property_name, values in sorted(PROPERTY_VALUE_ALIASES.items()):
+        value_text = "; ".join(f"{value}: {', '.join(aliases)}" for value, aliases in values.items())
+        lines.append(f"- {property_name}: {value_text}")
+    return "\n".join(lines)
+
+
+def _device_to_mapping(device: HomeAssistantDevice, inventory: HomeAssistantInventory) -> dict[str, Any]:
+    area = inventory.areas_by_id.get(device.area_id)
+    return {
+        "device_id": device.device_id,
+        "name": device.name,
+        "type": device.device_type,
+        "aliases": list(device.aliases),
+        "area_id": device.area_id,
+        "area_name": area.name if area else device.area_id,
+    }
+
+
+def _property_to_mapping(property_info: ModifiableProperty) -> dict[str, Any]:
+    value: dict[str, Any] = {
+        "property_name": property_info.property_name,
+        "entity_id": property_info.entity_id,
+        "domain": property_info.domain,
+        "value_type": property_info.value_type,
+        "description": property_info.description,
+    }
+    if property_info.min_value is not None:
+        value["min_value"] = property_info.min_value
+    if property_info.max_value is not None:
+        value["max_value"] = property_info.max_value
+    if property_info.step is not None:
+        value["step"] = property_info.step
+    if property_info.allowed_values:
+        value["allowed_values"] = list(property_info.allowed_values)
+    return value
+
+
+def _service_for_property(property_info: ModifiableProperty) -> str:
+    if property_info.domain == "climate" and property_info.property_name == "hvac_mode":
+        return "climate.set_hvac_mode"
+    if property_info.domain == "climate" and property_info.property_name == "target_temperature":
+        return "climate.set_temperature"
+    if property_info.property_name == "on":
+        return "homeassistant.turn_on_off"
+    return f"{property_info.domain}.set_{property_info.property_name}"
+
+
+def _device_search_values(device: HomeAssistantDevice, inventory: HomeAssistantInventory) -> tuple[str, ...]:
+    area = inventory.areas_by_id.get(device.area_id)
+    values = [device.device_id, device.name, device.device_type, *device.aliases]
+    if area is not None:
+        values.extend([area.area_id, area.name, *area.aliases])
+    for entity in device.entities:
+        values.extend([entity.entity_id, entity.name, entity.domain, *entity.aliases])
+    values.extend(DEVICE_TYPE_ALIASES.get(device.device_type, ()))
+    return tuple(values)
+
+
+def _normalize_device_type(value: str) -> str:
+    normalized = _normalize_text(value)
+    for device_type, aliases in DEVICE_TYPE_ALIASES.items():
+        if normalized == _normalize_text(device_type):
+            return device_type
+        if normalized in {_normalize_text(alias) for alias in aliases}:
+            return device_type
+    return normalized
+
+
+def _normalize_property_value(property_name: str, value: Any) -> Any:
+    normalized = _normalize_text(_yaml_scalar_alias(value))
+    for canonical_value, aliases in PROPERTY_VALUE_ALIASES.get(property_name, {}).items():
+        if normalized == _normalize_text(str(canonical_value)):
+            return canonical_value
+        if normalized in {_normalize_text(alias) for alias in aliases}:
+            return canonical_value
+    return normalized
+
+
+def _yaml_scalar_alias(value: Any) -> str:
+    if value is False:
+        return "off"
+    if value is True:
+        return "on"
+    return str(value)
+
+
+def _canonical_device_value(value: str, inventory: HomeAssistantInventory) -> str:
+    normalized = _normalize_text(value)
+    for lookup_value, device_ids in inventory.device_lookup.items():
+        if _normalize_text(lookup_value) == normalized:
+            return device_ids[0]
+    return normalized
+
+
+def _canonical_area_value(value: str, inventory: HomeAssistantInventory) -> str:
+    normalized = _normalize_text(value)
+    for lookup_value, area_ids in inventory.area_lookup.items():
+        if _normalize_text(lookup_value) == normalized:
+            return area_ids[0]
+    return normalized
+
+
+def _normalize_text(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value.casefold())
+    ascii_value = "".join(character for character in decomposed if not unicodedata.combining(character))
+    return " ".join(ascii_value.replace("_", " ").replace("-", " ").split())
+
+
+def _device_type_alias_terms() -> set[str]:
+    terms = set()
+    for device_type, aliases in DEVICE_TYPE_ALIASES.items():
+        terms.update(_normalize_text(device_type).split())
+        for alias in aliases:
+            terms.update(_normalize_text(alias).split())
+    return terms
+
+
+def _default_areas() -> list[dict[str, Any]]:
+    return [
+        {"area_id": "office", "name": "Office", "aliases": ["biuro", "gabinet"]},
+        {"area_id": "living_room", "name": "Living room", "aliases": ["salon", "pokój dzienny"]},
+        {"area_id": "bedroom", "name": "Bedroom", "aliases": ["sypialnia"]},
+    ]
+
+
+def _default_devices() -> list[dict[str, Any]]:
+    return [
+        _default_climate_device("office_ac", "office", "Study air conditioner", "climate.study_air_conditioner", ["klima w biurze", "klimatyzacja w biurze", "office air conditioner"]),
+        _default_climate_device("living_room_ac", "living_room", "Living room air conditioner", "climate.living_room_air_conditioner", ["klima w salonie", "klimatyzacja w salonie", "salon air conditioner"]),
+        _default_climate_device("bedroom_ac", "bedroom", "Bedroom air conditioner", "climate.bedroom_air_conditioner", ["klima w sypialni", "klimatyzacja w sypialni", "bedroom air conditioner"]),
+    ]
+
+
+def _default_climate_device(
+    device_id: str,
+    area_id: str,
+    name: str,
+    entity_id: str,
+    aliases: list[str],
+) -> dict[str, Any]:
+    return {
+        "device_id": device_id,
+        "area_id": area_id,
+        "name": name,
+        "type": "climate",
+        "aliases": aliases,
+        "entities": [
+            {
+                "entity_id": entity_id,
+                "name": name,
+                "aliases": aliases,
+                "state": "cool",
+                "attributes": {"temperature": 24, "hvac_modes": ["off", "cool", "heat", "fan_only"]},
+            }
+        ],
+        "properties": [
+            {
+                "property_name": "hvac_mode",
+                "entity_id": entity_id,
+                "domain": "climate",
+                "value_type": "string",
+                "description": "HVAC mode",
+                "allowed_values": ["off", "cool", "heat", "fan_only"],
+            },
+            {
+                "property_name": "target_temperature",
+                "entity_id": entity_id,
+                "domain": "climate",
+                "value_type": "number",
+                "description": "Target temperature in Celsius",
+                "min_value": 16,
+                "max_value": 30,
+                "step": 0.5,
+            },
+        ],
+    }
+
+
+def _parse_think(raw_override: str | None, default: Any) -> bool | str | None:
+    if raw_override == "true":
+        return True
+    if raw_override == "false":
+        return False
+    if raw_override == "none":
+        return None
+    if isinstance(default, (bool, str)) or default is None:
+        return default
+    return False
+
+
+def _think_enabled(value: bool | str | None) -> bool:
+    if value is True:
+        return True
+    if not isinstance(value, str):
+        return False
+    return value.casefold() not in ("", "0", "false", "none", "no")
+
+
+def _required_str(mapping: dict[str, Any], key: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{key} must be a non-empty string")
+    return value
+
+
+def _str_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _str_or_default(value: Any, default: str) -> str:
+    return value if isinstance(value, str) and value else default
+
+
+def _str_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError("expected a list of strings")
+    strings = [item for item in value if isinstance(item, str)]
+    if len(strings) != len(value):
+        raise ValueError("expected a list of strings")
+    return strings
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _float_or_default(value: Any, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)) and value > 0:
+        return float(value)
+    return default
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int) and value > 0:
+        return value
+    return default
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
