@@ -1,4 +1,9 @@
 log_level: INFO
+cache_dir: ~/.ai-server/cache/
+
+server:
+  timezone: Europe/Warsaw
+  location: Wrocław
 
 agent:
   type: polite_reply

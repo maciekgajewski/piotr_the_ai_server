@@ -65,7 +65,13 @@ async def run_server(config: Config, ollama_url: str) -> None:
         if home_assistant_connection is not None:
             await home_assistant_connection.start()
 
-        agent = await create_agent(config.agent, ollama_url, home_assistant_connection=home_assistant_connection)
+        agent = await create_agent(
+            config.agent,
+            ollama_url,
+            home_assistant_connection=home_assistant_connection,
+            server_config=config.server,
+            cache_dir=config.cache_dir,
+        )
         microphone_manager = await init_mics(config.microphones, config.stt, config.tts, config.conversation, agent)
         app = create_app(config, agent)
         runner = web.AppRunner(app)

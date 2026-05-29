@@ -27,6 +27,7 @@ def test_orchestrator_scenario_file_loads() -> None:
     assert {scenario.name for scenario in scenarios} == {
         "compose-ha-and-wikipedia",
         "followup-uses-active-context",
+        "compose-ha-and-time",
         "ha-office-turn-off-climate-from-current-location",
         "ha-turn-off-all-climate-devices",
         "ha-living-room-climate-fan-only-by-room-alias",

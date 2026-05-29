@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -10,7 +11,8 @@ from ai_server.agent.orchestrator import OrchestratorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.ai_tools.calculator import CalculatorTool
 from ai_server.ai_tools.home_assistant import HomeAssistantTool
-from ai_server.config import AgentConfig
+from ai_server.config import AgentConfig, ServerConfig
+from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 
 
@@ -97,7 +99,10 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             type="orchestrator",
             options={
                 "model": "qwen3:4b-instruct",
-                "domain_agents": {"home_assistant": {"model": "qwen3:8b"}},
+                "domain_agents": {
+                    "home_assistant": {"model": "qwen3:8b"},
+                    "time": {},
+                },
                 "home_assistant": {
                     "url": "http://ha.local:8123",
                     "token": "secret-token",
@@ -112,6 +117,8 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             ),
             "http://ollama:11434",
             home_assistant_connection=home_assistant_connection,
+            server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
+            cache_dir=Path("/tmp/piotr-test-cache"),
         )
 
         try:
@@ -119,6 +126,9 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert agent._model == "qwen3:4b-instruct"
             assert agent._ollama._base_url == "http://ollama:11434"
             assert agent._domain_agents["home_assistant"]._model == "qwen3:8b"
+            assert isinstance(agent._domain_agents["time"], CurrentTimeDomainAgent)
+            assert agent._domain_agents["time"]._timezone == "Europe/Warsaw"
+            assert agent._domain_agents["time"]._location == "Wrocław"
         finally:
             await agent.close()
 

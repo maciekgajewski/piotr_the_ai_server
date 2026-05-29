@@ -141,6 +141,65 @@ scenarios:
         salient_entities:
           - climate.salon
 
+  - name: compose-ha-and-time
+    messages:
+      - wyłącz klimę w biurze i powiedz która godzina jest teraz w Jacksonville
+    model_responses:
+      - plan:
+          kind: multi_task
+          tasks:
+            - id: t1
+              domain: home_assistant
+              command:
+                selection:
+                  include:
+                    - domain: climate
+                      scope: single
+                      area: office
+                  exclude: []
+                operation:
+                  intent: turn_off
+                  description: turn off the air conditioning in the office
+                  parameters: {}
+              depends_on: []
+              status: ready
+              clarification_question: null
+            - id: t2
+              domain: time
+              command:
+                query: która godzina jest teraz w Jacksonville
+                location: Jacksonville
+              depends_on: []
+              status: ready
+              clarification_question: null
+          context_updates:
+            salient_entities:
+              - climate.office
+            active_domain: null
+          needs_clarification: false
+          clarification_question: null
+      - final_reply: Wyłączyłem klimatyzację w biurze. W Jacksonville jest 08:30.
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Wyłączyłem klimatyzację w biurze.
+      time:
+        t2:
+          status: ok
+          text: W Jacksonville jest 08:30.
+          timezone: America/New_York
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          operation:
+            intent: turn_off
+      - domain: time
+        command:
+          location: Jacksonville
+    expected_replies:
+      - Wyłączyłem klimatyzację w biurze. W Jacksonville jest 08:30.
+
   - name: ha-office-turn-off-climate-from-current-location
     messages:
       - wyłącz klimatyzację

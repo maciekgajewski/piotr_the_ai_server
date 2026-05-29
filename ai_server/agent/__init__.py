@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Protocol
 
 from ai_server.ai_tools import create_tools
@@ -9,7 +10,8 @@ from ai_server.agent.echo import EchoAgent
 from ai_server.agent.interrogator import InterrogatorAgent
 from ai_server.agent.orchestrator import OrchestratorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
-from ai_server.config import AgentConfig
+
+from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, ServerConfig
 from ai_server.domain_agents import create_domain_agents
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation, ConversationEndpoint
@@ -28,6 +30,8 @@ async def create_agent(
     config: AgentConfig,
     ollama_url: str,
     home_assistant_connection: HomeAssistantConnection | None = None,
+    server_config: ServerConfig = ServerConfig(),
+    cache_dir: Path = Path(DEFAULT_CACHE_DIR).expanduser(),
 ) -> Agent:
     logger = logging.getLogger(f"{__name__}.factory[{config.type}]")
     logger.info("Creating agent type=%s", config.type)
@@ -79,6 +83,8 @@ async def create_agent(
             config,
             ollama_url,
             home_assistant_connection=home_assistant_connection,
+            server_config=server_config,
+            cache_dir=cache_dir,
         )
         logger.info("Loaded %s orchestrator domain agents", len(domain_agents))
         agent = OrchestratorAgent(model=model, domain_agents=domain_agents, ollama_client=ollama_client)

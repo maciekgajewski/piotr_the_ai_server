@@ -1,8 +1,22 @@
 log_level: INFO
+cache_dir: ~/.ai-server/cache/
+
+server:
+  timezone: Europe/Warsaw
+  location: Wrocław
 
 agent:
   type: polite_reply
   model: qwen3:4b
+
+# Orchestrator example:
+# agent:
+#   type: orchestrator
+#   model: qwen3:4b-instruct
+#   domain_agents:
+#     time: {}
+#     home_assistant:
+#       model: qwen3:4b-instruct
 
 websocket:
   host: 0.0.0.0
