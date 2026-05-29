@@ -3,9 +3,10 @@ import asyncio
 import pytest
 
 from ai_server.agent import create_agent
-from ai_server.agent.assitant import AssistantAgent, _build_user_prompt_template
+from ai_server.agent.assistant import AssistantAgent, _build_user_prompt_template
 from ai_server.agent.echo import EchoAgent
 from ai_server.agent.interrogator import InterrogatorAgent
+from ai_server.agent.orchestrator import OrchestratorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.ai_tools.calculator import CalculatorTool
 from ai_server.ai_tools.home_assistant import HomeAssistantTool
@@ -83,6 +84,31 @@ def test_create_agent_returns_assistant_agent_with_loaded_tools(monkeypatch) -> 
             await agent.close()
 
     monkeypatch.setattr(AssistantAgent, "preload", fake_preload)
+
+    asyncio.run(create_and_check_agent())
+
+
+def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
+    async def fake_preload(self) -> None:
+        pass
+
+    async def create_and_check_agent() -> None:
+        agent = await create_agent(
+            AgentConfig(
+                type="orchestrator",
+                options={"model": "qwen3:4b-instruct", "domain_agents": {"home_assistant": {"model": "qwen3:8b"}}},
+            ),
+            "http://ollama:11434",
+        )
+
+        try:
+            assert isinstance(agent, OrchestratorAgent)
+            assert agent._model == "qwen3:4b-instruct"
+            assert agent._ollama._base_url == "http://ollama:11434"
+        finally:
+            await agent.close()
+
+    monkeypatch.setattr(OrchestratorAgent, "preload", fake_preload)
 
     asyncio.run(create_and_check_agent())
 

@@ -1,0 +1,258 @@
+domain: orchestrator
+
+defaults:
+  model: qwen3:4b-instruct
+  ollama_url: http://127.0.0.1:11434
+
+scenarios:
+  - name: compose-ha-and-wikipedia
+    messages:
+      - włącz klimę w salonie i sprawdź w Wikipedii rok urodzenia Einsteina
+    model_responses:
+      - plan:
+          kind: multi_task
+          tasks:
+            - id: t1
+              domain: home_assistant
+              command:
+                selection:
+                  include:
+                    - domain: climate
+                      scope: single
+                      area: salon
+                  exclude: []
+                operation:
+                  intent: turn_on
+                  description: turn on the air conditioning in the living room
+                  parameters: {}
+              depends_on: []
+              status: ready
+              clarification_question: null
+            - id: t2
+              domain: wikipedia
+              command:
+                topic: Albert Einstein
+                fact: birth year
+              depends_on: []
+              status: ready
+              clarification_question: null
+          context_updates:
+            salient_entities:
+              - climate.salon
+            active_domain: null
+          needs_clarification: false
+          clarification_question: null
+      - final_reply: Włączyłem klimatyzację w salonie, ale Wikipedia nie jest jeszcze podłączona.
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Włączono klimatyzację w salonie.
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          operation:
+            intent: turn_on
+      - domain: wikipedia
+    expected_replies:
+      - Włączyłem klimatyzację w salonie, ale Wikipedia nie jest jeszcze podłączona.
+
+  - name: followup-uses-active-context
+    messages:
+      - włącz klimatyzację w salonie
+      - ustaw ją na 26 stopni
+    model_responses:
+      - plan:
+          kind: single_task
+          tasks:
+            - id: t1
+              domain: home_assistant
+              command:
+                selection:
+                  include:
+                    - domain: climate
+                      scope: single
+                      area: salon
+                  exclude: []
+                operation:
+                  intent: turn_on
+                  description: turn on the air conditioning in the living room
+                  parameters: {}
+              depends_on: []
+              status: ready
+              clarification_question: null
+          context_updates:
+            salient_entities:
+              - climate.salon
+            active_domain: home_assistant
+          needs_clarification: false
+          clarification_question: null
+      - final_reply: Włączyłem klimatyzację w salonie.
+      - plan:
+          kind: followup
+          tasks:
+            - id: t2
+              domain: home_assistant
+              command:
+                selection:
+                  include:
+                    - name: climate.salon
+                      scope: single
+                  exclude: []
+                operation:
+                  intent: set_temperature
+                  description: set it to 26 degrees
+                  parameters:
+                    temperature: 26
+              depends_on: []
+              status: ready
+              clarification_question: null
+          context_updates:
+            salient_entities:
+              - climate.salon
+            active_domain: home_assistant
+          needs_clarification: false
+          clarification_question: null
+      - final_reply: Ustawiłem klimatyzację w salonie na 26 stopni.
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Włączono klimatyzację w salonie.
+        t2:
+          status: ok
+          text: Ustawiono temperaturę na 26 stopni.
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          operation:
+            intent: turn_on
+      - domain: home_assistant
+        command:
+          operation:
+            intent: set_temperature
+            parameters:
+              temperature: 26
+    expected_replies:
+      - Włączyłem klimatyzację w salonie.
+      - Ustawiłem klimatyzację w salonie na 26 stopni.
+    expected_planning_context:
+      - message_index: 1
+        salient_entities:
+          - climate.salon
+
+  - name: ha-office-turn-off-climate-from-current-location
+    messages:
+      - wyłącz klimatyzację
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Wyłączono klimatyzację.
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          selection:
+            include:
+              - domain: climate
+                scope: single
+                area: office
+          operation:
+            intent: turn_off
+    expected_replies: []
+
+  - name: ha-turn-off-all-climate-devices
+    messages:
+      - wyłącz wszystkie klimatyzacje
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Wyłączono wszystkie klimatyzacje.
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          selection:
+            include:
+              - domain: climate
+                scope: all
+          operation:
+            intent: turn_off
+    expected_replies: []
+
+  - name: ha-living-room-climate-fan-only-by-room-alias
+    messages:
+      - włącz klimatyzator w salonie w trybie wentylacji
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Ustawiono klimatyzator w salonie w trybie wentylacji.
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          selection:
+            include:
+              - domain: climate
+                area:
+                  $any: [salon, living_room]
+          operation:
+            intent: set_hvac_mode
+    expected_replies: []
+
+  - name: ha-current-location-set-climate-temperature
+    messages:
+      - ustaw klimę na 26 stopni
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Ustawiono klimatyzację na 26 stopni.
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          selection:
+            include:
+              - domain: climate
+                scope: single
+                area: office
+          operation:
+            intent: set_temperature
+            parameters:
+              temperature: 26
+    expected_replies: []
+
+  - name: ha-follow-up-uses-existing-climate-context
+    messages:
+      - Włącz klimatyzację w salonie
+      - Super! I ustaw ją na 22 stopnie
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Włączono klimatyzację w salonie.
+        t2:
+          status: ok
+          text: Ustawiono klimatyzację w salonie na 22 stopnie.
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          operation:
+            intent: turn_on
+      - domain: home_assistant
+        command:
+          operation:
+            intent: set_temperature
+            parameters:
+              temperature: 22
+          selection:
+            include:
+              - domain: climate
+                scope: single
+                area:
+                  $any: [salon, living_room]
+    expected_replies: []
+    expected_planning_context:
+      - message_index: 1
+        salient_entities:
+          - climate.salon

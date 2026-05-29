@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from ai_server.agent.assitant import AssistantAgent, ToolRoute, _parse_tool_route
+from ai_server.agent.assistant import AssistantAgent, ToolRoute, _parse_tool_route
 from ai_server.ai_tools.interfaces import TOOL_NOT_IMPLEMENTED_REPLY
 from ai_server.config import AgentConfig
 from ai_server.interfaces import Conversation

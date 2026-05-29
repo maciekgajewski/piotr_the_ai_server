@@ -20,6 +20,7 @@ DEFAULT_TTS_VOLUME = 1.0
 DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS = 15.0
 DEFAULT_INITIAL_SILENCE_SECONDS = 3.0
 DEFAULT_END_SILENCE_SECONDS = 0.9
+DEFAULT_CACHE_DIR = "~/.ai-server/cache/"
 LOG_LEVELS = frozenset(("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"))
 STT_DEVICES = frozenset(("auto", "cuda", "cpu"))
 
@@ -35,6 +36,12 @@ class WebsocketConfig:
 class AgentConfig:
     type: str
     options: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ServerConfig:
+    timezone: str | None = None
+    location: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +87,8 @@ class Config:
     agent: AgentConfig
     websocket: WebsocketConfig
     log_level: str = DEFAULT_LOG_LEVEL
+    server: ServerConfig = ServerConfig()
+    cache_dir: Path = Path(DEFAULT_CACHE_DIR).expanduser()
     stt: SttConfig = SttConfig()
     tts: TtsConfig = TtsConfig()
     conversation: ConversationConfig = ConversationConfig()
@@ -115,6 +124,8 @@ def load_config_from_yaml(path: str | Path) -> Config:
         agent=_parse_agent_config(agent_config, raw_config.get("home_assistant")),
         websocket=_parse_websocket_config(websocket_config),
         log_level=_parse_log_level(raw_config),
+        server=_parse_server_config(raw_config.get("server", {})),
+        cache_dir=_parse_cache_dir(raw_config.get("cache_dir", DEFAULT_CACHE_DIR)),
         stt=_parse_stt_config(raw_config.get("stt", {})),
         tts=_parse_tts_config(raw_config.get("tts", {})),
         conversation=conversation,
@@ -136,6 +147,14 @@ def _parse_agent_config(raw_config: dict[str, Any], home_assistant_config: Any =
         model = options.get("model")
         if not isinstance(model, str) or not model:
             raise ValueError("agent.model must be a non-empty string for polite_reply")
+
+    if agent_type == "orchestrator":
+        model = options.get("model")
+        if not isinstance(model, str) or not model:
+            raise ValueError("agent.model must be a non-empty string for orchestrator")
+        domain_agents = options.get("domain_agents", {})
+        if not isinstance(domain_agents, dict):
+            raise ValueError("agent.domain_agents must be a mapping for orchestrator")
 
     return AgentConfig(
         type=agent_type,
@@ -162,6 +181,27 @@ def _parse_websocket_config(raw_config: dict[str, Any]) -> WebsocketConfig:
         raise ValueError("websocket.path must be a string starting with '/'")
 
     return WebsocketConfig(port=port, host=host, path=path)
+
+
+def _parse_server_config(raw_config: Any) -> ServerConfig:
+    if not isinstance(raw_config, dict):
+        raise ValueError("server must be a mapping")
+
+    timezone = raw_config.get("timezone")
+    if timezone is not None and (not isinstance(timezone, str) or not timezone):
+        raise ValueError("server.timezone must be a non-empty string when provided")
+
+    location = raw_config.get("location")
+    if location is not None and (not isinstance(location, str) or not location):
+        raise ValueError("server.location must be a non-empty string when provided")
+
+    return ServerConfig(timezone=timezone, location=location)
+
+
+def _parse_cache_dir(raw_config: Any) -> Path:
+    if not isinstance(raw_config, str) or not raw_config:
+        raise ValueError("cache_dir must be a non-empty string")
+    return Path(raw_config).expanduser()
 
 
 def _parse_stt_config(raw_config: Any) -> SttConfig:

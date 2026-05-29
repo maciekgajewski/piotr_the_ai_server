@@ -6,6 +6,7 @@ from ai_server.config import (
     AgentConfig,
     ConversationConfig,
     MicrophoneDefaultsConfig,
+    ServerConfig,
     DEFAULT_LOG_LEVEL,
     DEFAULT_WEBSOCKET_HOST,
     DEFAULT_WEBSOCKET_PATH,
@@ -135,6 +136,42 @@ home_assistant:
             "home_assistant": {
                 "url": "http://ha.local:8123",
                 "token": "secret-token",
+            },
+        },
+    )
+
+
+def test_load_config_with_orchestrator_agent_and_server_defaults(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+cache_dir: ~/.ai-server/cache/
+server:
+  timezone: Europe/Warsaw
+  location: Wrocław
+websocket:
+  port: 2137
+agent:
+  type: orchestrator
+  model: qwen3:4b-instruct
+  domain_agents:
+    home_assistant:
+      model: qwen3:8b
+    time: {}
+""",
+    )
+
+    config = load_config_from_yaml(config_path)
+
+    assert config.server == ServerConfig(timezone="Europe/Warsaw", location="Wrocław")
+    assert config.cache_dir == Path("~/.ai-server/cache/").expanduser()
+    assert config.agent == AgentConfig(
+        type="orchestrator",
+        options={
+            "model": "qwen3:4b-instruct",
+            "domain_agents": {
+                "home_assistant": {"model": "qwen3:8b"},
+                "time": {},
             },
         },
     )
