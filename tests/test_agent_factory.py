@@ -10,6 +10,7 @@ from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.ai_tools.calculator import CalculatorTool
 from ai_server.ai_tools.home_assistant import HomeAssistantTool
 from ai_server.config import AgentConfig
+from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 
 
 def test_create_agent_returns_echo_agent() -> None:
@@ -53,24 +54,28 @@ def test_create_agent_returns_assistant_agent_with_loaded_tools(monkeypatch) -> 
         pass
 
     async def create_and_check_agent() -> None:
+        config = AgentConfig(
+            type="assistant",
+            options={
+                "intent_router_model": "llama3.2:3b",
+                "model": "qwen3:8b",
+                "home_assistant": {
+                    "url": "http://ha.local:8123",
+                    "token": "secret-token",
+                },
+            },
+        )
+        home_assistant_connection = HomeAssistantConnection(parse_home_assistant_options(config.options))
         agent = await create_agent(
-                AgentConfig(
-                    type="assistant",
-                    options={
-                        "intent_router_model": "llama3.2:3b",
-                        "model": "qwen3:8b",
-                        "home_assistant": {
-                            "url": "http://ha.local:8123",
-                            "token": "secret-token",
-                        },
-                    },
-                ),
+            config,
             "http://ollama:11434",
+            home_assistant_connection=home_assistant_connection,
         )
 
         try:
             assert isinstance(agent, AssistantAgent)
             assert agent._tools["home_assistant"]._config.options["ollama_url"] == "http://ollama:11434"
+            assert agent._tools["home_assistant"]._connection is home_assistant_connection
             assert "calculator" in agent._tools
             assert "- calculator: A tool for performing mathematical calculations." in agent._user_prompt_template
             assert "User input: {user_input}" in agent._user_prompt_template
@@ -78,7 +83,6 @@ def test_create_agent_returns_assistant_agent_with_loaded_tools(monkeypatch) -> 
             await agent.close()
 
     monkeypatch.setattr(AssistantAgent, "preload", fake_preload)
-    monkeypatch.setattr(HomeAssistantTool, "_start_background_refresh", lambda self: None)
 
     asyncio.run(create_and_check_agent())
 

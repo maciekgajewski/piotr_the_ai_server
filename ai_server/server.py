@@ -10,6 +10,7 @@ from aiohttp import web
 
 from ai_server.agent import create_agent
 from ai_server.config import Config, LOG_LEVELS, load_config_from_yaml
+from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 from ai_server.microphones import init_mics
 from ai_server.websocket_server import create_app
 
@@ -57,9 +58,14 @@ async def run_server(config: Config, ollama_url: str) -> None:
     agent = None
     runner = None
     microphone_manager = None
+    home_assistant_connection = None
 
     try:
-        agent = await create_agent(config.agent, ollama_url)
+        home_assistant_connection = create_home_assistant_connection(config)
+        if home_assistant_connection is not None:
+            await home_assistant_connection.start()
+
+        agent = await create_agent(config.agent, ollama_url, home_assistant_connection=home_assistant_connection)
         microphone_manager = await init_mics(config.microphones, config.stt, config.tts, config.conversation, agent)
         app = create_app(config, agent)
         runner = web.AppRunner(app)
@@ -90,6 +96,14 @@ async def run_server(config: Config, ollama_url: str) -> None:
             await runner.cleanup()
         if agent is not None:
             await agent.close()
+        if home_assistant_connection is not None:
+            await home_assistant_connection.close()
+
+
+def create_home_assistant_connection(config: Config) -> HomeAssistantConnection | None:
+    if "home_assistant" not in config.agent.options:
+        return None
+    return HomeAssistantConnection(parse_home_assistant_options(config.agent.options))
 
 
 def main(argv: list[str] | None = None) -> int:

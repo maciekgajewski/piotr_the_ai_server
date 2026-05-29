@@ -9,15 +9,13 @@ from ai_server.ai_tools.calculator import CalculatorTool
 from ai_server.ai_tools.interfaces import TOOL_NOT_IMPLEMENTED_REPLY
 from ai_server.ai_tools.clarify import ClarifyTool
 from ai_server.ai_tools.home_assistant import HomeAssistantTool
-from ai_server.ai_tools.home_assistant.home_assistant import (
-    HomeAssistantServiceCall,
-    _build_inventory,
-)
 from ai_server.ai_tools.time import TimeTool
 from ai_server.ai_tools.weather import WeatherTool
 from ai_server.ai_tools.web_search import WebSearchTool
 from ai_server.ai_tools.wikipedia import WikipediaTool
 from ai_server.config import AgentConfig
+from ai_server.home_assistant import HomeAssistantConnection, HomeAssistantServiceCall, parse_home_assistant_options
+from ai_server.home_assistant.connection import _build_inventory
 from ai_server.interfaces import Conversation
 from ai_server.messages import TextMessage, text_message_to_events
 from conftest import FakeConversationEndpoint
@@ -99,7 +97,6 @@ def test_time_tool_logs_locale_failure(monkeypatch, caplog) -> None:
 def test_home_assistant_tool_runs_local_agent_loop_with_context(monkeypatch) -> None:
     fake_loop = FakeAgentLoop()
     monkeypatch.setattr("ai_server.ai_tools.home_assistant.home_assistant.AgentLoop", fake_loop.factory)
-    monkeypatch.setattr(HomeAssistantTool, "_start_background_refresh", lambda self: None)
     config = AgentConfig(
         type="assistant",
         options={
@@ -112,8 +109,7 @@ def test_home_assistant_tool_runs_local_agent_loop_with_context(monkeypatch) -> 
             },
         },
     )
-    tool = HomeAssistantTool(config)
-    tool._inventory = _sample_inventory()
+    tool = HomeAssistantTool(config, connection=_sample_connection(_sample_inventory()))
     endpoint = FakeConversationEndpoint([])
     conversation = Conversation(
         conversation_id="conversation-1",
@@ -176,7 +172,7 @@ def test_home_assistant_modify_device_normalizes_vocabulary_and_calls_ws(monkeyp
         calls.append(service_call)
 
     monkeypatch.setattr(
-        "ai_server.ai_tools.home_assistant.home_assistant._call_home_assistant_service",
+        "ai_server.home_assistant.connection._call_home_assistant_service",
         fake_call_home_assistant_service,
     )
     tool = _sample_tool(_sample_inventory())
@@ -206,6 +202,132 @@ def test_home_assistant_modify_device_rejects_invalid_value() -> None:
     assert result["error"] == "invalid_property_value"
     assert result["property_name"] == "target_temperature"
     assert result["message"] == "target_temperature must be at most 30.0"
+
+
+def test_home_assistant_find_devices_searches_globally_by_query_and_type() -> None:
+    tool = _sample_tool(_sample_inventory())
+
+    result = asyncio.run(tool.find_devices(query="klimatyzator klima klimatyzacja", device_type="climate"))
+
+    assert [device["device_id"] for device in result] == ["device-living-ac", "device-ac"]
+
+
+def test_home_assistant_find_devices_infers_type_from_query_alias() -> None:
+    tool = _sample_tool(_sample_inventory())
+
+    result = asyncio.run(tool.find_devices(query="klima"))
+
+    assert [device["device_id"] for device in result] == ["device-living-ac", "device-ac"]
+
+
+def test_home_assistant_find_devices_can_filter_by_area_alias() -> None:
+    tool = _sample_tool(_sample_inventory())
+
+    result = asyncio.run(tool.find_devices(device_type="climate", area_name="salon"))
+
+    assert [device["device_id"] for device in result] == ["device-living-ac"]
+
+
+def test_home_assistant_connection_updates_cached_state_from_state_changed_event() -> None:
+    connection = HomeAssistantConnection(parse_home_assistant_options(_sample_config().options))
+    connection._raw_areas = [{"area_id": "office", "name": "Office", "aliases": ["Biuro"]}]
+    connection._raw_devices = [{"id": "device-ac", "name": "Office AC", "name_by_user": None, "area_id": "office"}]
+    connection._raw_entity_details = [
+        {
+            "entity_id": "climate.study_air_conditioner",
+            "device_id": "device-ac",
+            "area_id": None,
+            "name": None,
+            "original_name": "Study air conditioner",
+            "aliases": ["klima"],
+        }
+    ]
+    connection._states_by_entity_id = {
+        "climate.study_air_conditioner": {
+            "entity_id": "climate.study_air_conditioner",
+            "state": "off",
+            "attributes": {"friendly_name": "Study air conditioner", "hvac_modes": ["off", "cool"]},
+        }
+    }
+    connection._rebuild_inventory_locked()
+
+    asyncio.run(
+        connection._handle_state_changed(
+            {
+                "event_type": "state_changed",
+                "data": {
+                    "entity_id": "climate.study_air_conditioner",
+                    "new_state": {
+                        "entity_id": "climate.study_air_conditioner",
+                        "state": "cool",
+                        "attributes": {
+                            "friendly_name": "Study air conditioner",
+                            "hvac_modes": ["off", "cool"],
+                            "temperature": 22,
+                        },
+                    },
+                },
+            }
+        )
+    )
+
+    device = connection.inventory.devices_by_id["device-ac"]
+    assert device.entities[0].state == "cool"
+    assert device.entities[0].attributes["temperature"] == 22
+
+
+def test_home_assistant_common_properties_intersect_device_capabilities() -> None:
+    tool = _sample_tool(_sample_inventory())
+
+    result = asyncio.run(tool.list_common_modifiable_properties(["klima", "salon ac"]))
+
+    assert result["errors"] == []
+    assert [device["device_id"] for device in result["devices"]] == ["device-ac", "device-living-ac"]
+    hvac_mode = next(property_info for property_info in result["common_properties"] if property_info["property_name"] == "hvac_mode")
+    assert hvac_mode["allowed_values"] == ["off", "cool"]
+
+
+def test_home_assistant_modify_devices_returns_per_device_results_and_skips_unsupported(monkeypatch) -> None:
+    calls = []
+
+    async def fake_call_home_assistant_service(options, service_call: HomeAssistantServiceCall, logger) -> None:
+        calls.append(service_call)
+
+    monkeypatch.setattr(
+        "ai_server.home_assistant.connection._call_home_assistant_service",
+        fake_call_home_assistant_service,
+    )
+    tool = _sample_tool(_sample_inventory())
+
+    result = asyncio.run(tool.modify_devices(["klima", "salon lampka"], "hvac_mode", "off"))
+
+    assert result["status"] == "partial"
+    assert result["errors"] == []
+    assert result["results"] == [
+        {
+            "status": "ok",
+            "service": "climate.set_hvac_mode",
+            "entity_id": "climate.study_air_conditioner",
+            "device_id": "device-ac",
+            "device_name": "Office AC",
+        },
+        {
+            "status": "skipped",
+            "error": "unsupported_property",
+            "property_name": "hvac_mode",
+            "known_properties": ["brightness_percent", "on"],
+            "device_id": "device-living-light",
+            "device_name": "Living room lamp",
+        },
+    ]
+    assert calls == [
+        HomeAssistantServiceCall(
+            domain="climate",
+            service="set_hvac_mode",
+            entity_id="climate.study_air_conditioner",
+            service_data={"hvac_mode": "off"},
+        )
+    ]
 
 
 class FakeSession:
@@ -244,7 +366,17 @@ class FakeAgentLoop:
 
 
 def _sample_tool(inventory):
-    config = AgentConfig(
+    return HomeAssistantTool(_sample_config(), connection=_sample_connection(inventory))
+
+
+def _sample_connection(inventory):
+    connection = HomeAssistantConnection(parse_home_assistant_options(_sample_config().options))
+    connection._inventory = inventory
+    return connection
+
+
+def _sample_config():
+    return AgentConfig(
         type="assistant",
         options={
             "intent_router_model": "llama3.2:3b",
@@ -256,9 +388,6 @@ def _sample_tool(inventory):
             },
         },
     )
-    tool = HomeAssistantTool(config)
-    tool._inventory = inventory
-    return tool
 
 
 def _sample_inventory():
@@ -269,6 +398,8 @@ def _sample_inventory():
         ],
         raw_devices=[
             {"id": "device-ac", "name": "Office AC", "name_by_user": None, "area_id": "office"},
+            {"id": "device-living-ac", "name": "Living AC", "name_by_user": None, "area_id": "living_room"},
+            {"id": "device-living-light", "name": "Living room lamp", "name_by_user": None, "area_id": "living_room"},
             {"id": "device-unassigned", "name": "Unassigned", "name_by_user": None, "area_id": None},
         ],
         raw_entity_details=[
@@ -279,6 +410,22 @@ def _sample_inventory():
                 "name": None,
                 "original_name": "Study air conditioner",
                 "aliases": ["klima", "klimatyzacja w biurze"],
+            },
+            {
+                "entity_id": "climate.living_room_air_conditioner",
+                "device_id": "device-living-ac",
+                "area_id": None,
+                "name": None,
+                "original_name": "Living room air conditioner",
+                "aliases": ["salon ac"],
+            },
+            {
+                "entity_id": "light.living_room_lamp",
+                "device_id": "device-living-light",
+                "area_id": None,
+                "name": None,
+                "original_name": "Living room lamp",
+                "aliases": ["salon lampka"],
             },
             {
                 "entity_id": "light.unassigned",
@@ -301,6 +448,23 @@ def _sample_inventory():
                     "hvac_modes": ["off", "cool", "fan_only"],
                     "fan_modes": ["auto", "low", "high"],
                 },
+            },
+            {
+                "entity_id": "climate.living_room_air_conditioner",
+                "state": "off",
+                "attributes": {
+                    "friendly_name": "Living room air conditioner",
+                    "min_temp": 16,
+                    "max_temp": 30,
+                    "target_temp_step": 1,
+                    "hvac_modes": ["off", "cool"],
+                    "fan_modes": ["auto", "low", "high"],
+                },
+            },
+            {
+                "entity_id": "light.living_room_lamp",
+                "state": "off",
+                "attributes": {"friendly_name": "Living room lamp", "supported_color_modes": ["brightness"]},
             },
             {"entity_id": "light.unassigned", "state": "off", "attributes": {"friendly_name": "Unassigned light"}},
         ],

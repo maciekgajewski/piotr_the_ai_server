@@ -74,6 +74,61 @@ def test_scripted_websocket_client_drives_interrogator_flow(capsys) -> None:
     assert "Koniec konwersacji, wysłałeś 2 wiadomości.\n" in output
 
 
+def test_scripted_websocket_client_does_not_reconnect_after_drop(capsys) -> None:
+    async def run() -> int:
+        port = _unused_port()
+        connection_count = 0
+
+        async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
+            nonlocal connection_count
+            connection_count += 1
+            websocket = web.WebSocketResponse()
+            await websocket.prepare(request)
+            await websocket.receive()
+            await websocket.close()
+            return websocket
+
+        app = web.Application()
+        app.router.add_get("/chat", websocket_handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", port)
+        await site.start()
+
+        try:
+            await asyncio.wait_for(
+                run_chat(
+                    ChatClientOptions(
+                        url=f"ws://127.0.0.1:{port}/chat",
+                        user=None,
+                        location=None,
+                        messages=("hello",),
+                    )
+                ),
+                timeout=2,
+            )
+        finally:
+            await runner.cleanup()
+
+        return connection_count
+
+    connection_count = asyncio.run(run())
+
+    assert connection_count == 1
+    assert "Connection lost: websocket closed." in capsys.readouterr().out
+
+
+def test_chat_client_help_command_prints_available_commands(capsys) -> None:
+    result = chat_client._handle_client_command("/help")
+
+    output = capsys.readouterr().out
+    assert result == chat_client._ClientCommandResult.HANDLED
+    assert "Commands:" in output
+    assert "/help  Show this help." in output
+    assert "/exit  Exit the chat client." in output
+    assert chat_client.CLIENT_TEXT_STYLE in output
+
+
 def test_chat_client_main_returns_130_on_interrupt(monkeypatch) -> None:
     async def fake_run_chat(options: ChatClientOptions) -> None:
         raise chat_client.ChatInterrupted()

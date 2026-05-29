@@ -9,6 +9,7 @@ from ai_server.ai_tools.weather.weather import WeatherTool
 from ai_server.ai_tools.web_search.web_search import WebSearchTool
 from ai_server.ai_tools.wikipedia.wikipedia import WikipediaTool
 from ai_server.config import AgentConfig
+from ai_server.home_assistant import HomeAssistantConnection
 
 
 TOOL_CLASSES = (
@@ -22,11 +23,14 @@ TOOL_CLASSES = (
 )
 
 
-def create_tools(config: AgentConfig) -> dict[str, Tool]:
+def create_tools(config: AgentConfig, home_assistant_connection: HomeAssistantConnection | None = None) -> dict[str, Tool]:
     logger = logging.getLogger(f"{__name__}.factory")
     tools: dict[str, Tool] = {}
     for tool_class in TOOL_CLASSES:
-        tool = tool_class(config)
+        if tool_class is HomeAssistantTool:
+            tool = tool_class(config, connection=home_assistant_connection)
+        else:
+            tool = tool_class(config)
         if tool.name in tools:
             raise ValueError(f"duplicate AI tool name: {tool.name}")
 

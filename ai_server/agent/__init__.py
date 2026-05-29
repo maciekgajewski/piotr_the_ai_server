@@ -9,6 +9,7 @@ from ai_server.agent.echo import EchoAgent
 from ai_server.agent.interrogator import InterrogatorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.config import AgentConfig
+from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.ollama import OllamaClient
 
@@ -21,7 +22,11 @@ class Agent(Protocol):
         raise NotImplementedError
 
 
-async def create_agent(config: AgentConfig, ollama_url: str) -> Agent:
+async def create_agent(
+    config: AgentConfig,
+    ollama_url: str,
+    home_assistant_connection: HomeAssistantConnection | None = None,
+) -> Agent:
     logger = logging.getLogger(f"{__name__}.factory[{config.type}]")
     logger.info("Creating agent type=%s", config.type)
     if config.type == "echo":
@@ -51,7 +56,7 @@ async def create_agent(config: AgentConfig, ollama_url: str) -> Agent:
         logger.info("Creating assistant agent intent_router_model=%s", intent_router_model)
         ollama_client = OllamaClient(base_url=ollama_url)
         tool_config = AgentConfig(type=config.type, options={**config.options, "ollama_url": ollama_url})
-        tools = create_tools(tool_config)
+        tools = create_tools(tool_config, home_assistant_connection=home_assistant_connection)
         logger.info("Loaded %s assistant tools", len(tools))
         agent = AssistantAgent(intent_router_model=intent_router_model, tools=tools, ollama_client=ollama_client)
         try:
