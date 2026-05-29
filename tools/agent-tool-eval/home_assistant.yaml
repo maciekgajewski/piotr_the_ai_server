@@ -114,12 +114,15 @@ scenarios:
     message: wyłącz klimatyzację
     expected_calls:
       - tool: list_devices
+        optional: true
         arguments:
           area_name: Office
       - tool: list_modifiable_properties
+        optional: true
         arguments:
           device: Study air conditioner
       - tool: modify_device
+        optional: true
         arguments:
           device: Study air conditioner
           property_name: hvac_mode
@@ -128,21 +131,30 @@ scenarios:
           status: ok
           service: climate.set_hvac_mode
           entity_id: climate.study_air_conditioner
+    expected_effects:
+      - device: Study air conditioner
+        property_name: hvac_mode
+        value: "off"
+    confirmation:
+      contains_all: [klimatyz, wyłącz]
 
   - name: turn-off-all-climate-devices
     location: Office
     message: wyłącz wszystkie klimatyzacje
     expected_calls:
       - tool: find_devices
+        optional: true
         arguments:
           device_type: climate
       - tool: list_common_modifiable_properties
+        optional: true
         arguments:
           devices:
             - Study air conditioner
             - Living room air conditioner
             - Bedroom air conditioner
       - tool: modify_devices
+        optional: true
         arguments:
           devices:
             - Study air conditioner
@@ -159,19 +171,33 @@ scenarios:
               result: {status: ok, service: climate.set_hvac_mode, entity_id: climate.living_room_air_conditioner}
             - device: Bedroom air conditioner
               result: {status: ok, service: climate.set_hvac_mode, entity_id: climate.bedroom_air_conditioner}
+    expected_effects:
+      - device: Study air conditioner
+        property_name: hvac_mode
+        value: "off"
+      - device: Living room air conditioner
+        property_name: hvac_mode
+        value: "off"
+      - device: Bedroom air conditioner
+        property_name: hvac_mode
+        value: "off"
+    confirmation:
+      contains_all: [wszystkie, klimatyz, wyłącz]
 
   - name: living-room-climate-fan-only-by-room-alias
     location: Office
     message: włącz klimatyzator w salonie w trybie wentylacji
     expected_calls:
-      - tool: find_devices
+      - tool: list_devices
+        optional: true
         arguments:
-          device_type: climate
           area_name: salon
       - tool: list_modifiable_properties
+        optional: true
         arguments:
           device: Living room air conditioner
       - tool: modify_device
+        optional: true
         arguments:
           device: Living room air conditioner
           property_name: hvac_mode
@@ -180,18 +206,27 @@ scenarios:
           status: ok
           service: climate.set_hvac_mode
           entity_id: climate.living_room_air_conditioner
+    expected_effects:
+      - device: Living room air conditioner
+        property_name: hvac_mode
+        value: fan_only
+    confirmation:
+      contains_all: [salon, wentylac]
 
   - name: current-location-set-climate-temperature
     location: Office
     message: ustaw klimę na 26 stopni
     expected_calls:
       - tool: list_devices
+        optional: true
         arguments:
           area_name: Office
       - tool: list_modifiable_properties
+        optional: true
         arguments:
           device: Study air conditioner
       - tool: modify_device
+        optional: true
         arguments:
           device: Study air conditioner
           property_name: target_temperature
@@ -200,6 +235,12 @@ scenarios:
           status: ok
           service: climate.set_temperature
           entity_id: climate.study_air_conditioner
+    expected_effects:
+      - device: Study air conditioner
+        property_name: target_temperature
+        value: 26
+    confirmation:
+      contains_all: ["26"]
 
   - name: follow-up-uses-existing-climate-context
     location: Living room
@@ -207,14 +248,16 @@ scenarios:
       - Włącz klimatyzację w salonie
       - Super! I ustaw ją na 22 stopnie
     expected_calls:
-      - tool: find_devices
+      - tool: list_devices
+        optional: true
         arguments:
-          device_type: climate
           area_name: salon
       - tool: list_modifiable_properties
+        optional: true
         arguments:
           device: Living room air conditioner
       - tool: modify_device
+        optional: true
         arguments:
           device: Living room air conditioner
           property_name: hvac_mode
@@ -224,6 +267,7 @@ scenarios:
           service: climate.set_hvac_mode
           entity_id: climate.living_room_air_conditioner
       - tool: modify_device
+        optional: true
         arguments:
           device: Living room air conditioner
           property_name: target_temperature
@@ -232,3 +276,13 @@ scenarios:
           status: ok
           service: climate.set_temperature
           entity_id: climate.living_room_air_conditioner
+    expected_effects:
+      - device: Living room air conditioner
+        property_name: hvac_mode
+        value: cool
+      - device: Living room air conditioner
+        property_name: target_temperature
+        value: 22
+    confirmations:
+      - contains_all: [salon, klimatyz]
+      - contains_all: [salon, "22"]

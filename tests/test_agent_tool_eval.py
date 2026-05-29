@@ -133,6 +133,7 @@ def test_home_assistant_turn_off_all_climate_log_shape_scores_as_success() -> No
     )
     result = agent_tool_eval.ScenarioResult(
         scenario=scenario,
+        replies=["Wszystkie klimatyzacje zostały wyłączone."],
         actual_calls=[
             agent_tool_eval.ToolCallRecord(
                 tool="find_devices",
@@ -156,3 +157,29 @@ def test_home_assistant_turn_off_all_climate_log_shape_scores_as_success() -> No
     agent_tool_eval._score_scenario(result, inventory)
 
     assert result.failures == []
+
+
+def test_home_assistant_scoring_rejects_missing_effect_and_multi_sentence_reply() -> None:
+    agent_tool_eval = load_agent_tool_eval_module()
+    config = agent_tool_eval._load_eval_config(Path("tools/agent-tool-eval/home_assistant.yaml"))
+    inventory = agent_tool_eval._build_inventory(config["home_assistant"])
+    scenario = next(
+        scenario
+        for scenario in agent_tool_eval._load_scenarios(config)
+        if scenario.name == "current-location-set-climate-temperature"
+    )
+    result = agent_tool_eval.ScenarioResult(
+        scenario=scenario,
+        replies=["Ustawiono temperaturę na 26 stopni.\n- Biuro\n- Salon"],
+        actual_calls=[
+            agent_tool_eval.ToolCallRecord(
+                tool="find_devices",
+                arguments={"query": "klima klimatyzacja", "device_type": "climate", "area_name": ""},
+            ),
+        ],
+    )
+
+    agent_tool_eval._score_scenario(result, inventory)
+
+    assert any(failure.startswith("missing expected effect") for failure in result.failures)
+    assert any("not one sentence" in failure for failure in result.failures)

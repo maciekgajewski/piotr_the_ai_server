@@ -30,6 +30,26 @@ INVENTORY_NOT_READY = {"error": "home_assistant_inventory_not_ready"}
 CONNECTION_UNAVAILABLE = {"error": "home_assistant_connection_unavailable"}
 RECONNECT_INITIAL_DELAY_SECONDS = 1.0
 RECONNECT_MAX_DELAY_SECONDS = 30.0
+GLOBAL_SCOPE_TERMS = (
+    "all",
+    "every",
+    "whole house",
+    "everywhere",
+    "wszystkie",
+    "wszyscy",
+    "każde",
+    "kazde",
+    "każdy",
+    "kazdy",
+    "wszędzie",
+    "wszedzie",
+    "cały dom",
+    "caly dom",
+    "całym domu",
+    "calym domu",
+    "w całym domu",
+    "w calym domu",
+)
 
 
 class HomeAssistantConnection:
@@ -150,12 +170,29 @@ class HomeAssistantConnection:
             result = {"device_id": resolved_device.device_id, **result}
         return result
 
-    async def modify_devices(self, devices: list[str], property_name: str, value: JsonScalar) -> dict[str, Any]:
+    async def modify_devices(
+        self,
+        devices: list[str],
+        property_name: str,
+        value: JsonScalar,
+        *,
+        user_message: str = "",
+        current_location: str | None = None,
+    ) -> dict[str, Any]:
         inventory = self._inventory
         if inventory is None:
             return dict(INVENTORY_NOT_READY)
 
         resolved_devices, errors = _resolve_devices_for_batch(inventory, devices)
+        scope_rejection = _batch_scope_rejection(
+            inventory,
+            resolved_devices,
+            user_message=user_message,
+            current_location=current_location,
+        )
+        if scope_rejection is not None:
+            return scope_rejection
+
         results = []
         for resolved_device in resolved_devices:
             result = await self._modify_resolved_device(resolved_device, property_name, value)
@@ -189,16 +226,18 @@ class HomeAssistantConnection:
                 "Critical action rules:",
                 "- list_devices and list_modifiable_properties only inspect Home Assistant; they never change devices.",
                 "- For user requests to turn on, turn off, set, change, open, close, dim, brighten, heat, cool, or adjust a device, you must call modify_device.",
-                "- Never claim that a device was changed unless modify_device returned status=ok for that exact requested change.",
+                "- Never claim that a device was changed unless modify_device or modify_devices returned status=ok for that exact requested change.",
                 "- If you inspected devices but did not call modify_device, say that you found the device but have not changed it yet.",
                 "- If the current room has exactly one device matching the requested type or alias, that device is specific enough; call modify_device without asking for confirmation.",
                 "- Do not ask for confirmation for ordinary reversible smart-home changes unless multiple matching devices or values remain ambiguous.",
                 "- If you cannot choose the device, property, or value after inspecting available devices/properties, ask a clarification question instead of claiming success.",
-                "- For global or multi-device requests, use find_devices. If multiple devices match, inspect common properties with list_common_modifiable_properties, then call modify_devices.",
+                "- For explicit global or all-device requests, use find_devices. If multiple devices match, inspect common properties with list_common_modifiable_properties, then call modify_devices.",
+                "- If modify_devices returns status=rejected, obey the message in the tool result and make the narrower modify_device call instead of claiming success.",
                 "- For requests about klimatyzacja, klima, air conditioning, or AC, prefer devices with type=climate.",
                 "- To turn climate or air conditioning off, prefer modify_device with property_name=hvac_mode and value=off when hvac_mode is available.",
                 "- To turn multiple climate or air conditioning devices off, prefer modify_devices with property_name=hvac_mode and value=off when hvac_mode is available.",
                 "- After list_modifiable_properties returns the needed property for an action request, your next assistant response must be a modify_device tool call, not text.",
+                "- Final confirmation must be exactly one short Polish sentence. Do not use bullet lists, markdown, or explanations.",
                 '- Example: user says "wyłącz klimatyzację" in Office, list_devices shows one climate device "Study air conditioner", and list_modifiable_properties shows hvac_mode with off; then call modify_device(device="Study air conditioner", property_name="hvac_mode", value="off").',
                 '- Example: user says "wyłącz wszystkie klimatyzatory"; call find_devices(query="klimatyzator klima klimatyzacja", device_type="climate"), then list_common_modifiable_properties, then modify_devices for every matching device.',
                 """
@@ -206,9 +245,10 @@ Scope rules:
 - If the user names a room or area, restrict the action to that area.
 - If the user does not name a room, prefer the current location only for singular or local requests.
 - If the user says "all", "every", "wszystkie", "każde", "wszędzie", "w całym domu", or similar global wording, do not restrict to the current location. Search all areas.
+- If the user does not use global wording, never modify devices outside the named room or current location.
 - For requests about all devices of a type, find every matching device before modifying any of them.
 - For multiple matching devices, modify every matching device unless the request is ambiguous or unsafe.
-- Do not report success for "all" unless every matching device was attempted and the final response summarizes successes/failures.
+- Do not report success for "all" unless every matching device was attempted. Still reply in one sentence.
 """,
                 f"Current user: {user_text}",
                 f"Current location: {location_text}",
@@ -988,6 +1028,54 @@ def _resolve_devices_for_batch(
         seen_device_ids.add(resolved_device.device_id)
         resolved_devices.append(resolved_device)
     return resolved_devices, errors
+
+
+def _batch_scope_rejection(
+    inventory: HomeAssistantInventory,
+    devices: list[HomeAssistantDevice],
+    *,
+    user_message: str,
+    current_location: str | None,
+) -> dict[str, Any] | None:
+    if len(devices) <= 1:
+        return None
+    if not user_message:
+        return None
+    if _has_global_scope(user_message):
+        return None
+
+    current_area = _resolve_current_area(inventory, current_location)
+    if current_area is not None and all(device.area_id == current_area.area_id for device in devices):
+        return None
+
+    rejected_devices = [_device_to_mapping(device, inventory) for device in devices]
+    target_area_text = current_area.name if current_area is not None else "the named/current room"
+    return {
+        "status": "rejected",
+        "error": "batch_scope_not_allowed",
+        "message": (
+            "The user did not ask for all matching devices. Do not claim success. "
+            f"Use modify_device for the single matching device in {target_area_text}, "
+            "or ask a clarification question if no single device is clear."
+        ),
+        "current_location": current_location or "",
+        "current_area": _area_to_mapping(current_area) if current_area is not None else None,
+        "rejected_devices": rejected_devices,
+    }
+
+
+def _resolve_current_area(inventory: HomeAssistantInventory, current_location: str | None) -> HomeAssistantArea | None:
+    if not current_location:
+        return None
+    area = _resolve_area(inventory, current_location)
+    if isinstance(area, dict):
+        return None
+    return area
+
+
+def _has_global_scope(user_message: str) -> bool:
+    normalized_message = _normalize_lookup(user_message)
+    return any(_normalized_phrase_in_query(term, normalized_message) for term in GLOBAL_SCOPE_TERMS)
 
 
 def _common_property_mappings(devices: list[HomeAssistantDevice]) -> list[dict[str, Any]]:

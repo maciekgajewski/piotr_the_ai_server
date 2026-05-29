@@ -31,6 +31,25 @@ from ai_server.home_assistant import (
 DEFAULT_SCENARIOS = Path("tools/agent-tool-eval/home_assistant.yaml")
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen3:8b"
+GLOBAL_SCOPE_TERMS = (
+    "all",
+    "every",
+    "whole house",
+    "everywhere",
+    "wszystkie",
+    "kazde",
+    "każde",
+    "kazdy",
+    "każdy",
+    "wszedzie",
+    "wszędzie",
+    "caly dom",
+    "cały dom",
+    "calym domu",
+    "całym domu",
+    "w calym domu",
+    "w całym domu",
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +57,20 @@ class ExpectedCall:
     tool: str
     arguments: dict[str, Any]
     result: Any = None
+    optional: bool = False
+
+
+@dataclass(frozen=True)
+class ExpectedEffect:
+    device: str
+    property_name: str
+    value: Any
+
+
+@dataclass(frozen=True)
+class ReplyExpectation:
+    contains_all: tuple[str, ...] = ()
+    one_sentence: bool = True
 
 
 @dataclass(frozen=True)
@@ -45,6 +78,8 @@ class Scenario:
     name: str
     messages: tuple[str, ...]
     expected_calls: tuple[ExpectedCall, ...]
+    expected_effects: tuple[ExpectedEffect, ...] = ()
+    reply_expectations: tuple[ReplyExpectation, ...] = ()
     location: str | None = None
     user: str | None = None
     strict: bool = False
@@ -54,6 +89,7 @@ class Scenario:
 class ToolCallRecord:
     tool: str
     arguments: dict[str, Any]
+    result: Any = None
 
 
 @dataclass
@@ -104,25 +140,28 @@ class FakeHomeAssistantConnection:
                 "Critical action rules:",
                 "- list_devices and list_modifiable_properties only inspect Home Assistant; they never change devices.",
                 "- For user requests to turn on, turn off, set, change, open, close, dim, brighten, heat, cool, or adjust a device, you must call modify_device.",
-                "- Never claim that a device was changed unless modify_device returned status=ok for that exact requested change.",
+                "- Never claim that a device was changed unless modify_device or modify_devices returned status=ok for that exact requested change.",
                 "- If you inspected devices but did not call modify_device, say that you found the device but have not changed it yet.",
                 "- If the current room has exactly one device matching the requested type or alias, that device is specific enough; call modify_device without asking for confirmation.",
                 "- Do not ask for confirmation for ordinary reversible smart-home changes unless multiple matching devices or values remain ambiguous.",
                 "- If you cannot choose the device, property, or value after inspecting available devices/properties, ask a clarification question instead of claiming success.",
-                "- For global or multi-device requests, use find_devices. If multiple devices match, inspect common properties with list_common_modifiable_properties, then call modify_devices.",
+                "- For explicit global or all-device requests, use find_devices. If multiple devices match, inspect common properties with list_common_modifiable_properties, then call modify_devices.",
+                "- If modify_devices returns status=rejected, obey the message in the tool result and make the narrower modify_device call instead of claiming success.",
                 "- For requests about klimatyzacja, klima, air conditioning, or AC, prefer devices with type=climate.",
                 "- To turn climate or air conditioning off, prefer modify_device with property_name=hvac_mode and value=off when hvac_mode is available.",
                 "- To turn multiple climate or air conditioning devices off, prefer modify_devices with property_name=hvac_mode and value=off when hvac_mode is available.",
                 "- After list_modifiable_properties returns the needed property for an action request, your next assistant response must be a modify_device tool call, not text.",
+                "- Final confirmation must be exactly one short Polish sentence. Do not use bullet lists, markdown, or explanations.",
                 'Example: user says "wyłącz klimatyzację" in Office, list_devices shows one climate device "Study air conditioner", and list_modifiable_properties shows hvac_mode with off; then call modify_device(device="Study air conditioner", property_name="hvac_mode", value="off").',
                 'Example: user says "wyłącz wszystkie klimatyzatory"; call find_devices(query="klimatyzator klima klimatyzacja", device_type="climate"), then list_common_modifiable_properties, then modify_devices for every matching device.',
                 "Scope rules:",
                 '- If the user names a room or area, restrict the action to that area.',
                 '- If the user does not name a room, prefer the current location only for singular or local requests.',
                 '- If the user says "all", "every", "wszystkie", "każde", "wszędzie", "w całym domu", or similar global wording, do not restrict to the current location. Search all areas.',
+                "- If the user does not use global wording, never modify devices outside the named room or current location.",
                 "- For requests about all devices of a type, find every matching device before modifying any of them.",
                 "- For multiple matching devices, modify every matching device unless the request is ambiguous or unsafe.",
-                '- Do not report success for "all" unless every matching device was attempted and the final response summarizes successes/failures.',
+                '- Do not report success for "all" unless every matching device was attempted. Still reply in one sentence.',
                 f"Current user: {user or 'unknown'}",
                 f"Current location: {location or 'unknown'}",
                 "Known rooms and aliases:",
@@ -174,15 +213,22 @@ class FakeHomeAssistantConnection:
             self._default_modify_device(device, property_name, value),
         )
 
-    async def modify_devices(self, devices: list[str], property_name: str, value: JsonScalar) -> dict[str, Any]:
+    async def modify_devices(
+        self,
+        devices: list[str],
+        property_name: str,
+        value: JsonScalar,
+        *,
+        user_message: str = "",
+        current_location: str | None = None,
+    ) -> dict[str, Any]:
         return await self._record_and_reply(
             "modify_devices",
             {"devices": devices, "property_name": property_name, "value": value},
-            self._default_modify_devices(devices, property_name, value),
+            self._default_modify_devices(devices, property_name, value, user_message=user_message, current_location=current_location),
         )
 
     async def _record_and_reply(self, tool: str, arguments: dict[str, Any], default_result: Any) -> Any:
-        self.calls.append(ToolCallRecord(tool=tool, arguments=arguments))
         result = default_result
         for index, expected in enumerate(self._expected_calls):
             if index in self._used_expected_replies:
@@ -195,6 +241,7 @@ class FakeHomeAssistantConnection:
             if expected.result is not None:
                 result = expected.result
             break
+        self.calls.append(ToolCallRecord(tool=tool, arguments=arguments, result=result))
         if self._transcript:
             _print_transcript_tool_call(tool, arguments, result)
         return result
@@ -266,7 +313,26 @@ class FakeHomeAssistantConnection:
             "entity_id": property_info.entity_id,
         }
 
-    def _default_modify_devices(self, devices: list[str], property_name: str, value: JsonScalar) -> dict[str, Any]:
+    def _default_modify_devices(
+        self,
+        devices: list[str],
+        property_name: str,
+        value: JsonScalar,
+        *,
+        user_message: str,
+        current_location: str | None,
+    ) -> dict[str, Any]:
+        resolved_devices = [self._resolve_device(device) for device in devices]
+        concrete_devices = [device for device in resolved_devices if device is not None]
+        scope_rejection = _batch_scope_rejection(
+            concrete_devices,
+            self._inventory,
+            user_message=user_message,
+            current_location=current_location,
+        )
+        if scope_rejection is not None:
+            return scope_rejection
+
         results = []
         for device in devices:
             results.append(
@@ -330,7 +396,7 @@ def _parse_args() -> argparse.Namespace:
 
 def _configure_logging(verbose: bool) -> None:
     logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.WARNING,
+        level=logging.DEBUG if verbose else logging.ERROR,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
@@ -402,6 +468,7 @@ async def _run_home_assistant_eval(config: dict[str, Any], args: argparse.Namesp
             for message in scenario.messages:
                 if transcript:
                     _print_transcript_user_message(message)
+                tool.set_request_context(user_message=message, location=location)
                 reply = await loop.send_user_message(message)
                 result.replies.append(reply.reply_text)
                 if transcript:
@@ -433,11 +500,15 @@ def _load_scenarios(config: dict[str, Any]) -> list[Scenario]:
             raise ValueError(f"scenario #{index + 1} must have a non-empty name")
         messages = _parse_messages(raw_scenario)
         expected_calls = _parse_expected_calls(raw_scenario.get("expected_calls", []), name)
+        expected_effects = _parse_expected_effects(raw_scenario.get("expected_effects", []), name)
+        reply_expectations = _parse_reply_expectations(raw_scenario, name)
         scenarios.append(
             Scenario(
                 name=name,
                 messages=messages,
                 expected_calls=expected_calls,
+                expected_effects=expected_effects,
+                reply_expectations=reply_expectations,
                 location=_str_or_none(raw_scenario.get("location")),
                 user=_str_or_none(raw_scenario.get("user")),
                 strict=bool(raw_scenario.get("strict", False)),
@@ -474,19 +545,83 @@ def _parse_expected_calls(raw_calls: Any, scenario_name: str) -> tuple[ExpectedC
         arguments = raw_call.get("arguments", {})
         if not isinstance(arguments, dict):
             raise ValueError(f"scenario {scenario_name}: expected call #{index + 1} arguments must be a mapping")
-        expected_calls.append(ExpectedCall(tool=tool, arguments=arguments, result=raw_call.get("result")))
+        expected_calls.append(
+            ExpectedCall(
+                tool=tool,
+                arguments=arguments,
+                result=raw_call.get("result"),
+                optional=bool(raw_call.get("optional", False)),
+            )
+        )
     return tuple(expected_calls)
 
 
+def _parse_expected_effects(raw_effects: Any, scenario_name: str) -> tuple[ExpectedEffect, ...]:
+    if not isinstance(raw_effects, list):
+        raise ValueError(f"scenario {scenario_name}: expected_effects must be a list")
+    expected_effects = []
+    for index, raw_effect in enumerate(raw_effects):
+        if not isinstance(raw_effect, dict):
+            raise ValueError(f"scenario {scenario_name}: expected effect #{index + 1} must be a mapping")
+        device = raw_effect.get("device")
+        property_name = raw_effect.get("property_name")
+        if not isinstance(device, str) or not device:
+            raise ValueError(f"scenario {scenario_name}: expected effect #{index + 1} must contain device")
+        if not isinstance(property_name, str) or not property_name:
+            raise ValueError(f"scenario {scenario_name}: expected effect #{index + 1} must contain property_name")
+        if "value" not in raw_effect:
+            raise ValueError(f"scenario {scenario_name}: expected effect #{index + 1} must contain value")
+        expected_effects.append(ExpectedEffect(device=device, property_name=property_name, value=raw_effect["value"]))
+    return tuple(expected_effects)
+
+
+def _parse_reply_expectations(raw_scenario: dict[str, Any], scenario_name: str) -> tuple[ReplyExpectation, ...]:
+    if "confirmations" in raw_scenario:
+        raw_confirmations = raw_scenario["confirmations"]
+        if not isinstance(raw_confirmations, list):
+            raise ValueError(f"scenario {scenario_name}: confirmations must be a list")
+        return tuple(_parse_reply_expectation(item, scenario_name) for item in raw_confirmations)
+    if "confirmation" in raw_scenario:
+        return (_parse_reply_expectation(raw_scenario["confirmation"], scenario_name),)
+    return (ReplyExpectation(),)
+
+
+def _parse_reply_expectation(raw_expectation: Any, scenario_name: str) -> ReplyExpectation:
+    if raw_expectation is None:
+        return ReplyExpectation()
+    if not isinstance(raw_expectation, dict):
+        raise ValueError(f"scenario {scenario_name}: confirmation must be a mapping")
+    raw_contains_all = raw_expectation.get("contains_all", ())
+    if raw_contains_all is None:
+        raw_contains_all = ()
+    if not isinstance(raw_contains_all, list):
+        raise ValueError(f"scenario {scenario_name}: confirmation.contains_all must be a list")
+    contains_all = tuple(item for item in raw_contains_all if isinstance(item, str) and item)
+    if len(contains_all) != len(raw_contains_all):
+        raise ValueError(f"scenario {scenario_name}: confirmation.contains_all must contain only non-empty strings")
+    return ReplyExpectation(
+        contains_all=contains_all,
+        one_sentence=bool(raw_expectation.get("one_sentence", True)),
+    )
+
+
 def _score_scenario(result: ScenarioResult, inventory: HomeAssistantInventory) -> None:
+    _score_expected_effects(result, inventory)
+    _score_reply_expectations(result)
+
     actual_index = 0
     matched_actual_indexes = set()
     for expected_index, expected in enumerate(result.scenario.expected_calls):
         match_index = _find_matching_call(expected, result.actual_calls, actual_index, inventory)
         if match_index is None:
-            result.failures.append(
-                f"missing expected call #{expected_index + 1}: {expected.tool} {json.dumps(expected.arguments, ensure_ascii=False)}"
+            message = (
+                f"missing expected call #{expected_index + 1}: "
+                f"{expected.tool} {json.dumps(expected.arguments, ensure_ascii=False)}"
             )
+            if expected.optional:
+                result.warnings.append(f"optional {message}")
+            else:
+                result.failures.append(message)
             continue
         matched_actual_indexes.add(match_index)
         actual_index = match_index + 1
@@ -500,6 +635,179 @@ def _score_scenario(result: ScenarioResult, inventory: HomeAssistantInventory) -
             )
     elif extra_indexes:
         result.warnings.append(f"{len(extra_indexes)} extra model tool call(s) were ignored by subset matching")
+
+
+def _score_expected_effects(result: ScenarioResult, inventory: HomeAssistantInventory) -> None:
+    if not result.scenario.expected_effects:
+        return
+
+    expected_effects = [_normalize_effect(effect, inventory) for effect in result.scenario.expected_effects]
+    actual_effects = _actual_modification_effects(result.actual_calls, inventory)
+
+    for expected in expected_effects:
+        if expected not in actual_effects:
+            result.failures.append(f"missing expected effect: {_format_effect(expected)}")
+
+    for actual in actual_effects:
+        if actual not in expected_effects:
+            result.failures.append(f"unexpected modification effect: {_format_effect(actual)}")
+
+
+def _score_reply_expectations(result: ScenarioResult) -> None:
+    if not result.replies:
+        result.failures.append("missing assistant confirmation reply")
+        return
+
+    expectations = result.scenario.reply_expectations or (ReplyExpectation(),)
+    if len(expectations) == len(result.replies):
+        pairs = tuple(zip(result.replies, expectations))
+    else:
+        pairs = tuple((reply, ReplyExpectation()) for reply in result.replies[:-1])
+        pairs += ((result.replies[-1], expectations[-1]),)
+
+    for index, (reply, expectation) in enumerate(pairs, start=1):
+        if not reply.strip():
+            result.failures.append(f"reply #{index} is empty")
+            continue
+        if expectation.one_sentence and not _is_one_sentence(reply):
+            result.failures.append(f"reply #{index} is not one sentence: {reply!r}")
+        normalized_reply = _normalize_text(reply)
+        for expected_text in expectation.contains_all:
+            if _normalize_text(expected_text) not in normalized_reply:
+                result.failures.append(f"reply #{index} does not contain {expected_text!r}: {reply!r}")
+
+
+def _actual_modification_effects(
+    actual_calls: list[ToolCallRecord],
+    inventory: HomeAssistantInventory,
+) -> list[tuple[str, str, Any]]:
+    effects = []
+    for call in actual_calls:
+        property_name = call.arguments.get("property_name")
+        value = call.arguments.get("value")
+        if not isinstance(property_name, str):
+            continue
+        if call.tool == "modify_device":
+            if not _single_modify_succeeded(call.result):
+                continue
+            device = call.arguments.get("device")
+            if isinstance(device, str):
+                effects.append(_normalize_effect(ExpectedEffect(device=device, property_name=property_name, value=value), inventory))
+        elif call.tool == "modify_devices":
+            if _batch_modify_rejected(call.result):
+                continue
+            devices = call.arguments.get("devices")
+            successful_devices = _successful_batch_devices(call.result)
+            if successful_devices:
+                for device in successful_devices:
+                    effects.append(_normalize_effect(ExpectedEffect(device=device, property_name=property_name, value=value), inventory))
+            elif isinstance(devices, list):
+                for device in devices:
+                    if isinstance(device, str):
+                        effects.append(_normalize_effect(ExpectedEffect(device=device, property_name=property_name, value=value), inventory))
+    return effects
+
+
+def _single_modify_succeeded(result: Any) -> bool:
+    if result is None:
+        return True
+    return isinstance(result, dict) and result.get("status") == "ok"
+
+
+def _batch_modify_rejected(result: Any) -> bool:
+    return isinstance(result, dict) and result.get("status") == "rejected"
+
+
+def _successful_batch_devices(result: Any) -> list[str]:
+    if not isinstance(result, dict):
+        return []
+    raw_results = result.get("results")
+    if not isinstance(raw_results, list):
+        return []
+    devices = []
+    for raw_result in raw_results:
+        if not isinstance(raw_result, dict):
+            continue
+        nested_result = raw_result.get("result")
+        if isinstance(nested_result, dict) and nested_result.get("status") != "ok":
+            continue
+        if raw_result.get("status") not in (None, "ok"):
+            continue
+        device = raw_result.get("device") or raw_result.get("device_id") or raw_result.get("device_name")
+        if isinstance(device, str):
+            devices.append(device)
+    return devices
+
+
+def _batch_scope_rejection(
+    devices: list[HomeAssistantDevice],
+    inventory: HomeAssistantInventory,
+    *,
+    user_message: str,
+    current_location: str | None,
+) -> dict[str, Any] | None:
+    if len(devices) <= 1:
+        return None
+    if not user_message:
+        return None
+    if _has_global_scope(user_message):
+        return None
+
+    current_area_id = _canonical_area_value(current_location, inventory) if current_location else ""
+    if current_area_id and all(device.area_id == current_area_id for device in devices):
+        return None
+
+    current_area = inventory.areas_by_id.get(current_area_id)
+    target_area_text = current_area.name if current_area is not None else "the named/current room"
+    return {
+        "status": "rejected",
+        "error": "batch_scope_not_allowed",
+        "message": (
+            "The user did not ask for all matching devices. Do not claim success. "
+            f"Use modify_device for the single matching device in {target_area_text}, "
+            "or ask a clarification question if no single device is clear."
+        ),
+        "current_location": current_location or "",
+        "current_area": _area_to_mapping(current_area) if current_area is not None else None,
+        "rejected_devices": [_device_to_mapping(device, inventory) for device in devices],
+    }
+
+
+def _has_global_scope(user_message: str) -> bool:
+    normalized_message = _normalize_text(user_message)
+    return any(_phrase_in_normalized_text(term, normalized_message) for term in GLOBAL_SCOPE_TERMS)
+
+
+def _phrase_in_normalized_text(phrase: str, normalized_text: str) -> bool:
+    normalized_phrase = _normalize_text(phrase)
+    return f" {normalized_phrase} " in f" {normalized_text} "
+
+
+def _normalize_effect(effect: ExpectedEffect, inventory: HomeAssistantInventory) -> tuple[str, str, Any]:
+    return (
+        _canonical_device_value(effect.device, inventory),
+        _normalize_property_name(effect.property_name),
+        _normalize_property_value(effect.property_name, effect.value),
+    )
+
+
+def _format_effect(effect: tuple[str, str, Any]) -> str:
+    return json.dumps(
+        {
+            "device": effect[0],
+            "property_name": effect[1],
+            "value": effect[2],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _is_one_sentence(reply: str) -> bool:
+    stripped = reply.strip()
+    if "\n" in stripped:
+        return False
+    terminal_count = sum(stripped.count(character) for character in ".!?")
+    return terminal_count <= 1
 
 
 def _find_matching_call(
@@ -569,6 +877,8 @@ def _normalize_argument_value(
         return _canonical_area_value(value, inventory)
     if key == "device_type":
         return _normalize_device_type(value)
+    if key == "property_name":
+        return _normalize_property_name(value)
     if key == "query":
         return frozenset(_normalize_text(value).split())
     return _normalize_text(value)
@@ -807,6 +1117,10 @@ def _device_to_mapping(device: HomeAssistantDevice, inventory: HomeAssistantInve
     }
 
 
+def _area_to_mapping(area: HomeAssistantArea) -> dict[str, Any]:
+    return {"area_id": area.area_id, "name": area.name, "aliases": list(area.aliases)}
+
+
 def _property_to_mapping(property_info: ModifiableProperty) -> dict[str, Any]:
     value: dict[str, Any] = {
         "property_name": property_info.property_name,
@@ -865,6 +1179,10 @@ def _normalize_property_value(property_name: str, value: Any) -> Any:
         if normalized in {_normalize_text(alias) for alias in aliases}:
             return canonical_value
     return normalized
+
+
+def _normalize_property_name(value: str) -> str:
+    return "_".join(_normalize_text(value).split())
 
 
 def _yaml_scalar_alias(value: Any) -> str:

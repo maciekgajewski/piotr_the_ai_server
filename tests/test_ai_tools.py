@@ -330,6 +330,44 @@ def test_home_assistant_modify_devices_returns_per_device_results_and_skips_unsu
     ]
 
 
+def test_home_assistant_modify_devices_rejects_over_broad_batch_without_global_wording(monkeypatch) -> None:
+    calls = []
+
+    async def fake_call_home_assistant_service(options, service_call: HomeAssistantServiceCall, logger) -> None:
+        calls.append(service_call)
+
+    monkeypatch.setattr(
+        "ai_server.home_assistant.connection._call_home_assistant_service",
+        fake_call_home_assistant_service,
+    )
+    tool = _sample_tool(_sample_inventory())
+    tool.set_request_context(user_message="ustaw klimę na 26 stopni", location="office")
+
+    with pytest.raises(ValueError, match="The user did not ask for all matching devices"):
+        asyncio.run(tool.modify_devices(["klima", "salon ac"], "target_temperature", 26))
+
+    assert calls == []
+
+
+def test_home_assistant_modify_devices_allows_batch_with_global_wording(monkeypatch) -> None:
+    calls = []
+
+    async def fake_call_home_assistant_service(options, service_call: HomeAssistantServiceCall, logger) -> None:
+        calls.append(service_call)
+
+    monkeypatch.setattr(
+        "ai_server.home_assistant.connection._call_home_assistant_service",
+        fake_call_home_assistant_service,
+    )
+    tool = _sample_tool(_sample_inventory())
+    tool.set_request_context(user_message="wyłącz wszystkie klimatyzacje", location="office")
+
+    result = asyncio.run(tool.modify_devices(["klima", "salon ac"], "hvac_mode", "off"))
+
+    assert result["status"] == "ok"
+    assert [call.entity_id for call in calls] == ["climate.study_air_conditioner", "climate.living_room_air_conditioner"]
+
+
 class FakeSession:
     def post(self, url: str, json: dict):
         raise AssertionError("unexpected HTTP request")

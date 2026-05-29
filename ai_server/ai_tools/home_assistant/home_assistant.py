@@ -25,6 +25,8 @@ class HomeAssistantTool(BaseTool, AgentCallableSet):
         self._agent_loop_model = _parse_agent_loop_model(config.options)
         self._ollama_url = _parse_ollama_url(config.options)
         self._start_task: asyncio.Task[None] | None = None
+        self._current_user_message = ""
+        self._current_location: str | None = None
         self._logger.debug(
             "configured HomeAssistantTool agent_loop_model=%s ollama_url=%s owns_connection=%s",
             self._agent_loop_model,
@@ -51,6 +53,7 @@ class HomeAssistantTool(BaseTool, AgentCallableSet):
         )
 
         async with AgentLoop(config=loop_config, system_prompt=system_prompt, tools=self) as loop:
+            self.set_request_context(user_message=request.text, location=conversation.location)
             reply = await loop.send_user_message(request.text)
             self._logger.debug(
                 "sending Home Assistant reply conversation_id=%s reply=%r end_conversation=%s loop_eval_count=%s",
@@ -70,6 +73,7 @@ class HomeAssistantTool(BaseTool, AgentCallableSet):
                     conversation.conversation_id,
                     follow_up.text,
                 )
+                self.set_request_context(user_message=follow_up.text, location=conversation.location)
                 reply = await loop.send_user_message(follow_up.text)
                 self._logger.debug(
                     "sending Home Assistant follow-up reply conversation_id=%s reply=%r end_conversation=%s loop_eval_count=%s",
@@ -92,6 +96,10 @@ class HomeAssistantTool(BaseTool, AgentCallableSet):
                 pass
         if self._owns_connection:
             await self._connection.close()
+
+    def set_request_context(self, *, user_message: str, location: str | None) -> None:
+        self._current_user_message = user_message
+        self._current_location = location
 
     @AgentCallableSet.tool(
         description=(
@@ -149,7 +157,12 @@ class HomeAssistantTool(BaseTool, AgentCallableSet):
         self._logger.debug("modify_device called device=%r property_name=%r value=%r", device, property_name, value)
         return await self._connection.modify_device(device, property_name, value)
 
-    @AgentCallableSet.tool(description="Modify the same property on multiple Home Assistant devices.")
+    @AgentCallableSet.tool(
+        description=(
+            "Modify the same property on multiple Home Assistant devices. "
+            "Use only when the user explicitly asks for all/every matching devices or all target devices are in the requested room."
+        )
+    )
     async def modify_devices(
         self,
         devices: Annotated[list[str], "Device ids, entity ids, device names, entity names, or aliases."],
@@ -157,7 +170,16 @@ class HomeAssistantTool(BaseTool, AgentCallableSet):
         value: Annotated[JsonScalar, "Desired property value. Common aliases are accepted."],
     ) -> dict[str, Any]:
         self._logger.debug("modify_devices called devices=%r property_name=%r value=%r", devices, property_name, value)
-        return await self._connection.modify_devices(devices, property_name, value)
+        result = await self._connection.modify_devices(
+            devices,
+            property_name,
+            value,
+            user_message=self._current_user_message,
+            current_location=self._current_location,
+        )
+        if result.get("status") == "rejected":
+            raise ValueError(_batch_rejection_message(result, property_name, value))
+        return result
 
     def _start_owned_connection(self) -> None:
         if not self._owns_connection:
@@ -183,3 +205,27 @@ def _parse_ollama_url(options: dict[str, Any]) -> str:
     if not isinstance(ollama_url, str) or not ollama_url:
         raise ValueError("agent.ollama_url must be a non-empty string for HomeAssistantTool")
     return ollama_url
+
+
+def _batch_rejection_message(result: dict[str, Any], property_name: str, value: JsonScalar) -> str:
+    base_message = result.get("message")
+    if not isinstance(base_message, str) or not base_message:
+        base_message = "Batch modification rejected."
+
+    current_area = result.get("current_area")
+    current_area_id = current_area.get("area_id") if isinstance(current_area, dict) else None
+    rejected_devices = result.get("rejected_devices")
+    if isinstance(current_area_id, str) and isinstance(rejected_devices, list):
+        matching_devices = [
+            device
+            for device in rejected_devices
+            if isinstance(device, dict) and device.get("area_id") == current_area_id and isinstance(device.get("name"), str)
+        ]
+        if len(matching_devices) == 1:
+            device_name = matching_devices[0]["name"]
+            return (
+                f"{base_message} Your next response must be a tool call, not text: "
+                f'call modify_device(device="{device_name}", property_name="{property_name}", value={value!r}).'
+            )
+
+    return f"{base_message} Your next response must be a narrower modify_device tool call or a clarification question, not a success message."
