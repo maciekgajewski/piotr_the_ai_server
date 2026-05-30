@@ -66,6 +66,46 @@ def test_home_assistant_domain_agent_runs_one_agent_loop_task() -> None:
     ]
 
 
+def test_home_assistant_domain_agent_normalizes_hvac_mode_alias_before_availability_check() -> None:
+    FakeHomeAssistantConnection.calls = []
+    fake_loop = FakeAgentLoop({})
+    agent = HomeAssistantDomainAgent(
+        model="qwen3:4b-instruct",
+        ollama_url="http://ollama:11434",
+        connection=FakeHomeAssistantConnection(),
+        loop_factory=fake_loop.factory,
+    )
+    conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office"})
+    task = {
+        "id": "t1",
+        "domain": "home_assistant",
+        "command": {
+            "selection": {
+                "include": [{"domain": "climate", "scope": "single", "area": "office"}],
+                "exclude": [],
+            },
+            "operation": {
+                "intent": "set_hvac_mode",
+                "description": "włącz klimatyzator w tryb wentylacji",
+                "parameters": {"hvac_mode": "ventilate"},
+            },
+        },
+        "depends_on": [],
+        "status": "ready",
+        "clarification_question": None,
+    }
+
+    result = asyncio.run(agent.run_task(conversation, task, {}))
+
+    assert result["status"] == "ok"
+    assert result["text"] == "Ustawiłem klimatyzację w salonie w trybie wentylacji."
+    assert FakeHomeAssistantConnection.calls == [
+        ("find_devices", {"query": "", "device_type": "climate", "area_name": "office"}),
+        ("list_modifiable_properties", {"device": "Living room air conditioner"}),
+        ("modify_device", {"device": "Living room air conditioner", "property_name": "hvac_mode", "value": "fan_only"}),
+    ]
+
+
 @pytest.mark.parametrize(
     ("reply", "error"),
     [
@@ -106,7 +146,16 @@ class FakeHomeAssistantConnection:
                 "property_name": "target_temperature",
                 "domain": "climate",
                 "value_type": "number",
-            }
+            },
+            {
+                "property_name": "hvac_mode",
+                "domain": "climate",
+                "value_type": "string",
+                "allowed_values": ["off", "cool", "fan_only"],
+                "value_aliases": {
+                    "fan_only": ["wentylacja", "tryb wentylacji", "nawiew", "wiatrak", "fan", "ventilate", "ventilation"]
+                },
+            },
         ]
 
     async def list_common_modifiable_properties(self, devices: list[str]):

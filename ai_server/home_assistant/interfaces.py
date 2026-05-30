@@ -13,7 +13,7 @@ JsonScalar: TypeAlias = str | int | float | bool
 
 PROPERTY_VALUE_ALIASES: dict[str, dict[JsonScalar, tuple[str, ...]]] = {
     "hvac_mode": {
-        "fan_only": ("wentylacja", "tryb wentylacji", "nawiew", "wiatrak", "fan"),
+        "fan_only": ("wentylacja", "tryb wentylacji", "nawiew", "wiatrak", "fan", "ventilate", "ventilation"),
         "cool": ("chłodzenie", "klimatyzacja", "klima", "zimno"),
         "heat": ("grzanie", "ogrzewanie", "ciepło"),
         "off": ("wyłącz", "wyłączone", "off"),

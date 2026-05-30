@@ -405,6 +405,36 @@ class OrchestratorAgent:
             "active_context": active_context,
             "pending_clarification": pending_clarification,
         }
+
+        try:
+            return await self._clarification_task_with_model(
+                model=model,
+                prompt=prompt,
+                pending_clarification=pending_clarification,
+            )
+        except Exception:
+            fallback_model = self._orchestrator_model
+            if model != fallback_model:
+                self._logger.warning(
+                    "clarification with model=%s failed, retrying fallback_model=%s",
+                    model,
+                    fallback_model,
+                    exc_info=True,
+                )
+                return await self._clarification_task_with_model(
+                    model=fallback_model,
+                    prompt=prompt,
+                    pending_clarification=pending_clarification,
+                )
+            raise
+
+    async def _clarification_task_with_model(
+        self,
+        *,
+        model: str,
+        prompt: dict[str, Any],
+        pending_clarification: dict[str, Any],
+    ) -> dict[str, Any]:
         response = await self._ollama.chat(
             {
                 "model": model,

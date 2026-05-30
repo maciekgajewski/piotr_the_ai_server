@@ -305,6 +305,156 @@ def test_orchestrator_retries_empty_final_reply_with_clarification_model() -> No
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Duża odpowiedź.")))
 
 
+def test_orchestrator_clarification_answer_can_correct_home_assistant_selection_domain() -> None:
+    initial_plan = {
+        "kind": "single_task",
+        "confidence": 0.9,
+        "tasks": [
+            {
+                "id": "t1",
+                "domain": "home_assistant",
+                "command": {
+                    "selection": {
+                        "include": [{"domain": "light", "scope": "single", "area": "office"}],
+                        "exclude": [],
+                    },
+                    "operation": {
+                        "intent": "turn_on",
+                        "description": "włącz klimatyzację.",
+                        "parameters": {},
+                    },
+                },
+            }
+        ],
+        "context_updates": {"salient_entities": [], "active_domain": "home_assistant"},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    resolved_task = {
+        "confidence": 0.95,
+        "task": {
+            "id": "t1",
+            "domain": "home_assistant",
+            "command": {
+                "selection": {
+                    "include": [{"domain": "climate", "scope": "single", "area": "office"}],
+                    "exclude": [],
+                },
+                "operation": {
+                    "intent": "turn_on",
+                    "description": "Włącz klimatyzację.",
+                    "parameters": {},
+                },
+            },
+            "depends_on": [],
+            "status": "ready",
+            "clarification_question": None,
+        },
+    }
+    ollama = FakeOllamaClient(
+        [
+            json.dumps(initial_plan),
+            "Jaką dokładnie zmianę mam wykonać?",
+            json.dumps(resolved_task),
+            "Włączyłem klimatyzator.",
+        ]
+    )
+    domain_agent = RecordingDomainAgent(
+        [
+            {
+                "status": "needs_clarification",
+                "text": "Jaką dokładnie zmianę mam wykonać?",
+                "needs_clarification": True,
+                "clarification_question": "Jaką dokładnie zmianę mam wykonać?",
+            },
+            {"status": "ok", "text": "Włączyłem klimatyzator."},
+        ]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="small",
+        clarification_model="big",
+        domain_agents={"home_assistant": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="sprawdź klimatyzator"), TextMessage(text="Włącz klimatyzator")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"area": "office"}), endpoint))
+
+    assert [request["model"] for request in ollama.requests] == ["small", "small", "big", "small"]
+    assert [task["command"]["selection"]["include"][0]["domain"] for task in domain_agent.tasks] == ["light", "climate"]
+    assert [task["command"]["operation"]["intent"] for task in domain_agent.tasks] == ["turn_on", "turn_on"]
+    assert domain_agent.tasks[1]["command"]["selection"]["include"] == [
+        {"domain": "climate", "scope": "single", "area": "office"}
+    ]
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Jaką dokładnie zmianę mam wykonać?"))) + list(
+        text_message_to_events(TextMessage(text="Włączyłem klimatyzator."))
+    )
+
+
+def test_orchestrator_retries_empty_clarification_response_with_orchestrator_model() -> None:
+    initial_plan = {
+        "kind": "single_task",
+        "confidence": 0.9,
+        "tasks": [
+            {
+                "id": "t1",
+                "domain": "home_assistant",
+                "command": _ha_command("turn_on", "włącz światło"),
+            }
+        ],
+        "context_updates": {"salient_entities": [], "active_domain": "home_assistant"},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    resolved_task = {
+        "confidence": 0.92,
+        "task": {
+            "id": "t1",
+            "domain": "home_assistant",
+            "command": _ha_command("turn_on", "włącz światło w salonie"),
+            "depends_on": [],
+            "status": "ready",
+            "clarification_question": None,
+        },
+    }
+    ollama = FakeOllamaClient(
+        [
+            json.dumps(initial_plan),
+            "Które światło mam włączyć?",
+            "",
+            json.dumps(resolved_task),
+            "Włączyłem światło w salonie.",
+        ]
+    )
+    domain_agent = RecordingDomainAgent(
+        [
+            {
+                "status": "needs_clarification",
+                "text": "Które światło mam włączyć?",
+                "needs_clarification": True,
+                "clarification_question": "Które światło mam włączyć?",
+            },
+            {"status": "ok", "text": "Włączyłem światło w salonie."},
+        ]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="small",
+        clarification_model="big",
+        domain_agents={"home_assistant": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="włącz światło"), TextMessage(text="w salonie")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={}), endpoint))
+
+    assert [request["model"] for request in ollama.requests] == ["small", "small", "big", "small", "small"]
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Które światło mam włączyć?"))) + list(
+        text_message_to_events(TextMessage(text="Włączyłem światło w salonie."))
+    )
+
+
 def test_orchestrator_logs_blocked_task_clarification_utterance(caplog) -> None:
     plan = {
         "kind": "single_task",

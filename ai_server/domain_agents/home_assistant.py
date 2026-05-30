@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from typing import Annotated, Any, Callable
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
@@ -291,6 +292,7 @@ async def _modify_single_device(
     properties_result = await tools.list_modifiable_properties(device["name"])
     if isinstance(properties_result, dict):
         return _failed_result("Nie mogę odczytać ustawień tego urządzenia.")
+    value = _normalize_property_value(properties_result, property_name, value)
     if not _property_available(properties_result, property_name, value):
         return _clarification_result("To urządzenie nie obsługuje żądanej zmiany.")
 
@@ -312,6 +314,7 @@ async def _modify_multiple_devices(
     if not isinstance(properties_result, dict):
         return _failed_result("Nie mogę odczytać wspólnych ustawień tych urządzeń.")
     properties = properties_result.get("common_properties", properties_result.get("properties", []))
+    value = _normalize_property_value(properties, property_name, value)
     if not _property_available(properties, property_name, value):
         return _clarification_result("Te urządzenia nie obsługują wspólnej żądanej zmiany.")
 
@@ -362,6 +365,46 @@ def _property_available(properties: Any, property_name: str, value: Any) -> bool
         allowed_values = property_info.get("allowed_values")
         return not isinstance(allowed_values, list) or value in allowed_values
     return False
+
+
+def _normalize_property_value(properties: Any, property_name: str, value: Any) -> Any:
+    if not isinstance(properties, list) or not isinstance(value, str):
+        return value
+    for property_info in properties:
+        if not isinstance(property_info, dict) or property_info.get("property_name") != property_name:
+            continue
+        return _normalize_value_with_property_info(property_info, value)
+    return value
+
+
+def _normalize_value_with_property_info(property_info: dict[str, Any], value: str) -> Any:
+    normalized_value = _normalize_lookup(value)
+    allowed_values = property_info.get("allowed_values")
+    if isinstance(allowed_values, list):
+        for allowed_value in allowed_values:
+            if _normalize_lookup(str(allowed_value)) == normalized_value:
+                return allowed_value
+
+    value_aliases = property_info.get("value_aliases")
+    if not isinstance(value_aliases, dict):
+        return value
+
+    for raw_value, raw_aliases in value_aliases.items():
+        aliases = raw_aliases if isinstance(raw_aliases, list) else []
+        candidates = [str(raw_value), *(alias for alias in aliases if isinstance(alias, str))]
+        if normalized_value not in {_normalize_lookup(candidate) for candidate in candidates}:
+            continue
+        if isinstance(allowed_values, list):
+            for allowed_value in allowed_values:
+                if _normalize_lookup(str(allowed_value)) == _normalize_lookup(str(raw_value)):
+                    return allowed_value
+        return raw_value
+    return value
+
+
+def _normalize_lookup(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value.casefold()).replace("ł", "l")
+    return "".join(character for character in decomposed if not unicodedata.combining(character))
 
 
 def _success_result(
