@@ -63,7 +63,7 @@ class AgentLoopOllamaConnection:
                 request_timeout_seconds=request_timeout_seconds,
             )
         except _OllamaChatStatusError as exc:
-            if fallback_model is None or not 400 <= exc.status < 500:
+            if fallback_model is None:
                 raise
             self._activate_backoff(
                 model,
@@ -99,7 +99,7 @@ class AgentLoopOllamaConnection:
         backoff_until = self._now_factory() + fallback_backoff_seconds
         self._backoff_until[_BackoffKey(model, fallback_model)] = backoff_until
         self._logger.warning(
-            "main model rejected by Ollama status=%s model=%s fallback_model=%s fallback_backoff_seconds=%s",
+            "main model failed in Ollama status=%s model=%s fallback_model=%s fallback_backoff_seconds=%s",
             status,
             model,
             fallback_model,

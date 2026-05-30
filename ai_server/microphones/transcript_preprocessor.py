@@ -17,8 +17,16 @@ TRANSCRIPT_REPLACEMENTS = (
         pattern=re.compile(r"\bventilacji\b"),
         replacement="wentylacji",
     ),
-)
+    TranscriptReplacementRule(
+        pattern=re.compile(r"\bklimatysację\b"),
+        replacement="klimatyzację",
+    ),
+    TranscriptReplacementRule(
+        pattern=re.compile(r"\bwędylacji\b"),
+        replacement="wentylacji",
+    ),
 
+)
 
 class TranscriptPreprocessor:
     def __init__(self, instance_id: str) -> None:

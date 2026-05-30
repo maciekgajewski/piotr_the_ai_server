@@ -382,6 +382,39 @@ def test_agent_loop_retries_with_fallback_model_on_main_model_rejection() -> Non
     ]
 
 
+def test_agent_loop_retries_with_fallback_model_on_main_model_server_error() -> None:
+    session = FakeSession(
+        [
+            FakeResponse({"error": "server error"}, status=500),
+            FakeResponse(
+                {
+                    "done": True,
+                    "eval_count": 4,
+                    "message": {"role": "assistant", "content": "Fallback po 500."},
+                }
+            ),
+        ]
+    )
+    loop = AgentLoop(
+        AgentLoopConfig(
+            model="gpt-oss:20b-cloud",
+            fallback_model="qwen3:4b-instruct",
+        ),
+        "System.",
+        ExampleTools(),
+        session=session,
+    )
+
+    reply = asyncio.run(loop.send_user_message("hej"))
+
+    assert reply.reply_text == "Fallback po 500."
+    assert reply.end_conversation is False
+    assert [request["json"]["model"] for request in session.requests] == [
+        "gpt-oss:20b-cloud",
+        "qwen3:4b-instruct",
+    ]
+
+
 def test_agent_loop_shared_backoff_uses_fallback_for_matching_model_pair() -> None:
     now = 1000.0
     session = FakeSession(
