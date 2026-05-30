@@ -190,4 +190,4 @@ Interactive prompts are:
 - `waiting for server> `
 - `disconnected; reconnecting> `
 
-Scripted mode uses repeated `--message` arguments. After all scripted messages are sent, the client exits when the next wait-state event arrives, either `WaitForNewMessage` or `WaitForNewConversation`.
+Batch mode uses `tools/batch-ws-client.sh` with repeated `--message` arguments. After all batch messages are sent, the client exits when the next wait-state event arrives, either `WaitForNewMessage` or `WaitForNewConversation`.
