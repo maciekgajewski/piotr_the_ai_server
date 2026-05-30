@@ -1,0 +1,10 @@
+ollama_url: http://127.0.0.1:11434
+models:
+  orchestrator: qwen3:4b-instruct
+  dsa: qwen3:4b-instruct
+defaults:
+  area: office
+  user: Maciek
+  timezone: Europe/Warsaw
+  location: Wrocław
+  fixed_utc: "2026-05-30T08:46:00+00:00"

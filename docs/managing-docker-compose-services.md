@@ -19,3 +19,11 @@ Stop and remove the Compose stack:
 ```bash
 docker compose down
 ```
+
+Enable Ollama cloud-model offload for the local Docker Ollama service:
+
+```bash
+tools/ollama-cloud-setup-test.sh
+```
+
+See [Ollama Cloud Models](ollama-cloud-models.md).

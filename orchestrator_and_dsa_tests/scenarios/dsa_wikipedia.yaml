@@ -1,0 +1,59 @@
+group: dsa_wikipedia
+type: dsa_wikipedia
+
+cases:
+  - id: birth_year
+    task:
+      id: t1
+      domain: wikipedia
+      command:
+        topic: Albert Einstein
+        fact: birth year
+    expected_result:
+      status: ok
+      language: pl
+      value: 1879
+    expected_replies:
+      - contains_all: [Albert Einstein, "1879"]
+
+  - id: where_is
+    task:
+      id: t1
+      domain: wikipedia
+      command:
+        intent: where_is
+        topic: Jacksonville
+    expected_result:
+      status: ok
+      fact: location
+      language: en
+    expected_replies:
+      - contains_all: [Jacksonville, Florida]
+
+  - id: coordinates
+    task:
+      id: t1
+      domain: wikipedia
+      command:
+        query: jakie są współrzędne Jacksonville
+    expected_result:
+      status: ok
+      fact: coordinates
+      value:
+        lat: 30.3322
+        lon: -81.6557
+    expected_replies:
+      - contains_all: ["30.3322", "-81.6557"]
+
+  - id: summary
+    task:
+      id: t1
+      domain: wikipedia
+      command:
+        query: kim był John Henry?
+    expected_result:
+      status: ok
+      language: en
+      title: John Henry (folklore)
+    expected_replies:
+      - contains_all: [John Henry, folk]

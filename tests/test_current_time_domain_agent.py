@@ -102,13 +102,13 @@ def test_current_time_domain_agent_uses_configured_timezone_when_model_copies_ar
     assert not resolver.called
 
 
-def test_current_time_domain_agent_ignores_non_explicit_geo_location(tmp_path: Path) -> None:
-    resolver = FailingTimezoneResolver()
+def test_current_time_domain_agent_trusts_command_geo_location_when_query_is_shortened(tmp_path: Path) -> None:
+    resolver = MappingTimezoneResolver({"Jacksonville": "America/New_York"})
     agent = CurrentTimeDomainAgent(
         timezone="Europe/Warsaw",
         location="Wrocław",
         cache_dir=tmp_path,
-        now_factory=lambda zone: dt.datetime(2026, 5, 30, 10, 4, tzinfo=zone),
+        now_factory=lambda zone: dt.datetime(2026, 5, 30, 4, 46, tzinfo=zone),
         timezone_resolver=resolver,
     )
     conversation = Conversation(conversation_id="conversation-1", attributes={})
@@ -116,14 +116,15 @@ def test_current_time_domain_agent_ignores_non_explicit_geo_location(tmp_path: P
     result = asyncio.run(
         agent.run_task(
             conversation,
-            {"id": "t1", "domain": "time", "command": {"query": "Która godzina.", "geo_location": "office"}},
+            {"id": "t1", "domain": "time", "command": {"query": "która godzina jest teraz", "geo_location": "Jacksonville"}},
             {},
         )
     )
 
-    assert result["timezone"] == "Europe/Warsaw"
-    assert result["location"] == "Wrocław"
-    assert not resolver.called
+    assert result["timezone"] == "America/New_York"
+    assert result["location"] == "Jacksonville"
+    assert result["time"] == "04:46"
+    assert resolver.calls == ["Jacksonville"]
 
 
 def test_current_time_domain_agent_handles_date_components(tmp_path: Path) -> None:
@@ -188,6 +189,19 @@ class FailingTimezoneResolver:
     async def resolve(self, location: str) -> str:
         self.called = True
         raise AssertionError(f"unexpected timezone lookup for {location}")
+
+    async def close(self) -> None:
+        pass
+
+
+class MappingTimezoneResolver:
+    def __init__(self, mapping: dict[str, str]) -> None:
+        self._mapping = mapping
+        self.calls = []
+
+    async def resolve(self, location: str) -> str:
+        self.calls.append(location)
+        return self._mapping[location]
 
     async def close(self) -> None:
         pass

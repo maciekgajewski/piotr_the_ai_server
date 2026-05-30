@@ -1,14 +1,8 @@
-domain: home_assistant_dsa
+group: dsa_ha
+type: dsa_ha
 
-defaults:
-  model: qwen3:4b-instruct
-  ollama_url: http://127.0.0.1:11434
-  area: Office
-  user: Maciek
-  inventory: tools/lib/agent-tool-eval/home_assistant.yaml
-
-scenarios:
-  - name: dsa-office-turn-off-climate-from-current-area
+cases:
+  - id: turn_off_current_area_climate
     task:
       id: t1
       domain: home_assistant
@@ -39,7 +33,7 @@ scenarios:
     confirmation:
       contains_all: [klimatyz, wyłącz]
 
-  - name: dsa-turn-off-all-climate-devices
+  - id: turn_off_all_climate
     task:
       id: t1
       domain: home_assistant
@@ -76,9 +70,9 @@ scenarios:
         property_name: hvac_mode
         value: "off"
     confirmation:
-      contains_all: [wszystkie, klimatyz, wyłącz]
+      contains_all: [wszystkie, klimatyz]
 
-  - name: dsa-living-room-climate-fan-only-by-room-alias
+  - id: living_room_fan_only
     task:
       id: t1
       domain: home_assistant
@@ -108,9 +102,9 @@ scenarios:
         property_name: hvac_mode
         value: fan_only
     confirmation:
-      contains_all: [salon, wentylac]
+      contains_all: [salon, wentyl]
 
-  - name: dsa-current-area-set-climate-temperature
+  - id: current_area_set_temperature
     task:
       id: t1
       domain: home_assistant
@@ -142,7 +136,7 @@ scenarios:
     confirmation:
       contains_all: ["26"]
 
-  - name: dsa-follow-up-uses-existing-climate-context
+  - id: followup_existing_climate_context
     active_context:
       salient_entities:
         - climate.salon

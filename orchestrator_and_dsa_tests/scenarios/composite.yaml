@@ -1,0 +1,139 @@
+group: composite
+type: composite
+
+cases:
+  - id: ha_only
+    messages:
+      - wyłącz klimatyzację
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          selection:
+            include:
+              - domain: climate
+                scope: single
+                area: office
+          operation:
+            intent: turn_off
+    expected_calls:
+      - tool: modify_device
+        arguments:
+          device: Study air conditioner
+          property_name: hvac_mode
+          value: "off"
+    expected_effects:
+      - device: Study air conditioner
+        property_name: hvac_mode
+        value: "off"
+    expected_replies:
+      - contains_all: [klimatyz]
+
+  - id: time_only
+    messages:
+      - Która godzina?
+    expected_tasks:
+      - domain: time
+        command:
+          query:
+            $any: ["Która godzina?", "Która godzina", "która godzina?"]
+    expected_replies:
+      - contains_all: ["10:46"]
+
+  - id: wikipedia_only
+    messages:
+      - W którym roku urodził się Albert Einstein według Wikipedii?
+    expected_tasks:
+      - domain: wikipedia
+        command:
+          topic:
+            $any: [Albert Einstein, Einstein]
+    expected_replies:
+      - contains_all: [Einstein, "1879"]
+
+  - id: ha_time_combo
+    messages:
+      - wyłącz klimę w biurze i powiedz która godzina jest teraz w Jacksonville
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          operation:
+            intent: turn_off
+      - domain: time
+        command:
+          geo_location: Jacksonville
+    expected_calls:
+      - tool: modify_device
+        arguments:
+          device: Study air conditioner
+          property_name: hvac_mode
+          value: "off"
+    expected_effects:
+      - device: Study air conditioner
+        property_name: hvac_mode
+        value: "off"
+    expected_replies:
+      - contains_all: [klimatyz, Jacksonville]
+
+  - id: ha_wikipedia_combo
+    messages:
+      - włącz klimę w salonie i sprawdź w Wikipedii rok urodzenia Einsteina
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          operation:
+            intent: turn_on
+      - domain: wikipedia
+        command:
+          topic:
+            $any: [Albert Einstein, Einstein]
+    expected_calls:
+      - tool: modify_device
+        arguments:
+          device: Living room air conditioner
+    expected_replies:
+      - contains_all: [klimatyz, Einstein, "1879"]
+
+  - id: followup_context
+    messages:
+      - Włącz klimatyzację w salonie
+      - Super! I ustaw ją na 22 stopnie
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          operation:
+            intent: turn_on
+      - domain: home_assistant
+        command:
+          selection:
+            include:
+              - domain: climate
+                scope: single
+                area:
+                  $any: [salon, living_room]
+          operation:
+            intent: set_temperature
+            parameters:
+              temperature: 22
+    expected_calls:
+      - tool: modify_device
+        arguments:
+          device: Living room air conditioner
+      - tool: modify_device
+        arguments:
+          device: Living room air conditioner
+          property_name: target_temperature
+          value: 22
+    expected_effects:
+      - device: Living room air conditioner
+        property_name: hvac_mode
+        value: cool
+      - device: Living room air conditioner
+        property_name: target_temperature
+        value: 22
+    expected_replies:
+      - contains_all: [klimatyz, salon]
+      - contains_all: ["22"]
+    expected_planning_context:
+      - message_index: 1
+        salient_entities:
+          - climate.salon

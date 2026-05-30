@@ -1,0 +1,46 @@
+group: dsa_time
+type: dsa_time
+
+cases:
+  - id: short_local_time
+    task:
+      id: t1
+      domain: time
+      command:
+        query: Która godzina?
+    expected_result:
+      status: ok
+      timezone: Europe/Warsaw
+      location: Wrocław
+      time: "10:46"
+    expected_replies:
+      - exact: "10:46"
+
+  - id: jacksonville_time
+    task:
+      id: t1
+      domain: time
+      command:
+        query: która godzina jest teraz w Jacksonville
+        geo_location: Jacksonville
+    expected_result:
+      status: ok
+      timezone: America/New_York
+      location: Jacksonville
+      time: "04:46"
+    expected_replies:
+      - contains_all: [Jacksonville, "04:46"]
+
+  - id: day_of_week
+    task:
+      id: t1
+      domain: time
+      command:
+        query: jaki jest dzień tygodnia?
+        intent: day_of_week
+    expected_result:
+      status: ok
+      components:
+        day_of_week: sobota
+    expected_replies:
+      - contains_all: [sobota]

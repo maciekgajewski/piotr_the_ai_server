@@ -81,7 +81,7 @@ class CurrentTimeDomainAgent:
         target_timezone = _string_or_empty(command.get("timezone"))
         command_location = _string_or_empty(command.get("geo_location"))
         query_location = _extract_location(query)
-        target_location = command_location if _explicit_time_location(command_location, query, conversation) else query_location
+        target_location = command_location if _command_geo_location(command_location, conversation) else query_location
 
         if target_timezone:
             timezone = target_timezone
@@ -322,13 +322,12 @@ def _extract_location(query: str) -> str:
     return ""
 
 
-def _explicit_time_location(command_location: str, query: str, conversation: Conversation) -> bool:
+def _command_geo_location(command_location: str, conversation: Conversation) -> bool:
     if not command_location:
         return False
     if conversation.area and _normalized(command_location) == _normalized(conversation.area):
         return False
-    extracted_location = _extract_location(query)
-    return bool(extracted_location and _normalized(extracted_location) == _normalized(command_location))
+    return True
 
 
 def _is_short_local_time_question(

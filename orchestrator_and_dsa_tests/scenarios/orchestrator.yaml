@@ -1,0 +1,111 @@
+group: orchestrator
+type: orchestrator
+
+cases:
+  - id: ha_turn_off_current_area
+    messages:
+      - wyłącz klimatyzację
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Wyłączono klimatyzację.
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          selection:
+            include:
+              - domain: climate
+                scope: single
+                area: office
+          operation:
+            intent: turn_off
+    expected_replies:
+      - contains_all: [klimatyz]
+
+  - id: ha_time_combo
+    messages:
+      - wyłącz klimę w biurze i powiedz która godzina jest teraz w Jacksonville
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Wyłączyłem klimatyzację w biurze.
+      time:
+        t2:
+          status: ok
+          text: W Jacksonville jest 04:46.
+          timezone: America/New_York
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          operation:
+            intent: turn_off
+      - domain: time
+        command:
+          geo_location: Jacksonville
+    expected_replies:
+      - contains_all: [klimatyz, Jacksonville]
+
+  - id: ha_wikipedia_combo
+    messages:
+      - włącz klimę w salonie i sprawdź w Wikipedii rok urodzenia Einsteina
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Włączono klimatyzację w salonie.
+      wikipedia:
+        t2:
+          status: ok
+          text: Albert Einstein urodził się w 1879 roku.
+          fact: birth_year
+          value: 1879
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          operation:
+            intent: turn_on
+      - domain: wikipedia
+        command:
+          topic:
+            $any: [Albert Einstein, Einstein]
+    expected_replies:
+      - contains_all: [klimatyz, Einstein, "1879"]
+
+  - id: ha_followup_context
+    messages:
+      - Włącz klimatyzację w salonie
+      - Super! I ustaw ją na 22 stopnie
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Włączono klimatyzację w salonie.
+        t2:
+          status: ok
+          text: Ustawiono klimatyzację w salonie na 22 stopnie.
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          operation:
+            intent: turn_on
+      - domain: home_assistant
+        command:
+          operation:
+            intent: set_temperature
+            parameters:
+              temperature: 22
+          selection:
+            include:
+              - domain: climate
+                scope: single
+                area:
+                  $any: [salon, living_room]
+    expected_replies:
+      - contains_all: [klimatyz, salon]
+      - contains_all: ["22"]
+    expected_planning_context:
+      - message_index: 1
+        salient_entities:
+          - climate.salon

@@ -12,6 +12,23 @@ api port: 6053
 
 Secrets are read from `firmware/esphome/secrets.yaml`.
 
+## Ollama Cloud Model Setup
+
+Signs in the Docker Compose `ollama` service, pulls an Ollama cloud model, and
+smoke-tests the local API endpoint used by the AI server.
+
+```bash
+tools/ollama-cloud-setup-test.sh
+```
+
+The default model is `gpt-oss:120b-cloud`. Override it with:
+
+```bash
+tools/ollama-cloud-setup-test.sh --model MODEL-NAME-CLOUD
+```
+
+See [../docs/ollama-cloud-models.md](../docs/ollama-cloud-models.md).
+
 ## Probe API
 
 Checks that Piotr can connect to the Box over the encrypted ESPHome native API
