@@ -6,15 +6,20 @@ from ai_server.config import ConversationConfig, MicrophoneConfig, SttConfig, Tt
 from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, TextMessage, WaitForNewConversation
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.manager import MicrophoneManager, init_mics
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, MessageEndCue, StartFollowUpListening
+from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, ConversationTimeoutCue, MessageEndCue
+from ai_server.microphones.messages import StartFollowUpListening
 from ai_server.microphones.messages import StartWakeWordListening
 from ai_server.microphones.messages import TextEnd, TextFragment
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 
 
 class FakeAgent:
+    def __init__(self) -> None:
+        self.messages = []
+
     async def run_conversation(self, conversation, endpoint) -> None:
         async for message in endpoint.messages():
+            self.messages.append(message.text)
             await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
 
     async def close(self) -> None:
@@ -22,7 +27,7 @@ class FakeAgent:
 
 
 class FakeMicrophone:
-    def __init__(self) -> None:
+    def __init__(self, events=None) -> None:
         self.context = MicrophoneContext(type="fake", name="office", location="office")
         self.playback_target = PlaybackTarget(
             type="fake",
@@ -32,11 +37,11 @@ class FakeMicrophone:
         )
         self.closed = False
         self.sent_audio_events = []
-        self._events = [
+        self._events = list(events or [
             AudioStart(wake_word="Ryszardzie"),
             AudioChunk(data=b"audio"),
             AudioEnd(),
-        ]
+        ])
 
     async def wait_for_event(self):
         if not self._events:
@@ -51,14 +56,14 @@ class FakeMicrophone:
 
 
 class FakeSttSession:
-    def __init__(self) -> None:
+    def __init__(self, text_events=None) -> None:
         self.audio_chunks = []
         self.ended = False
         self.closed = False
-        self._text_events = [
+        self._text_events = list(text_events or [
             TextFragment(text="cześć"),
             TextEnd(),
-        ]
+        ])
 
     async def send_audio(self, chunk: AudioChunk) -> None:
         self.audio_chunks.append(chunk)
@@ -74,16 +79,18 @@ class FakeSttSession:
 
 
 class FakeStt:
-    def __init__(self) -> None:
+    def __init__(self, session_text_events=None) -> None:
         self.started = False
         self.closed = False
         self.sessions = []
+        self._session_text_events = list(session_text_events or [])
 
     async def start(self) -> None:
         self.started = True
 
     async def create_session(self, session_id: str):
-        session = FakeSttSession()
+        text_events = self._session_text_events.pop(0) if self._session_text_events else None
+        session = FakeSttSession(text_events)
         self.sessions.append(session)
         return session
 
@@ -191,6 +198,55 @@ def test_microphone_manager_sends_transcript_to_agent_and_speaks_reply() -> None
     asyncio.run(run())
 
 
+def test_microphone_manager_treats_empty_follow_up_as_timeout() -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone(
+            events=[
+                AudioStart(wake_word="Ryszardzie"),
+                AudioChunk(data=b"audio"),
+                AudioEnd(),
+                AudioStart(wake_word="follow_up"),
+                AudioEnd(),
+            ]
+        )
+        stt = FakeStt(
+            session_text_events=[
+                [TextFragment(text="cześć"), TextEnd()],
+                [TextEnd()],
+            ]
+        )
+        tts = FakeTts()
+        agent = FakeAgent()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=stt,
+            tts=tts,
+            agent=agent,
+            follow_up_timeout_seconds=1,
+        )
+
+        await manager.start()
+        await asyncio.wait_for(
+            _wait_until(lambda: any(isinstance(event, ConversationTimeoutCue) for event in microphone.sent_audio_events)),
+            timeout=1,
+        )
+        await manager.close()
+
+        assert agent.messages == ["cześć"]
+        assert tts.synthesized == ["reply:cześć"]
+        assert microphone.sent_audio_events == [
+            StartWakeWordListening(),
+            MessageEndCue(),
+            AudioStart(rate=22050, width=2, channels=1, volume=1.0),
+            AudioChunk(data=b"reply-audio"),
+            AudioEnd(),
+            StartFollowUpListening(),
+            ConversationTimeoutCue(),
+        ]
+
+    asyncio.run(run())
+
+
 def test_microphone_manager_keeps_session_alive_after_tts_error() -> None:
     async def run() -> None:
         microphone = FakeMicrophone()
@@ -250,3 +306,8 @@ def test_init_mics_rejects_unknown_microphone_type() -> None:
 
     with pytest.raises(ValueError, match="unsupported microphone type: unknown"):
         asyncio.run(init_mics((mic_config,), SttConfig(), TtsConfig(), ConversationConfig(), FakeAgent()))
+
+
+async def _wait_until(predicate) -> None:
+    while not predicate():
+        await asyncio.sleep(0)

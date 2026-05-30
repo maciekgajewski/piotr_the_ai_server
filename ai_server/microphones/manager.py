@@ -78,13 +78,16 @@ class MicrophoneManager:
                     if isinstance(event, WaitForNewConversation):
                         logger.info("opening microphone for wake-word listening")
                         await microphone.send_output_event(StartWakeWordListening())
-                        await self._capture_utterance(
+                        captured = await self._capture_utterance(
                             microphone=microphone,
                             endpoint=endpoint,
                             logger=logger,
                             starts_new_conversation=True,
                             timeout_seconds=None,
                         )
+                        if not captured:
+                            logger.info("wake-word stream had no transcript; ending conversation")
+                            await endpoint.send_to_session(ConversationEnded())
                         continue
                     if isinstance(event, WaitForNewMessage):
                         follow_up_timeout = self._follow_up_timeout_for(microphone)
@@ -138,8 +141,11 @@ class MicrophoneManager:
             await endpoint.send_to_session(NewConversation(attributes={}))
 
         logger.info("wake_word=%r audio stream started", event.wake_word)
-        await endpoint.send_to_session(MessageBegin())
-        await self._send_transcript_message(microphone, endpoint, logger)
+        captured = await self._send_transcript_message(microphone, endpoint, logger)
+        if not captured:
+            logger.info("audio stream ended without transcript")
+            return False
+
         await microphone.send_output_event(MessageEndCue())
         return True
 
@@ -167,14 +173,13 @@ class MicrophoneManager:
         microphone: Microphone,
         endpoint: MicrophoneAgentEndpoint,
         logger: logging.Logger,
-    ) -> None:
+    ) -> bool:
         event = await microphone.wait_for_event()
         if not isinstance(event, AudioStart):
-            await self._send_audio_stream_to_stt(microphone, endpoint, logger, first_event=event)
-            return
+            return await self._send_audio_stream_to_stt(microphone, endpoint, logger, first_event=event)
 
         logger.info("wake_word=%r audio stream started", event.wake_word)
-        await self._send_audio_stream_to_stt(microphone, endpoint, logger, first_event=None)
+        return await self._send_audio_stream_to_stt(microphone, endpoint, logger, first_event=None)
 
     async def _send_audio_stream_to_stt(
         self,
@@ -182,7 +187,7 @@ class MicrophoneManager:
         endpoint: MicrophoneAgentEndpoint,
         logger: logging.Logger,
         first_event,
-    ) -> None:
+    ) -> bool:
         stt_session = await self._stt.create_session(microphone.context.name)
         text_task = asyncio.create_task(self._forward_text_to_agent(endpoint, stt_session, logger))
         try:
@@ -210,9 +215,9 @@ class MicrophoneManager:
                     audio_done = True
                     break
 
-            await text_task
+            captured = await text_task
             await stt_session.close()
-            await endpoint.send_to_session(MessageEnd())
+            return captured
         except Exception:
             text_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -276,16 +281,26 @@ class MicrophoneManager:
         endpoint: MicrophoneAgentEndpoint,
         stt_session: SttSession,
         logger: logging.Logger,
-    ) -> None:
+    ) -> bool:
+        message_started = False
+        captured = False
         while True:
             event = await stt_session.receive_text()
             if isinstance(event, TextFragment):
+                if not captured and not event.text.strip():
+                    continue
+                captured = True
+                if not message_started:
+                    await endpoint.send_to_session(MessageBegin())
+                    message_started = True
                 logger.info("transcription fragment chars=%s", len(event.text))
                 logger.debug("transcript_fragment=%r", event.text)
                 await endpoint.send_to_session(MessageFragment(text=event.text))
                 continue
             if isinstance(event, TextEnd):
-                return
+                if message_started:
+                    await endpoint.send_to_session(MessageEnd())
+                return captured
             raise ValueError(f"unsupported STT event: {type(event).__name__}")
 
     async def _receive_agent_reply(
