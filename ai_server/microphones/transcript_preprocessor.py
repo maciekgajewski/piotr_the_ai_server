@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass
+from re import Pattern
+
+
+@dataclass(frozen=True)
+class TranscriptReplacementRule:
+    pattern: Pattern[str]
+    replacement: str
+
+
+TRANSCRIPT_REPLACEMENTS = (
+    TranscriptReplacementRule(
+        pattern=re.compile(r"\bventilacji\b"),
+        replacement="wentylacji",
+    ),
+)
+
+
+class TranscriptPreprocessor:
+    def __init__(self, instance_id: str) -> None:
+        self._logger = logging.getLogger(f"{__name__}.TranscriptPreprocessor[{instance_id}]")
+
+    def preprocess(self, text: str) -> str:
+        processed = text
+        for rule in TRANSCRIPT_REPLACEMENTS:
+            processed, replacement_count = rule.pattern.subn(rule.replacement, processed)
+            if replacement_count:
+                self._logger.info(
+                    "applied transcript replacement pattern=%r replacement=%r count=%s before=%r after=%r",
+                    rule.pattern.pattern,
+                    rule.replacement,
+                    replacement_count,
+                    text,
+                    processed,
+                )
+        return processed

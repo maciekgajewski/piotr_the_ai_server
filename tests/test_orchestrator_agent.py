@@ -305,7 +305,35 @@ def test_orchestrator_retries_empty_final_reply_with_clarification_model() -> No
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Duża odpowiedź.")))
 
 
-def test_orchestrator_stores_dsa_clarification_and_resumes_same_domain() -> None:
+def test_orchestrator_logs_blocked_task_clarification_utterance(caplog) -> None:
+    plan = {
+        "kind": "single_task",
+        "confidence": 0.9,
+        "tasks": [
+            {
+                "id": "t1",
+                "domain": "home_assistant",
+                "command": _ha_command("turn_on", "włącz światło"),
+                "depends_on": [],
+                "status": "blocked",
+                "clarification_question": "Które światło mam włączyć?",
+            }
+        ],
+        "context_updates": {"salient_entities": [], "active_domain": "home_assistant"},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    ollama = FakeOllamaClient([json.dumps(plan), "Które światło mam włączyć?"])
+    agent = OrchestratorAgent(orchestrator_model="small", ollama_client=ollama, owns_ollama_client=False)
+    endpoint = FakeConversationEndpoint([TextMessage(text="włącz światło")])
+
+    with caplog.at_level(logging.WARNING, logger="ai_server.agent.orchestrator"):
+        asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={}), endpoint))
+
+    assert "utterance caused clarification source=orchestrator conversation_id=c1 utterance='włącz światło'" in caplog.text
+
+
+def test_orchestrator_stores_dsa_clarification_and_resumes_same_domain(caplog) -> None:
     initial_plan = {
         "kind": "single_task",
         "confidence": 0.9,
@@ -360,7 +388,8 @@ def test_orchestrator_stores_dsa_clarification_and_resumes_same_domain() -> None
     endpoint = FakeConversationEndpoint([TextMessage(text="włącz światło"), TextMessage(text="w salonie")])
     conversation = Conversation(conversation_id="c1", attributes={})
 
-    asyncio.run(agent.run_conversation(conversation, endpoint))
+    with caplog.at_level(logging.WARNING, logger="ai_server.agent.orchestrator"):
+        asyncio.run(agent.run_conversation(conversation, endpoint))
 
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Które światło mam włączyć?"))) + list(
         text_message_to_events(TextMessage(text="Włączyłem światło w salonie."))
@@ -368,6 +397,7 @@ def test_orchestrator_stores_dsa_clarification_and_resumes_same_domain() -> None
     assert [task["id"] for task in domain_agent.tasks] == ["t1", "t1"]
     assert [request["model"] for request in ollama.requests] == ["small", "small", "big", "small"]
     assert conversation.state["orchestrator"]["pending_clarification"] is None
+    assert "utterance caused clarification source=dsa conversation_id=c1 utterance='włącz światło'" in caplog.text
 
 
 def test_orchestrator_drops_unanswered_clarification_when_conversation_ends() -> None:

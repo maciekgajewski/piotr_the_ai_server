@@ -240,6 +240,7 @@ class OrchestratorAgent:
         _resolve_context_references(plan, active_context)
 
         task_results = await self._dispatch_ready_tasks(conversation, plan, active_context)
+        self._log_clarification_causing_utterance(conversation, user_input, plan, task_results)
         _apply_context_updates(state, plan)
         _apply_task_context_updates(state, plan, task_results)
         _store_pending_tasks(state, plan)
@@ -289,6 +290,7 @@ class OrchestratorAgent:
             "clarification_question": None,
         }
         task_results = await self._dispatch_ready_tasks(conversation, plan, active_context)
+        self._log_clarification_causing_utterance(conversation, user_input, plan, task_results)
         _apply_task_context_updates(state, plan, task_results)
         _store_pending_tasks(state, plan)
         _store_pending_clarification(state, plan, task_results)
@@ -475,6 +477,46 @@ class OrchestratorAgent:
             if result.get("status") not in {"blocked", "needs_clarification", "unsupported_domain"}:
                 completed_task_ids.add(task["id"])
         return results
+
+    def _log_clarification_causing_utterance(
+        self,
+        conversation: Conversation,
+        user_input: str,
+        plan: dict[str, Any],
+        task_results: list[dict[str, Any]],
+    ) -> None:
+        tasks_by_id = {
+            task["id"]: task
+            for task in plan["tasks"]
+            if isinstance(task.get("id"), str)
+        }
+        logged = False
+        for result in task_results:
+            if result.get("status") != "needs_clarification":
+                continue
+            task = tasks_by_id.get(result.get("task_id"))
+            source = (
+                "orchestrator"
+                if task is not None and task.get("status") == "blocked"
+                else "dsa"
+            )
+            self._logger.warning(
+                "utterance caused clarification source=%s conversation_id=%s utterance=%r task=%s result=%s",
+                source,
+                conversation.conversation_id,
+                user_input,
+                _task_summary(task) if task is not None else None,
+                _result_summary(result),
+            )
+            logged = True
+
+        if not logged and plan.get("needs_clarification"):
+            self._logger.warning(
+                "utterance caused clarification source=orchestrator conversation_id=%s utterance=%r plan_question=%r",
+                conversation.conversation_id,
+                user_input,
+                plan.get("clarification_question"),
+            )
 
     async def _final_reply(
         self,

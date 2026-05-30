@@ -7,6 +7,7 @@ import time
 
 from ai_server.config import SttConfig
 from ai_server.microphones.messages import AudioChunk, TextEnd, TextEvent, TextFragment
+from ai_server.microphones.transcript_preprocessor import TranscriptPreprocessor
 
 try:
     from wyoming.asr import Transcribe, Transcript, TranscriptChunk, TranscriptStop
@@ -102,6 +103,7 @@ class WyomingFasterWhisperSttSession:
         self._client = AsyncTcpClient(server_host, server_port)
         self._pending_end = False
         self._done = False
+        self._transcript_preprocessor = TranscriptPreprocessor(session_id)
         self._logger = logging.getLogger(f"{__name__}.WyomingFasterWhisperSttSession[{session_id}]")
 
     async def start(self) -> None:
@@ -150,7 +152,9 @@ class WyomingFasterWhisperSttSession:
                 transcript = Transcript.from_event(event)
                 self._pending_end = True
                 if transcript.text:
-                    return TextFragment(text=transcript.text.strip())
+                    return TextFragment(
+                        text=self._transcript_preprocessor.preprocess(transcript.text.strip())
+                    )
                 continue
 
             if TranscriptStop.is_type(event.type):
