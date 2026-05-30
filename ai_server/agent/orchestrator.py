@@ -29,6 +29,7 @@ FINAL_REPLY_OPTIONS = {
     "num_ctx": 4096,
 }
 MAX_LAST_TURNS = 4
+PLANNING_CONFIDENCE_THRESHOLD = 0.7
 
 PLANNING_SYSTEM_PROMPT = """
 You are an orchestration planner for a Polish voice assistant.
@@ -52,6 +53,7 @@ After a Home Assistant command targets a device type and area, preserve that tar
 Return schema:
 {
   "kind": "single_task|multi_task|followup|clarification_answer|chat",
+  "confidence": 0.0,
   "tasks": [
     {
       "id": "t1",
@@ -70,6 +72,7 @@ Return schema:
   "clarification_question": null
 }
 The top-level object must contain context_updates outside tasks. The tasks array must contain only task objects, never strings.
+Set confidence from 0.0 to 1.0 for how likely this plan is the correct route and task structure.
 
 For home_assistant tasks, command must use this envelope:
 {
@@ -103,30 +106,59 @@ If a task is unsupported, say that capability is not connected yet.
 If clarification is needed, ask exactly the needed question, optionally after summarizing completed independent tasks.
 """
 
+CLARIFICATION_SYSTEM_PROMPT = """
+You are resolving a pending domain-agent clarification for a Polish voice assistant.
+Return only compact valid JSON. No markdown. No explanations.
+
+You receive:
+- the user's latest answer
+- the pending clarification question
+- the original task that asked for clarification
+- current conversation context
+
+Return schema:
+{
+  "confidence": 0.0,
+  "task": {
+    "id": "same id as original task",
+    "domain": "same domain as original task",
+    "command": {},
+    "depends_on": [],
+    "status": "ready|blocked",
+    "clarification_question": null
+  }
+}
+
+Use the latest answer to update the original task command for the same domain.
+If the answer still does not resolve the question, keep the same domain and return status="blocked" with a Polish clarification_question.
+"""
+
 
 class OrchestratorAgent:
     def __init__(
         self,
-        model: str,
+        orchestrator_model: str,
         domain_agents: Mapping[str, DomainAgent] | None = None,
+        clarification_model: str | None = None,
         base_url: str = OLLAMA_BASE_URL,
         session: ClientSession | None = None,
         ollama_client: OllamaClient | None = None,
         owns_ollama_client: bool = True,
         server_config: ServerConfig = ServerConfig(),
     ) -> None:
-        self._model = model
+        self._orchestrator_model = orchestrator_model
+        self._clarification_model = clarification_model
         self._domain_agents = dict(domain_agents or {})
         self._ollama = ollama_client or OllamaClient(base_url=base_url, session=session)
         self._owns_ollama = owns_ollama_client
         self._server_config = server_config
-        self._logger = logging.getLogger(f"{__name__}.OrchestratorAgent[{model}]")
+        self._logger = logging.getLogger(f"{__name__}.OrchestratorAgent[{orchestrator_model}]")
 
     async def preload(self) -> None:
         try:
             await self._ollama.chat(
                 {
-                    "model": self._model,
+                    "model": self._orchestrator_model,
                     "think": False,
                     "format": "json",
                     "stream": False,
@@ -135,30 +167,36 @@ class OrchestratorAgent:
                 }
             )
         except Exception as exc:
-            raise OllamaError(f"failed to preload Ollama model {self._model}") from exc
+            raise OllamaError(f"failed to preload Ollama model {self._orchestrator_model}") from exc
 
     async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
         logger = logging.getLogger(f"{__name__}.OrchestratorAgent[{conversation.conversation_id}]")
-        async for message in endpoint.messages():
-            started_at = time.perf_counter()
-            logger.info(f"Received message: {message.text}")
-            try:
-                reply_text = await self._handle_message(conversation, message.text)
-                logger.info(f"Generating reply: {reply_text}")
-            except Exception:
-                elapsed_ms = _elapsed_ms(started_at)
-                logger.exception("orchestration failed request_len=%s duration_ms=%s", len(message.text), elapsed_ms)
-                await endpoint.send_message(TextMessage(text=GENERATION_FAILURE_MESSAGE))
-                continue
+        try:
+            async for message in endpoint.messages():
+                started_at = time.perf_counter()
+                logger.info("received message text=%r", message.text)
+                try:
+                    reply_text = await self._handle_message(conversation, message.text)
+                    logger.info("produced reply text=%r", reply_text)
+                except Exception:
+                    elapsed_ms = _elapsed_ms(started_at)
+                    logger.exception("orchestration failed request_len=%s duration_ms=%s", len(message.text), elapsed_ms)
+                    await endpoint.send_message(TextMessage(text=GENERATION_FAILURE_MESSAGE))
+                    continue
 
-            elapsed_ms = _elapsed_ms(started_at)
-            logger.info(
-                "orchestration completed request_len=%s reply_len=%s duration_ms=%s",
-                len(message.text),
-                len(reply_text),
-                elapsed_ms,
-            )
-            await endpoint.send_message(TextMessage(text=reply_text))
+                elapsed_ms = _elapsed_ms(started_at)
+                logger.info(
+                    "orchestration completed request_len=%s reply_len=%s duration_ms=%s",
+                    len(message.text),
+                    len(reply_text),
+                    elapsed_ms,
+                )
+                await endpoint.send_message(TextMessage(text=reply_text))
+        finally:
+            state = conversation.state.get(ORCHESTRATOR_STATE_KEY)
+            if isinstance(state, dict) and state.get("pending_clarification") is not None:
+                logger.info("dropping unanswered clarification pending=%s", _compact_json(state.get("pending_clarification")))
+                state["pending_clarification"] = None
 
     async def close(self) -> None:
         try:
@@ -171,10 +209,33 @@ class OrchestratorAgent:
     async def _handle_message(self, conversation: Conversation, user_input: str) -> str:
         state = _orchestrator_state(conversation)
         active_context = _active_context(state)
+        if state.get("pending_clarification") is not None:
+            self._logger.info(
+                "resuming pending clarification conversation_id=%s user_input=%r pending=%s",
+                conversation.conversation_id,
+                user_input,
+                _compact_json(state.get("pending_clarification")),
+            )
+            reply = await self._handle_clarification_answer(
+                conversation=conversation,
+                user_input=user_input,
+                state=state,
+                active_context=active_context,
+            )
+            _append_last_turn(state, user_input=user_input, assistant_reply=reply)
+            return reply
+
         plan = await self._plan_message(
             user_input=user_input,
             active_context=active_context,
             conversation=conversation,
+        )
+        self._logger.info(
+            "plan ready conversation_id=%s kind=%s confidence=%s tasks=%s",
+            conversation.conversation_id,
+            plan["kind"],
+            plan["confidence"],
+            _tasks_summary(plan["tasks"]),
         )
         _resolve_context_references(plan, active_context)
 
@@ -182,6 +243,7 @@ class OrchestratorAgent:
         _apply_context_updates(state, plan)
         _apply_task_context_updates(state, plan, task_results)
         _store_pending_tasks(state, plan)
+        _store_pending_clarification(state, plan, task_results)
 
         reply = await self._final_reply(
             user_input=user_input,
@@ -190,6 +252,53 @@ class OrchestratorAgent:
             task_results=task_results,
         )
         _append_last_turn(state, user_input=user_input, assistant_reply=reply)
+        return reply
+
+    async def _handle_clarification_answer(
+        self,
+        *,
+        conversation: Conversation,
+        user_input: str,
+        state: dict[str, Any],
+        active_context: dict[str, Any],
+    ) -> str:
+        pending_clarification = state.get("pending_clarification")
+        if not isinstance(pending_clarification, dict):
+            state["pending_clarification"] = None
+            raise ValueError("pending clarification must be an object")
+
+        clarification = await self._clarification_task(
+            user_input=user_input,
+            pending_clarification=pending_clarification,
+            active_context=active_context,
+            conversation=conversation,
+        )
+        task = clarification["task"]
+        self._logger.info(
+            "clarification resolved conversation_id=%s confidence=%s task=%s",
+            conversation.conversation_id,
+            clarification["confidence"],
+            _task_summary(task),
+        )
+        plan = {
+            "kind": "clarification_answer",
+            "confidence": clarification["confidence"],
+            "tasks": [task],
+            "context_updates": {},
+            "needs_clarification": False,
+            "clarification_question": None,
+        }
+        task_results = await self._dispatch_ready_tasks(conversation, plan, active_context)
+        _apply_task_context_updates(state, plan, task_results)
+        _store_pending_tasks(state, plan)
+        _store_pending_clarification(state, plan, task_results)
+
+        reply = await self._final_reply(
+            user_input=user_input,
+            active_context=_active_context(state),
+            plan=plan,
+            task_results=task_results,
+        )
         return reply
 
     async def _plan_message(
@@ -210,9 +319,93 @@ class OrchestratorAgent:
             },
             "active_context": active_context,
         }
+        self._logger.info(
+            "planning message conversation_id=%s model=%s text=%r",
+            conversation.conversation_id,
+            self._orchestrator_model,
+            user_input,
+        )
+        plan = await self._plan_message_with_model(self._orchestrator_model, prompt)
+        if (
+            plan["confidence"] >= PLANNING_CONFIDENCE_THRESHOLD
+            or self._clarification_model is None
+            or self._clarification_model == self._orchestrator_model
+        ):
+            return plan
+
+        self._logger.info(
+            "planning confidence below threshold confidence=%s threshold=%s retry_model=%s",
+            plan["confidence"],
+            PLANNING_CONFIDENCE_THRESHOLD,
+            self._clarification_model,
+        )
+        return await self._plan_message_with_model(self._clarification_model, prompt)
+
+    async def _plan_message_with_model(self, model: str, prompt: dict[str, Any]) -> dict[str, Any]:
+        try:
+            self._logger.info("planning request model=%s utterance=%r", model, prompt.get("utterance"))
+            response = await self._ollama.chat(
+                {
+                    "model": model,
+                    "raw": False,
+                    "think": False,
+                    "format": "json",
+                    "stream": False,
+                    "keep_alive": "1h",
+                    "options": PLANNING_OPTIONS,
+                    "messages": [
+                        {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
+                        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                    ],
+                }
+            )
+            plan = _parse_plan(_assistant_content(response))
+            self._logger.info(
+                "planning output model=%s kind=%s confidence=%s tasks=%s needs_clarification=%s",
+                model,
+                plan["kind"],
+                plan["confidence"],
+                _tasks_summary(plan["tasks"]),
+                plan["needs_clarification"],
+            )
+            return plan
+        except Exception:
+            if model == self._orchestrator_model and self._clarification_model is not None and self._clarification_model != model:
+                self._logger.warning("planning with orchestrator model failed, retrying clarification_model", exc_info=True)
+                return await self._plan_message_with_model(self._clarification_model, prompt)
+            raise
+
+    async def _clarification_task(
+        self,
+        *,
+        user_input: str,
+        pending_clarification: dict[str, Any],
+        active_context: dict[str, Any],
+        conversation: Conversation,
+    ) -> dict[str, Any]:
+        model = self._clarification_model or self._orchestrator_model
+        self._logger.info(
+            "clarification request model=%s conversation_id=%s answer=%r pending=%s",
+            model,
+            conversation.conversation_id,
+            user_input,
+            _compact_json(pending_clarification),
+        )
+        prompt = {
+            "utterance": user_input,
+            "conversation": {
+                "conversation_id": conversation.conversation_id,
+                "user": conversation.user,
+                "area": conversation.area,
+                "server_location": self._server_config.location,
+                "server_timezone": self._server_config.timezone,
+            },
+            "active_context": active_context,
+            "pending_clarification": pending_clarification,
+        }
         response = await self._ollama.chat(
             {
-                "model": self._model,
+                "model": model,
                 "raw": False,
                 "think": False,
                 "format": "json",
@@ -220,12 +413,19 @@ class OrchestratorAgent:
                 "keep_alive": "1h",
                 "options": PLANNING_OPTIONS,
                 "messages": [
-                    {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
+                    {"role": "system", "content": CLARIFICATION_SYSTEM_PROMPT},
                     {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
                 ],
             }
         )
-        return _parse_plan(_assistant_content(response))
+        clarification = _parse_clarification_task(_assistant_content(response), pending_clarification)
+        self._logger.info(
+            "clarification output model=%s confidence=%s task=%s",
+            model,
+            clarification["confidence"],
+            _task_summary(clarification["task"]),
+        )
+        return clarification
 
     async def _dispatch_ready_tasks(
         self,
@@ -237,20 +437,22 @@ class OrchestratorAgent:
         results = []
         for task in plan["tasks"]:
             if task.get("status") == "blocked":
-                results.append(_blocked_task_result(task))
+                result = _blocked_task_result(task)
+                self._logger.info("task blocked task=%s result=%s", _task_summary(task), _result_summary(result))
+                results.append(result)
                 continue
 
             missing_dependencies = [dependency for dependency in task["depends_on"] if dependency not in completed_task_ids]
             if missing_dependencies:
-                results.append(
-                    {
-                        "task_id": task["id"],
-                        "domain": task["domain"],
-                        "status": "blocked",
-                        "error": "missing_dependencies",
-                        "missing_dependencies": missing_dependencies,
-                    }
-                )
+                result = {
+                    "task_id": task["id"],
+                    "domain": task["domain"],
+                    "status": "blocked",
+                    "error": "missing_dependencies",
+                    "missing_dependencies": missing_dependencies,
+                }
+                self._logger.info("task missing dependencies task=%s result=%s", _task_summary(task), _result_summary(result))
+                results.append(result)
                 continue
 
             domain_agent = self._domain_agents.get(task["domain"])
@@ -262,11 +464,13 @@ class OrchestratorAgent:
                     "message": f"Domain agent is not available: {task['domain']}",
                 }
             else:
+                self._logger.info("dispatching task task=%s", _task_summary(task))
                 result = await domain_agent.run_task(conversation, task, active_context)
                 if not isinstance(result, dict):
                     raise ValueError(f"domain agent {task['domain']} returned non-object result")
                 result = {"task_id": task["id"], "domain": task["domain"], **to_json_value(result)}
 
+            self._logger.info("task result task_id=%s result=%s", task["id"], _result_summary(result))
             results.append(result)
             if result.get("status") not in {"blocked", "needs_clarification", "unsupported_domain"}:
                 completed_task_ids.add(task["id"])
@@ -286,25 +490,100 @@ class OrchestratorAgent:
             "plan": plan,
             "task_results": task_results,
         }
-        response = await self._ollama.chat(
-            {
-                "model": self._model,
-                "raw": False,
-                "think": False,
-                "stream": False,
-                "keep_alive": "1h",
-                "options": FINAL_REPLY_OPTIONS,
-                "messages": [
-                    {"role": "system", "content": FINAL_REPLY_SYSTEM_PROMPT},
-                    {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-                ],
-            }
+        self._logger.info(
+            "final reply request model=%s utterance=%r task_results=%s",
+            self._orchestrator_model,
+            user_input,
+            _results_summary(task_results),
         )
-        return _assistant_content(response).strip() or GENERATION_FAILURE_MESSAGE
+        reply = await self._final_reply_with_model(self._orchestrator_model, prompt)
+        if reply or self._clarification_model is None:
+            return reply or GENERATION_FAILURE_MESSAGE
+
+        self._logger.info("final reply from orchestrator model was empty, retrying clarification_model=%s", self._clarification_model)
+        reply = await self._final_reply_with_model(self._clarification_model, prompt)
+        return reply or GENERATION_FAILURE_MESSAGE
+
+    async def _final_reply_with_model(self, model: str, prompt: dict[str, Any]) -> str:
+        try:
+            self._logger.info("final reply model request model=%s utterance=%r", model, prompt.get("utterance"))
+            response = await self._ollama.chat(
+                {
+                    "model": model,
+                    "raw": False,
+                    "think": False,
+                    "stream": False,
+                    "keep_alive": "1h",
+                    "options": FINAL_REPLY_OPTIONS,
+                    "messages": [
+                        {"role": "system", "content": FINAL_REPLY_SYSTEM_PROMPT},
+                        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                    ],
+                }
+            )
+            reply = _assistant_content(response).strip()
+            self._logger.info("final reply output model=%s text=%r", model, reply)
+            return reply
+        except Exception:
+            if model == self._orchestrator_model and self._clarification_model is not None and self._clarification_model != model:
+                self._logger.warning("final reply with orchestrator model failed, retrying clarification_model", exc_info=True)
+                return await self._final_reply_with_model(self._clarification_model, prompt)
+            raise
 
 
 def _elapsed_ms(started_at: float) -> int:
     return round((time.perf_counter() - started_at) * 1000)
+
+
+def _compact_json(value: Any, max_length: int = 500) -> str:
+    text = json.dumps(to_json_value(value), ensure_ascii=False, sort_keys=True)
+    if len(text) <= max_length:
+        return text
+    return f"{text[: max_length - 3]}..."
+
+
+def _task_summary(task: dict[str, Any]) -> str:
+    return _compact_json(
+        {
+            "id": task.get("id"),
+            "domain": task.get("domain"),
+            "status": task.get("status"),
+            "command": task.get("command"),
+            "clarification_question": task.get("clarification_question"),
+        }
+    )
+
+
+def _tasks_summary(tasks: list[dict[str, Any]]) -> str:
+    return _compact_json([{"id": task.get("id"), "domain": task.get("domain"), "status": task.get("status")} for task in tasks])
+
+
+def _result_summary(result: dict[str, Any]) -> str:
+    return _compact_json(
+        {
+            "task_id": result.get("task_id"),
+            "domain": result.get("domain"),
+            "status": result.get("status"),
+            "text": result.get("text"),
+            "clarification_question": result.get("clarification_question"),
+            "error": result.get("error"),
+        }
+    )
+
+
+def _results_summary(results: list[dict[str, Any]]) -> str:
+    return _compact_json(
+        [
+            {
+                "task_id": result.get("task_id"),
+                "domain": result.get("domain"),
+                "status": result.get("status"),
+                "text": result.get("text"),
+                "clarification_question": result.get("clarification_question"),
+            }
+            for result in results
+        ]
+    )
 
 
 def _assistant_content(response: dict[str, Any]) -> str:
@@ -334,11 +613,40 @@ def _parse_plan(content: str) -> dict[str, Any]:
     return _validate_plan(raw_plan)
 
 
+def _parse_clarification_task(content: str, pending_clarification: dict[str, Any]) -> dict[str, Any]:
+    try:
+        raw_response = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"orchestrator clarification response must be valid JSON. Got: {content}") from exc
+    if not isinstance(raw_response, dict):
+        raise ValueError("orchestrator clarification response must be a JSON object")
+
+    confidence = raw_response.get("confidence")
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
+        raise ValueError("orchestrator clarification confidence must be a number between 0.0 and 1.0")
+
+    task = _validate_task(raw_response.get("task"), 0)
+    pending_domain = pending_clarification.get("domain")
+    if isinstance(pending_domain, str) and task["domain"] != pending_domain:
+        raise ValueError("orchestrator clarification task domain must match pending clarification domain")
+    pending_task = pending_clarification.get("task")
+    if isinstance(pending_task, dict):
+        pending_task_id = pending_task.get("id")
+        if isinstance(pending_task_id, str) and task["id"] != pending_task_id:
+            raise ValueError("orchestrator clarification task id must match pending clarification task id")
+
+    return {
+        "confidence": float(confidence),
+        "task": task,
+    }
+
+
 def _repair_malformed_plan(content: str) -> dict[str, Any] | None:
     candidate = _unquote_jsonish_content(content.strip())
     kind_match = re.search(r'"kind"\s*:\s*"([^"]+)"', candidate)
     tasks_match = re.search(r'"tasks"\s*:\s*\[', candidate)
-    if kind_match is None or tasks_match is None:
+    confidence = _decode_named_float(candidate, "confidence")
+    if kind_match is None or tasks_match is None or confidence is None:
         return None
 
     tasks = _decode_leading_task_objects(candidate, tasks_match.end())
@@ -348,6 +656,7 @@ def _repair_malformed_plan(content: str) -> dict[str, Any] | None:
     context_updates = _decode_named_object(candidate, "context_updates") or {}
     return {
         "kind": kind_match.group(1),
+        "confidence": confidence,
         "tasks": tasks,
         "context_updates": context_updates,
         "needs_clarification": _decode_named_bool(candidate, "needs_clarification", False),
@@ -403,6 +712,16 @@ def _decode_named_bool(content: str, name: str, default: bool) -> bool:
     return match.group(1) == "true"
 
 
+def _decode_named_float(content: str, name: str) -> float | None:
+    match = re.search(rf'"{re.escape(name)}"\s*:\s*([0-9]+(?:\.[0-9]+)?)', content)
+    if match is None:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
 def _decode_named_string_or_null(content: str, name: str) -> str | None:
     match = re.search(rf'"{re.escape(name)}"\s*:\s*(null|"([^"]*)")', content)
     if match is None or match.group(1) == "null":
@@ -417,6 +736,10 @@ def _validate_plan(raw_plan: Any) -> dict[str, Any]:
     kind = raw_plan.get("kind")
     if not isinstance(kind, str) or not kind:
         raise ValueError("orchestrator plan kind must be a non-empty string")
+
+    confidence = raw_plan.get("confidence")
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
+        raise ValueError("orchestrator plan confidence must be a number between 0.0 and 1.0")
 
     tasks = raw_plan.get("tasks", [])
     if not isinstance(tasks, list):
@@ -440,6 +763,7 @@ def _validate_plan(raw_plan: Any) -> dict[str, Any]:
 
     return {
         "kind": kind,
+        "confidence": float(confidence),
         "tasks": validated_tasks,
         "context_updates": to_json_value(context_updates),
         "needs_clarification": needs_clarification,
@@ -460,7 +784,7 @@ def _repair_tasks(tasks: list[Any], raw_plan: dict[str, Any]) -> list[Any]:
 
 def _repair_embedded_plan_fragment(fragment: str, raw_plan: dict[str, Any]) -> None:
     stripped_fragment = fragment.strip().strip(",")
-    if stripped_fragment.startswith(("context_updates", "needs_clarification", "clarification_question")):
+    if stripped_fragment.startswith(("confidence", "context_updates", "needs_clarification", "clarification_question")):
         stripped_fragment = '{"' + stripped_fragment + "}"
     elif not stripped_fragment.startswith("{"):
         stripped_fragment = "{" + stripped_fragment + "}"
@@ -473,7 +797,7 @@ def _repair_embedded_plan_fragment(fragment: str, raw_plan: dict[str, Any]) -> N
     context_updates = parsed_fragment.get("context_updates")
     if isinstance(context_updates, dict) and not isinstance(raw_plan.get("context_updates"), dict):
         raw_plan["context_updates"] = context_updates
-    for key in ("needs_clarification", "clarification_question"):
+    for key in ("confidence", "needs_clarification", "clarification_question"):
         if key in parsed_fragment and key not in raw_plan:
             raw_plan[key] = parsed_fragment[key]
 
@@ -655,6 +979,7 @@ def _orchestrator_state(conversation: Conversation) -> dict[str, Any]:
     state.setdefault("salient_entities", [])
     state.setdefault("active_domain", None)
     state.setdefault("pending_tasks", [])
+    state.setdefault("pending_clarification", None)
     return state
 
 
@@ -664,6 +989,7 @@ def _active_context(state: dict[str, Any]) -> dict[str, Any]:
         "salient_entities": to_json_value(state.get("salient_entities", [])),
         "active_domain": state.get("active_domain"),
         "pending_tasks": to_json_value(state.get("pending_tasks", [])),
+        "pending_clarification": to_json_value(state.get("pending_clarification")),
     }
 
 
@@ -730,6 +1056,36 @@ def _home_assistant_task_references(task: dict[str, Any]) -> list[str]:
 def _store_pending_tasks(state: dict[str, Any], plan: dict[str, Any]) -> None:
     pending_tasks = [task for task in plan["tasks"] if task.get("status") == "blocked"]
     state["pending_tasks"] = pending_tasks
+
+
+def _store_pending_clarification(state: dict[str, Any], plan: dict[str, Any], task_results: list[dict[str, Any]]) -> None:
+    tasks_by_id = {
+        task["id"]: task
+        for task in plan["tasks"]
+        if isinstance(task.get("id"), str)
+    }
+    for result in task_results:
+        if result.get("status") != "needs_clarification":
+            continue
+        task_id = result.get("task_id")
+        task = tasks_by_id.get(task_id)
+        if task is None:
+            continue
+        clarification_question = result.get("clarification_question")
+        if clarification_question is not None and not isinstance(clarification_question, str):
+            clarification_question = None
+        if clarification_question is None and isinstance(result.get("text"), str):
+            clarification_question = result["text"]
+        state["pending_clarification"] = {
+            "domain": task["domain"],
+            "task": to_json_value(task),
+            "task_result": to_json_value(result),
+            "clarification_question": clarification_question,
+        }
+        return
+
+    if plan.get("kind") == "clarification_answer":
+        state["pending_clarification"] = None
 
 
 def _append_last_turn(state: dict[str, Any], *, user_input: str, assistant_reply: str) -> None:

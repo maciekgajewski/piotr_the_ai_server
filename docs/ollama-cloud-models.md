@@ -91,5 +91,6 @@ Then run:
 tools/ai-server.sh --config path/to/cloud-config.yaml
 ```
 
-For orchestrator configs, set the top-level `agent.model` and any per-domain
+For orchestrator configs, keep `agent.orchestrator_model` on a small routing
+model, and set `agent.model`, `agent.clarification_model`, and any per-domain
 agent `model` values that should use cloud inference.

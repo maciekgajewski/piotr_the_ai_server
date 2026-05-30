@@ -76,8 +76,13 @@ async def create_agent(
         return agent
 
     if config.type == "orchestrator":
-        model = config.options["model"]
-        logger.info("Creating orchestrator agent model=%s", model)
+        orchestrator_model = config.options["orchestrator_model"]
+        clarification_model = config.options.get("clarification_model")
+        logger.info(
+            "Creating orchestrator agent orchestrator_model=%s clarification_model=%s",
+            orchestrator_model,
+            clarification_model,
+        )
         ollama_client = OllamaClient(base_url=ollama_url)
         domain_agents = create_domain_agents(
             config,
@@ -88,18 +93,19 @@ async def create_agent(
         )
         logger.info("Loaded %s orchestrator domain agents", len(domain_agents))
         agent = OrchestratorAgent(
-            model=model,
+            orchestrator_model=orchestrator_model,
+            clarification_model=clarification_model,
             domain_agents=domain_agents,
             ollama_client=ollama_client,
             server_config=server_config,
         )
         try:
-            logger.info("Preloading orchestrator agent model=%s", model)
+            logger.info("Preloading orchestrator agent orchestrator_model=%s", orchestrator_model)
             await agent.preload()
         except BaseException:
             await agent.close()
             raise
-        logger.info("Created orchestrator agent model=%s", model)
+        logger.info("Created orchestrator agent orchestrator_model=%s", orchestrator_model)
         return agent
 
     raise ValueError(f"unsupported agent type: {config.type}")

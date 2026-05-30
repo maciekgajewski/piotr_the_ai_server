@@ -156,7 +156,7 @@ class AgentLoop:
 
     def _append_context_message(self, message: dict[str, Any]) -> None:
         self._messages.append(message)
-        self._logger.info("context message appended message=%s", message)
+        self._logger.debug("context message appended message=%s", message)
         if self._context_message_observer is not None:
             self._context_message_observer(message)
 

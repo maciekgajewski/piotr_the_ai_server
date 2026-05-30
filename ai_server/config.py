@@ -149,9 +149,13 @@ def _parse_agent_config(raw_config: dict[str, Any], home_assistant_config: Any =
             raise ValueError("agent.model must be a non-empty string for polite_reply")
 
     if agent_type == "orchestrator":
+        orchestrator_model = options.get("orchestrator_model")
+        if not isinstance(orchestrator_model, str) or not orchestrator_model:
+            raise ValueError("agent.orchestrator_model must be a non-empty string for orchestrator")
         model = options.get("model")
         if not isinstance(model, str) or not model:
             raise ValueError("agent.model must be a non-empty string for orchestrator")
+        _validate_optional_non_empty_string(options, "clarification_model", "agent.clarification_model")
         _validate_optional_non_empty_string(options, "fallback_model", "agent.fallback_model")
         if "fallback_backoff_seconds" in options:
             options["fallback_backoff_seconds"] = _parse_optional_positive_float(

@@ -342,7 +342,7 @@ async def _run_orchestrator_case(case: TestCase, settings: dict[str, Any]) -> Ca
     }
     ollama = RecordingOllamaClient(base_url=settings["ollama_url"])
     agent = OrchestratorAgent(
-        model=settings["orchestrator_model"],
+        orchestrator_model=settings["orchestrator_model"],
         domain_agents=domain_agents,
         ollama_client=ollama,
         owns_ollama_client=True,
@@ -373,7 +373,7 @@ async def _run_composite_case(case: TestCase, settings: dict[str, Any]) -> CaseR
     agents = _composite_domain_agents(raw, settings, fake_ha, Path(temp_dir.name), task_traces)
     ollama = RecordingOllamaClient(base_url=settings["ollama_url"])
     agent = OrchestratorAgent(
-        model=settings["orchestrator_model"],
+        orchestrator_model=settings["orchestrator_model"],
         domain_agents=agents,
         ollama_client=ollama,
         owns_ollama_client=True,
