@@ -48,8 +48,8 @@ class Conversation:
         return self.attributes.get("user")
 
     @property
-    def location(self) -> str | None:
-        return self.attributes.get("location")
+    def area(self) -> str | None:
+        return self.attributes.get("area")
 
 
 class EndpointClosed(Exception):

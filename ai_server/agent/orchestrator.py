@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any, Mapping
 
 from aiohttp import ClientSession
 
 from ai_server.agent_loop.agent_callable_set import to_json_value
+from ai_server.config import ServerConfig
 from ai_server.domain_agents import DomainAgent, DomainTask
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import TextMessage
@@ -34,8 +36,14 @@ Return only compact valid JSON. No markdown. No explanations.
 
 Split the latest user utterance into domain tasks. Every utterance goes through you, even follow-ups.
 Use active_context as a hint, not a jail: route to a new domain when the utterance asks for one.
-For singular or local Home Assistant requests with no named room, prefer conversation.location when it is known.
-When using conversation.location for Home Assistant selection, put it in selector.area, never selector.name.
+Context naming:
+- conversation.area is the user's Home Assistant area in the house, such as office or kitchen.
+- conversation.server_location is the server's geographic location, such as Wrocław.
+Never treat area as a geographic location.
+For singular or local Home Assistant requests with no named area, prefer conversation.area when it is known.
+When using conversation.area for Home Assistant selection, put it in selector.area, never selector.name.
+If the user names an area/room in the utterance, that named area always overrides conversation.area.
+Polish area aliases: salon means living room; biuro means office; sypialnia means bedroom.
 Use scope="all" only when the user explicitly asks for all/every/wszystkie/każde/everywhere/whole house.
 For Home Assistant pronouns such as ją/je/it/them, resolve selection from active_context.salient_entities.
 For Home Assistant context_updates.salient_entities, store stable target references like climate.salon or light.bedroom_lamp, not numbers, temperatures, or generic words.
@@ -61,6 +69,7 @@ Return schema:
   "needs_clarification": false,
   "clarification_question": null
 }
+The top-level object must contain context_updates outside tasks. The tasks array must contain only task objects, never strings.
 
 For home_assistant tasks, command must use this envelope:
 {
@@ -75,8 +84,10 @@ For home_assistant tasks, command must use this envelope:
   }
 }
 
-For time tasks, command should include any known location or timezone:
-{"query": "original time question", "location": "optional", "timezone": "optional"}
+For time tasks, command should include geo_location or timezone only when the user explicitly asks for a geographic place or timezone.
+For plain questions like "która godzina?", omit geo_location and timezone; the time agent already knows server_location and server_timezone.
+Never copy conversation.area into time.geo_location.
+{"query": "original time question", "geo_location": "optional geographic place", "timezone": "optional"}
 
 For wikipedia tasks, command should be:
 {"intent": "lookup_fact|summary|where_is|coordinates", "topic": "article/search topic", "fact": "birth_year|coordinates|location optional"}
@@ -87,6 +98,7 @@ You are the final response writer for a Polish voice assistant.
 Write the final user-facing reply in Polish.
 Use the task results and clarification state. Be concise.
 Do not claim a task succeeded unless its JSON result says it succeeded.
+For a single successful time task, if task_results[0].text is a short direct answer such as "10:46", return it verbatim.
 If a task is unsupported, say that capability is not connected yet.
 If clarification is needed, ask exactly the needed question, optionally after summarizing completed independent tasks.
 """
@@ -101,11 +113,13 @@ class OrchestratorAgent:
         session: ClientSession | None = None,
         ollama_client: OllamaClient | None = None,
         owns_ollama_client: bool = True,
+        server_config: ServerConfig = ServerConfig(),
     ) -> None:
         self._model = model
         self._domain_agents = dict(domain_agents or {})
         self._ollama = ollama_client or OllamaClient(base_url=base_url, session=session)
         self._owns_ollama = owns_ollama_client
+        self._server_config = server_config
         self._logger = logging.getLogger(f"{__name__}.OrchestratorAgent[{model}]")
 
     async def preload(self) -> None:
@@ -188,7 +202,9 @@ class OrchestratorAgent:
             "conversation": {
                 "conversation_id": conversation.conversation_id,
                 "user": conversation.user,
-                "location": conversation.location,
+                "area": conversation.area,
+                "server_location": self._server_config.location,
+                "server_timezone": self._server_config.timezone,
             },
             "active_context": active_context,
         }
@@ -306,8 +322,90 @@ def _parse_plan(content: str) -> dict[str, Any]:
     try:
         raw_plan = json.loads(content)
     except json.JSONDecodeError as exc:
-        raise ValueError("orchestrator plan must be valid JSON") from exc
+        raw_plan = _repair_malformed_plan(content)
+        if raw_plan is None:
+            raise ValueError("orchestrator plan must be valid JSON") from exc
+    if isinstance(raw_plan, str):
+        repaired_plan = _repair_malformed_plan(raw_plan)
+        if repaired_plan is not None:
+            raw_plan = repaired_plan
     return _validate_plan(raw_plan)
+
+
+def _repair_malformed_plan(content: str) -> dict[str, Any] | None:
+    candidate = _unquote_jsonish_content(content.strip())
+    kind_match = re.search(r'"kind"\s*:\s*"([^"]+)"', candidate)
+    tasks_match = re.search(r'"tasks"\s*:\s*\[', candidate)
+    if kind_match is None or tasks_match is None:
+        return None
+
+    tasks = _decode_leading_task_objects(candidate, tasks_match.end())
+    if not tasks:
+        return None
+
+    context_updates = _decode_named_object(candidate, "context_updates") or {}
+    return {
+        "kind": kind_match.group(1),
+        "tasks": tasks,
+        "context_updates": context_updates,
+        "needs_clarification": _decode_named_bool(candidate, "needs_clarification", False),
+        "clarification_question": _decode_named_string_or_null(candidate, "clarification_question"),
+    }
+
+
+def _unquote_jsonish_content(content: str) -> str:
+    if not content.startswith('"'):
+        return content
+    try:
+        decoded = json.loads(content)
+    except json.JSONDecodeError:
+        decoded = content[1:-1] if content.endswith('"') else content[1:]
+        decoded = decoded.replace(r"\"", '"').replace(r"\\", "\\")
+    return decoded if isinstance(decoded, str) else content
+
+
+def _decode_leading_task_objects(content: str, start: int) -> list[Any]:
+    decoder = json.JSONDecoder()
+    tasks: list[Any] = []
+    position = start
+    while position < len(content):
+        while position < len(content) and content[position] in " \t\r\n,":
+            position += 1
+        if position >= len(content) or content[position] == "]":
+            break
+        if content[position] != "{":
+            break
+        try:
+            task, position = decoder.raw_decode(content, position)
+        except json.JSONDecodeError:
+            break
+        tasks.append(task)
+    return tasks
+
+
+def _decode_named_object(content: str, name: str) -> dict[str, Any] | None:
+    match = re.search(rf'"{re.escape(name)}"\s*:\s*{{', content)
+    if match is None:
+        return None
+    try:
+        value, _ = json.JSONDecoder().raw_decode(content, match.end() - 1)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _decode_named_bool(content: str, name: str, default: bool) -> bool:
+    match = re.search(rf'"{re.escape(name)}"\s*:\s*(true|false)', content)
+    if match is None:
+        return default
+    return match.group(1) == "true"
+
+
+def _decode_named_string_or_null(content: str, name: str) -> str | None:
+    match = re.search(rf'"{re.escape(name)}"\s*:\s*(null|"([^"]*)")', content)
+    if match is None or match.group(1) == "null":
+        return None
+    return match.group(2)
 
 
 def _validate_plan(raw_plan: Any) -> dict[str, Any]:
@@ -322,6 +420,7 @@ def _validate_plan(raw_plan: Any) -> dict[str, Any]:
     if not isinstance(tasks, list):
         raise ValueError("orchestrator plan tasks must be a list")
 
+    tasks = _repair_tasks(tasks, raw_plan)
     validated_tasks = [_validate_task(task, index) for index, task in enumerate(tasks)]
     context_updates = raw_plan.get("context_updates", {})
     if context_updates is None:
@@ -344,6 +443,37 @@ def _validate_plan(raw_plan: Any) -> dict[str, Any]:
         "needs_clarification": needs_clarification,
         "clarification_question": clarification_question,
     }
+
+
+def _repair_tasks(tasks: list[Any], raw_plan: dict[str, Any]) -> list[Any]:
+    repaired_tasks = []
+    for task in tasks:
+        if isinstance(task, dict):
+            repaired_tasks.append(task)
+            continue
+        if isinstance(task, str):
+            _repair_embedded_plan_fragment(task, raw_plan)
+    return repaired_tasks
+
+
+def _repair_embedded_plan_fragment(fragment: str, raw_plan: dict[str, Any]) -> None:
+    stripped_fragment = fragment.strip().strip(",")
+    if stripped_fragment.startswith(("context_updates", "needs_clarification", "clarification_question")):
+        stripped_fragment = '{"' + stripped_fragment + "}"
+    elif not stripped_fragment.startswith("{"):
+        stripped_fragment = "{" + stripped_fragment + "}"
+    try:
+        parsed_fragment = json.loads(stripped_fragment)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(parsed_fragment, dict):
+        return
+    context_updates = parsed_fragment.get("context_updates")
+    if isinstance(context_updates, dict) and not isinstance(raw_plan.get("context_updates"), dict):
+        raw_plan["context_updates"] = context_updates
+    for key in ("needs_clarification", "clarification_question"):
+        if key in parsed_fragment and key not in raw_plan:
+            raw_plan[key] = parsed_fragment[key]
 
 
 def _validate_task(raw_task: Any, index: int) -> DomainTask:

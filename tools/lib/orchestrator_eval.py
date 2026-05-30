@@ -279,7 +279,8 @@ async def _run_scenario(scenario: Scenario, defaults: dict[str, Any]) -> Scenari
         ollama_client=ollama,
         owns_ollama_client=True,
     )
-    conversation = Conversation(conversation_id=f"eval-{scenario.name}", attributes={"location": "office"})
+    area = _str_or_default(defaults.get("area"), "office")
+    conversation = Conversation(conversation_id=f"eval-{scenario.name}", attributes={"area": area})
     endpoint = FakeConversationEndpoint([TextMessage(text=message) for message in scenario.messages])
     result = ScenarioResult(scenario=scenario)
 

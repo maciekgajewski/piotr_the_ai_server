@@ -52,13 +52,13 @@ class _ClientCommandResult:
 class ChatClientOptions:
     url: str
     user: str | None
-    location: str | None
+    area: str | None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Chat with the AI server over websocket.")
     parser.add_argument("--user", help="Optional session user attribute sent in the websocket handshake.")
-    parser.add_argument("--location", help="Optional session location attribute sent in the websocket handshake.")
+    parser.add_argument("--area", help="Optional Home Assistant area attribute sent in the websocket handshake.")
     parser.add_argument(
         "url",
         nargs="?",
@@ -105,7 +105,7 @@ async def _run_interactive_chat(
 
             try:
                 input_session.set_prompt(WAITING_FOR_SERVER_PROMPT)
-                await send_session_attributes(websocket, options.user, options.location)
+                await send_session_attributes(websocket, options.user, options.area)
                 _print_client_message("Connected.")
                 await _run_interactive_connection(websocket, input_session, stop_event)
                 return
@@ -465,7 +465,7 @@ def main(argv: list[str] | None = None) -> int:
     options = ChatClientOptions(
         url=args.url,
         user=args.user,
-        location=args.location,
+        area=args.area,
     )
     try:
         asyncio.run(run_chat(options))

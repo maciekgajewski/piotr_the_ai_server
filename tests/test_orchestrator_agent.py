@@ -4,6 +4,7 @@ import json
 import pytest
 
 from ai_server.agent.orchestrator import OrchestratorAgent, _parse_plan
+from ai_server.config import ServerConfig
 from ai_server.interfaces import Conversation
 from ai_server.messages import TextMessage, text_message_to_events
 from conftest import FakeConversationEndpoint
@@ -39,6 +40,46 @@ def test_parse_plan_validates_home_assistant_command_envelope() -> None:
     )
 
     assert plan["tasks"][0]["command"]["operation"]["intent"] == "turn_off"
+
+
+def test_parse_plan_ignores_embedded_string_fragments_in_tasks() -> None:
+    plan = _parse_plan(
+        json.dumps(
+            {
+                "kind": "single_task",
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "domain": "home_assistant",
+                        "command": _ha_command("turn_on", "włącz klimatyzację w salonie"),
+                    },
+                    'context_updates":{"salient_entities":["climate.salon"],"active_domain":"home_assistant"},',
+                ],
+                "needs_clarification": False,
+                "clarification_question": None,
+            }
+        )
+    )
+
+    assert len(plan["tasks"]) == 1
+    assert plan["context_updates"] == {
+        "salient_entities": ["climate.salon"],
+        "active_domain": "home_assistant",
+    }
+
+
+def test_parse_plan_repairs_quoted_plan_with_malformed_embedded_context() -> None:
+    plan = _parse_plan(
+        '"{\\"kind\\":\\"single_task\\",\\"tasks\\":[{\\"id\\":\\"t1\\",\\"domain\\":\\"home_assistant\\",'
+        '\\"command\\":{\\"selection\\":{\\"include\\":[{\\"domain\\":\\"climate\\",\\"scope\\":\\"all\\"}]},'
+        '\\"operation\\":{\\"intent\\":\\"turn_off\\",\\"description\\":\\"wyłącz wszystkie klimatyzacje\\",'
+        '\\"parameters\\":{}}},\\"depends_on\\":[],\\"status\\":\\"ready\\",\\"clarification_question\\":null},'
+        '\\"context_updates\\\\\\":{\\\\\\"salient_entities\\\\\\":[], "'
+    )
+
+    assert len(plan["tasks"]) == 1
+    assert plan["tasks"][0]["command"]["selection"]["include"] == [{"domain": "climate", "scope": "all"}]
+    assert plan["context_updates"] == {}
 
 
 @pytest.mark.parametrize(
@@ -96,9 +137,10 @@ def test_orchestrator_dispatches_tasks_and_uses_followup_context() -> None:
         domain_agents={"home_assistant": domain_agent},
         ollama_client=ollama,
         owns_ollama_client=False,
+        server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
     )
     endpoint = FakeConversationEndpoint([TextMessage(text="włącz klimę w salonie"), TextMessage(text="ustaw ją na 26")])
-    conversation = Conversation(conversation_id="conversation-1", attributes={"location": "office"})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office"})
 
     asyncio.run(agent.run_conversation(conversation, endpoint))
 
@@ -107,6 +149,11 @@ def test_orchestrator_dispatches_tasks_and_uses_followup_context() -> None:
     ) + list(text_message_to_events(TextMessage(text="Ustawiłem klimatyzację w salonie na 26 stopni.")))
     assert [task["id"] for task in domain_agent.tasks] == ["t1", "t2"]
     second_planning_payload = json.loads(ollama.requests[2]["messages"][-1]["content"])
+    assert second_planning_payload["conversation"]["area"] == "office"
+    assert second_planning_payload["conversation"]["server_location"] == "Wrocław"
+    assert second_planning_payload["conversation"]["server_timezone"] == "Europe/Warsaw"
+    assert "location" not in second_planning_payload["conversation"]
+    assert "room" not in second_planning_payload["conversation"]
     assert second_planning_payload["active_context"]["salient_entities"] == ["climate.salon"]
     assert conversation.state["orchestrator"]["active_domain"] == "home_assistant"
 

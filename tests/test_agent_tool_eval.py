@@ -24,7 +24,7 @@ def test_home_assistant_scenario_file_loads() -> None:
 
     assert config["domain"] == "home_assistant"
     assert {scenario.name for scenario in scenarios} >= {
-        "office-turn-off-climate-from-current-location",
+        "office-turn-off-climate-from-current-area",
         "turn-off-all-climate-devices",
         "follow-up-uses-existing-climate-context",
     }
@@ -166,7 +166,7 @@ def test_home_assistant_scoring_rejects_missing_effect_and_multi_sentence_reply(
     scenario = next(
         scenario
         for scenario in agent_tool_eval._load_scenarios(config)
-        if scenario.name == "current-location-set-climate-temperature"
+        if scenario.name == "current-area-set-climate-temperature"
     )
     result = agent_tool_eval.ScenarioResult(
         scenario=scenario,

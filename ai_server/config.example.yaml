@@ -43,7 +43,7 @@ tts:
 #   devices:
 #     - type: box3_esphome
 #       name: box3-office
-#       location: office
+#       area: office
 #       initial_silence_seconds: 4
 #       end_silence_seconds: 1.1
 #       follow_up_timeout_seconds: 20

@@ -21,7 +21,7 @@ def test_box3_microphone_from_config() -> None:
         MicrophoneConfig(
             type="box3_esphome",
             name="box3-office",
-            location="office",
+            area="office",
             options={
                 "address": "box.local",
                 "api_key": "secret",
@@ -33,7 +33,7 @@ def test_box3_microphone_from_config() -> None:
     assert microphone.context == MicrophoneContext(
         type="box3_esphome",
         name="box3-office",
-        location="office",
+        area="office",
     )
     assert microphone.playback_target == PlaybackTarget(
         type="box3_esphome",
@@ -49,7 +49,7 @@ def test_create_microphone_returns_box3_esphome_microphone() -> None:
         MicrophoneConfig(
             type="box3_esphome",
             name="box3-office",
-            location=None,
+            area=None,
             options={"address": "box.local", "api_key": "secret"},
         )
     )
@@ -63,7 +63,7 @@ def test_box3_microphone_emits_audio_events_without_automatic_run_end(monkeypatc
             MicrophoneConfig(
                 type="box3_esphome",
                 name="box3-office",
-                location=None,
+                area=None,
                 end_silence_seconds=0.01,
                 options={"address": "box.local", "api_key": "secret"},
             )
@@ -101,7 +101,7 @@ def test_box3_microphone_detects_end_of_speech_and_stops_stream(monkeypatch) -> 
             MicrophoneConfig(
                 type="box3_esphome",
                 name="box3-office",
-                location=None,
+                area=None,
                 end_silence_seconds=0.01,
                 options={"address": "box.local", "api_key": "secret"},
             )
@@ -149,7 +149,7 @@ def test_box3_microphone_drops_audio_chunks_after_audio_end(monkeypatch) -> None
             MicrophoneConfig(
                 type="box3_esphome",
                 name="box3-office",
-                location=None,
+                area=None,
                 end_silence_seconds=0.01,
                 options={"address": "box.local", "api_key": "secret"},
             )
@@ -183,7 +183,7 @@ def test_box3_microphone_detects_initial_silence_timeout(monkeypatch) -> None:
             MicrophoneConfig(
                 type="box3_esphome",
                 name="box3-office",
-                location=None,
+                area=None,
                 initial_silence_seconds=0.01,
                 options={"address": "box.local", "api_key": "secret"},
             )
@@ -220,7 +220,7 @@ def test_box3_microphone_drops_second_callback_chunk_if_first_chunk_ends_audio(m
             MicrophoneConfig(
                 type="box3_esphome",
                 name="box3-office",
-                location=None,
+                area=None,
                 end_silence_seconds=0.01,
                 options={"address": "box.local", "api_key": "secret"},
             )
@@ -262,7 +262,7 @@ def test_box3_microphone_ignores_short_startup_audio_blip(monkeypatch) -> None:
             MicrophoneConfig(
                 type="box3_esphome",
                 name="box3-office",
-                location=None,
+                area=None,
                 initial_silence_seconds=0.05,
                 end_silence_seconds=0.01,
                 options={"address": "box.local", "api_key": "secret"},
@@ -325,7 +325,7 @@ def test_box3_microphone_updates_playback_target_to_connected_ip(monkeypatch) ->
             MicrophoneConfig(
                 type="box3_esphome",
                 name="box3-office",
-                location=None,
+                area=None,
                 options={"address": "piotr-box3-01-cbfaA8.local", "api_key": "secret"},
             )
         )
@@ -376,7 +376,7 @@ def test_box3_microphone_streams_audio_events_over_http(monkeypatch) -> None:
             MicrophoneConfig(
                 type="box3_esphome",
                 name="box3-office",
-                location=None,
+                area=None,
                 options={"address": "box.local", "api_key": "secret"},
             )
         )
@@ -435,7 +435,7 @@ def test_box3_microphone_executes_cue_and_follow_up_services(monkeypatch) -> Non
             MicrophoneConfig(
                 type="box3_esphome",
                 name="box3-office",
-                location=None,
+                area=None,
                 options={"address": "box.local", "api_key": "secret"},
             )
         )

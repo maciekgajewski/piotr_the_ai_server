@@ -80,7 +80,7 @@ class Scenario:
     expected_calls: tuple[ExpectedCall, ...]
     expected_effects: tuple[ExpectedEffect, ...] = ()
     reply_expectations: tuple[ReplyExpectation, ...] = ()
-    location: str | None = None
+    area: str | None = None
     user: str | None = None
     strict: bool = False
 
@@ -126,7 +126,7 @@ class FakeHomeAssistantConnection:
     def inventory(self) -> HomeAssistantInventory:
         return self._inventory
 
-    def system_prompt_context(self, *, user: str | None, location: str | None) -> str:
+    def system_prompt_context(self, *, user: str | None, area: str | None) -> str:
         area_lines = []
         for area in sorted(self._inventory.areas_by_id.values(), key=lambda item: item.name.casefold()):
             alias_text = ", ".join(area.aliases) if area.aliases else "none"
@@ -136,13 +136,13 @@ class FakeHomeAssistantConnection:
             [
                 "You are a Home Assistant control agent.",
                 "Reply in Polish. Use tools to inspect devices and perform modifications.",
-                "If the user does not name a room, prefer the current location when it is known.",
+                "If the user does not name an area, prefer the current area when it is known.",
                 "Critical action rules:",
                 "- list_devices and list_modifiable_properties only inspect Home Assistant; they never change devices.",
                 "- For user requests to turn on, turn off, set, change, open, close, dim, brighten, heat, cool, or adjust a device, you must call modify_device.",
                 "- Never claim that a device was changed unless modify_device or modify_devices returned status=ok for that exact requested change.",
                 "- If you inspected devices but did not call modify_device, say that you found the device but have not changed it yet.",
-                "- If the current room has exactly one device matching the requested type or alias, that device is specific enough; call modify_device without asking for confirmation.",
+                "- If the current area has exactly one device matching the requested type or alias, that device is specific enough; call modify_device without asking for confirmation.",
                 "- Do not ask for confirmation for ordinary reversible smart-home changes unless multiple matching devices or values remain ambiguous.",
                 "- If you cannot choose the device, property, or value after inspecting available devices/properties, ask a clarification question instead of claiming success.",
                 "- For explicit global or all-device requests, use find_devices. If multiple devices match, inspect common properties with list_common_modifiable_properties, then call modify_devices.",
@@ -155,16 +155,16 @@ class FakeHomeAssistantConnection:
                 'Example: user says "wyłącz klimatyzację" in Office, list_devices shows one climate device "Study air conditioner", and list_modifiable_properties shows hvac_mode with off; then call modify_device(device="Study air conditioner", property_name="hvac_mode", value="off").',
                 'Example: user says "wyłącz wszystkie klimatyzatory"; call find_devices(query="klimatyzator klima klimatyzacja", device_type="climate"), then list_common_modifiable_properties, then modify_devices for every matching device.',
                 "Scope rules:",
-                '- If the user names a room or area, restrict the action to that area.',
-                '- If the user does not name a room, prefer the current location only for singular or local requests.',
-                '- If the user says "all", "every", "wszystkie", "każde", "wszędzie", "w całym domu", or similar global wording, do not restrict to the current location. Search all areas.',
-                "- If the user does not use global wording, never modify devices outside the named room or current location.",
+                '- If the user names an area or room, restrict the action to that area.',
+                '- If the user does not name an area, prefer the current area only for singular or local requests.',
+                '- If the user says "all", "every", "wszystkie", "każde", "wszędzie", "w całym domu", or similar global wording, do not restrict to the current area. Search all areas.',
+                "- If the user does not use global wording, never modify devices outside the named area or current area.",
                 "- For requests about all devices of a type, find every matching device before modifying any of them.",
                 "- For multiple matching devices, modify every matching device unless the request is ambiguous or unsafe.",
                 '- Do not report success for "all" unless every matching device was attempted. Still reply in one sentence.',
                 f"Current user: {user or 'unknown'}",
-                f"Current location: {location or 'unknown'}",
-                "Known rooms and aliases:",
+                f"Current area: {area or 'unknown'}",
+                "Known areas and aliases:",
                 *area_lines,
                 "Device type vocabulary:",
                 _format_device_type_vocabulary(),
@@ -220,12 +220,12 @@ class FakeHomeAssistantConnection:
         value: JsonScalar,
         *,
         user_message: str = "",
-        current_location: str | None = None,
+        current_area: str | None = None,
     ) -> dict[str, Any]:
         return await self._record_and_reply(
             "modify_devices",
             {"devices": devices, "property_name": property_name, "value": value},
-            self._default_modify_devices(devices, property_name, value, user_message=user_message, current_location=current_location),
+            self._default_modify_devices(devices, property_name, value, user_message=user_message, current_area=current_area),
         )
 
     async def _record_and_reply(self, tool: str, arguments: dict[str, Any], default_result: Any) -> Any:
@@ -320,7 +320,7 @@ class FakeHomeAssistantConnection:
         value: JsonScalar,
         *,
         user_message: str,
-        current_location: str | None,
+        current_area: str | None,
     ) -> dict[str, Any]:
         resolved_devices = [self._resolve_device(device) for device in devices]
         concrete_devices = [device for device in resolved_devices if device is not None]
@@ -328,7 +328,7 @@ class FakeHomeAssistantConnection:
             concrete_devices,
             self._inventory,
             user_message=user_message,
-            current_location=current_location,
+            current_area=current_area,
         )
         if scope_rejection is not None:
             return scope_rejection
@@ -451,12 +451,12 @@ async def _run_home_assistant_eval(config: dict[str, Any], args: argparse.Namesp
             max_tool_repair_attempts=_int_or_default(defaults.get("max_tool_repair_attempts"), 2),
         )
 
-        location = scenario.location or _str_or_none(defaults.get("location"))
+        area = scenario.area or _str_or_none(defaults.get("area"))
         user = scenario.user or _str_or_none(defaults.get("user"))
-        system_prompt = fake_connection.system_prompt_context(user=user, location=location)
+        system_prompt = fake_connection.system_prompt_context(user=user, area=area)
         result = ScenarioResult(scenario=scenario)
         if transcript:
-            _print_transcript_scenario_start(scenario, loop_config.model, loop_config.ollama_url, user, location)
+            _print_transcript_scenario_start(scenario, loop_config.model, loop_config.ollama_url, user, area)
         started_at = time.perf_counter()
         context_message_observer = _print_transcript_context_message if transcript and _think_enabled(loop_config.think) else None
         async with AgentLoop(
@@ -468,7 +468,7 @@ async def _run_home_assistant_eval(config: dict[str, Any], args: argparse.Namesp
             for message in scenario.messages:
                 if transcript:
                     _print_transcript_user_message(message)
-                tool.set_request_context(user_message=message, location=location)
+                tool.set_request_context(user_message=message, area=area)
                 reply = await loop.send_user_message(message)
                 result.replies.append(reply.reply_text)
                 if transcript:
@@ -509,7 +509,7 @@ def _load_scenarios(config: dict[str, Any]) -> list[Scenario]:
                 expected_calls=expected_calls,
                 expected_effects=expected_effects,
                 reply_expectations=reply_expectations,
-                location=_str_or_none(raw_scenario.get("location")),
+                area=_str_or_none(raw_scenario.get("area")),
                 user=_str_or_none(raw_scenario.get("user")),
                 strict=bool(raw_scenario.get("strict", False)),
             )
@@ -744,7 +744,7 @@ def _batch_scope_rejection(
     inventory: HomeAssistantInventory,
     *,
     user_message: str,
-    current_location: str | None,
+    current_area: str | None,
 ) -> dict[str, Any] | None:
     if len(devices) <= 1:
         return None
@@ -753,12 +753,12 @@ def _batch_scope_rejection(
     if _has_global_scope(user_message):
         return None
 
-    current_area_id = _canonical_area_value(current_location, inventory) if current_location else ""
+    current_area_id = _canonical_area_value(current_area, inventory) if current_area else ""
     if current_area_id and all(device.area_id == current_area_id for device in devices):
         return None
 
-    current_area = inventory.areas_by_id.get(current_area_id)
-    target_area_text = current_area.name if current_area is not None else "the named/current room"
+    current_area_record = inventory.areas_by_id.get(current_area_id)
+    target_area_text = current_area_record.name if current_area_record is not None else "the named/current area"
     return {
         "status": "rejected",
         "error": "batch_scope_not_allowed",
@@ -767,8 +767,8 @@ def _batch_scope_rejection(
             f"Use modify_device for the single matching device in {target_area_text}, "
             "or ask a clarification question if no single device is clear."
         ),
-        "current_location": current_location or "",
-        "current_area": _area_to_mapping(current_area) if current_area is not None else None,
+        "current_area_name": current_area or "",
+        "current_area": _area_to_mapping(current_area_record) if current_area_record is not None else None,
         "rejected_devices": [_device_to_mapping(device, inventory) for device in devices],
     }
 
@@ -1029,11 +1029,11 @@ def _print_transcript_scenario_start(
     model: str,
     ollama_url: str,
     user: str | None,
-    location: str | None,
+    area: str | None,
 ) -> None:
     print("")
     print(f"=== Scenario: {scenario.name} ===", flush=True)
-    print(f"model: {model}  ollama: {ollama_url}  user: {user or 'unknown'}  location: {location or 'unknown'}", flush=True)
+    print(f"model: {model}  ollama: {ollama_url}  user: {user or 'unknown'}  area: {area or 'unknown'}", flush=True)
 
 
 def _print_transcript_user_message(message: str) -> None:

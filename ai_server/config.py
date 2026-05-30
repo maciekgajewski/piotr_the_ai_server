@@ -75,7 +75,7 @@ class MicrophoneDefaultsConfig:
 class MicrophoneConfig:
     type: str
     name: str
-    location: str | None
+    area: str | None
     options: dict[str, Any]
     initial_silence_seconds: float = DEFAULT_INITIAL_SILENCE_SECONDS
     end_silence_seconds: float = DEFAULT_END_SILENCE_SECONDS
@@ -300,9 +300,12 @@ def _parse_microphones_config(
         if not isinstance(name, str) or not name:
             raise ValueError(f"microphones[{index}].name must be a non-empty string")
 
-        location = raw_microphone.get("location")
-        if location is not None and (not isinstance(location, str) or not location):
-            raise ValueError(f"microphones[{index}].location must be a non-empty string when provided")
+        if "location" in raw_microphone:
+            raise ValueError(f"microphones[{index}].location has been renamed to microphones[{index}].area")
+
+        area = raw_microphone.get("area")
+        if area is not None and (not isinstance(area, str) or not area):
+            raise ValueError(f"microphones[{index}].area must be a non-empty string when provided")
 
         initial_silence_seconds = _parse_optional_positive_float(
             raw_microphone.get("initial_silence_seconds"),
@@ -327,7 +330,7 @@ def _parse_microphones_config(
             not in (
                 "type",
                 "name",
-                "location",
+                "area",
                 "initial_silence_seconds",
                 "end_silence_seconds",
                 "follow_up_timeout_seconds",
@@ -346,7 +349,7 @@ def _parse_microphones_config(
             MicrophoneConfig(
                 type=microphone_type,
                 name=name,
-                location=location,
+                area=area,
                 initial_silence_seconds=initial_silence_seconds,
                 end_silence_seconds=end_silence_seconds,
                 follow_up_timeout_seconds=follow_up_timeout_seconds,

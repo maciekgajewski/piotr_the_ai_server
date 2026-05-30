@@ -28,7 +28,7 @@ class FakeAgent:
 
 class FakeMicrophone:
     def __init__(self, events=None) -> None:
-        self.context = MicrophoneContext(type="fake", name="office", location="office")
+        self.context = MicrophoneContext(type="fake", name="office", area="office")
         self.playback_target = PlaybackTarget(
             type="fake",
             name="office",
@@ -300,7 +300,7 @@ def test_init_mics_rejects_unknown_microphone_type() -> None:
     mic_config = MicrophoneConfig(
         type="unknown",
         name="mic",
-        location=None,
+        area=None,
         options={},
     )
 

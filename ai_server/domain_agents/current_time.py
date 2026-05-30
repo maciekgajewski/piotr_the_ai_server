@@ -79,7 +79,9 @@ class CurrentTimeDomainAgent:
         command = command if isinstance(command, dict) else {}
         query = _string_or_empty(command.get("query"))
         target_timezone = _string_or_empty(command.get("timezone"))
-        target_location = _string_or_empty(command.get("location")) or _extract_location(query)
+        command_location = _string_or_empty(command.get("geo_location"))
+        query_location = _extract_location(query)
+        target_location = command_location if _explicit_time_location(command_location, query, conversation) else query_location
 
         if target_timezone:
             timezone = target_timezone
@@ -90,9 +92,6 @@ class CurrentTimeDomainAgent:
                 timezone_source = "location"
             except (RuntimeError, ZoneInfoNotFoundError):
                 return _unknown_timezone_result(target_location)
-        elif conversation.location and _normalized(conversation.location) == _normalized(self._location or ""):
-            timezone = self._timezone
-            timezone_source = "configured_location"
         else:
             timezone = self._timezone
             timezone_source = "configured_timezone"
@@ -105,8 +104,18 @@ class CurrentTimeDomainAgent:
 
         now = self._now_factory(zone)
         response_kind = _response_kind(command, query)
-        text = _format_reply(now, response_kind, location=target_location)
-        self._logger.debug(
+        text = _format_reply(
+            now,
+            response_kind,
+            location=target_location,
+            concise=_is_short_local_time_question(
+                query=query,
+                response_kind=response_kind,
+                timezone_source=timezone_source,
+                target_timezone=target_timezone,
+            ),
+        )
+        self._logger.info(
             "resolved current time query=%r location=%r timezone=%s source=%s response_kind=%s",
             query,
             target_location,
@@ -261,7 +270,9 @@ def _response_kind(command: dict[str, Any], query: str) -> str:
     return "current_time"
 
 
-def _format_reply(now: dt.datetime, response_kind: str, *, location: str) -> str:
+def _format_reply(now: dt.datetime, response_kind: str, *, location: str, concise: bool = False) -> str:
+    if concise and response_kind == "current_time":
+        return now.strftime("%H:%M")
     location_text = f" w {_display_location(location)}" if location else ""
     if response_kind == "day_of_week":
         return f"Dzisiaj{location_text} jest {WEEKDAYS[now.weekday()]}."
@@ -290,6 +301,8 @@ def _display_location(location: str) -> str:
         return "Wrocławiu"
     if normalized_location in {"floryda", "florydzie", "florida"}:
         return "Florydzie"
+    if normalized_location in {"office", "biuro", "biurze"}:
+        return "biurze"
     return location
 
 
@@ -307,6 +320,33 @@ def _extract_location(query: str) -> str:
             if location:
                 return location
     return ""
+
+
+def _explicit_time_location(command_location: str, query: str, conversation: Conversation) -> bool:
+    if not command_location:
+        return False
+    if conversation.area and _normalized(command_location) == _normalized(conversation.area):
+        return False
+    extracted_location = _extract_location(query)
+    return bool(extracted_location and _normalized(extracted_location) == _normalized(command_location))
+
+
+def _is_short_local_time_question(
+    *,
+    query: str,
+    response_kind: str,
+    timezone_source: str,
+    target_timezone: str,
+) -> bool:
+    if response_kind != "current_time" or target_timezone or timezone_source != "configured_timezone":
+        return False
+    normalized_query = _normalized(query).strip(" ?.!").strip()
+    return normalized_query in {
+        "ktora godzina",
+        "ktora jest godzina",
+        "jaka godzina",
+        "jaki czas",
+    }
 
 
 def _string_or_empty(value: Any) -> str:

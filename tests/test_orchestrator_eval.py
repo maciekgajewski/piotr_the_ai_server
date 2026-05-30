@@ -28,10 +28,11 @@ def test_orchestrator_scenario_file_loads() -> None:
         "compose-ha-and-wikipedia",
         "followup-uses-active-context",
         "compose-ha-and-time",
-        "ha-office-turn-off-climate-from-current-location",
+        "short-local-time-reply",
+        "ha-office-turn-off-climate-from-current-area",
         "ha-turn-off-all-climate-devices",
         "ha-living-room-climate-fan-only-by-room-alias",
-        "ha-current-location-set-climate-temperature",
+        "ha-current-area-set-climate-temperature",
         "ha-follow-up-uses-existing-climate-context",
     }
 

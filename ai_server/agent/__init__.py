@@ -87,7 +87,12 @@ async def create_agent(
             cache_dir=cache_dir,
         )
         logger.info("Loaded %s orchestrator domain agents", len(domain_agents))
-        agent = OrchestratorAgent(model=model, domain_agents=domain_agents, ollama_client=ollama_client)
+        agent = OrchestratorAgent(
+            model=model,
+            domain_agents=domain_agents,
+            ollama_client=ollama_client,
+            server_config=server_config,
+        )
         try:
             logger.info("Preloading orchestrator agent model=%s", model)
             await agent.preload()

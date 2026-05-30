@@ -3,12 +3,12 @@ domain: home_assistant_dsa
 defaults:
   model: qwen3:4b-instruct
   ollama_url: http://127.0.0.1:11434
-  location: Office
+  area: Office
   user: Maciek
   inventory: tools/lib/agent-tool-eval/home_assistant.yaml
 
 scenarios:
-  - name: dsa-office-turn-off-climate-from-current-location
+  - name: dsa-office-turn-off-climate-from-current-area
     task:
       id: t1
       domain: home_assistant
@@ -110,7 +110,7 @@ scenarios:
     confirmation:
       contains_all: [salon, wentylac]
 
-  - name: dsa-current-location-set-climate-temperature
+  - name: dsa-current-area-set-climate-temperature
     task:
       id: t1
       domain: home_assistant

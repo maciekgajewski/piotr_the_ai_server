@@ -34,4 +34,4 @@ microphones:
     #   name: box3-office
     #   address: piotr-box3-01-cbfaA8.local
     #   api_key: replace-with-esphome-api-key
-    #   location: office
+    #   area: office

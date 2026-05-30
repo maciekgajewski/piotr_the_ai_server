@@ -17,14 +17,14 @@ from ai_server.ws_client_common import send_user_text
 class BatchWsClientOptions:
     url: str
     user: str | None
-    location: str | None
+    area: str | None
     messages: tuple[str, ...]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Send batch messages to the AI server over websocket.")
     parser.add_argument("--user", help="Optional session user attribute sent in the websocket handshake.")
-    parser.add_argument("--location", help="Optional session location attribute sent in the websocket handshake.")
+    parser.add_argument("--area", help="Optional Home Assistant area attribute sent in the websocket handshake.")
     parser.add_argument(
         "--message",
         action="append",
@@ -45,7 +45,7 @@ async def run_batch_ws_client(options: BatchWsClientOptions) -> None:
     _install_stop_handlers(stop_event)
     async with ClientSession() as session:
         async with session.ws_connect(options.url) as websocket:
-            await send_session_attributes(websocket, options.user, options.location)
+            await send_session_attributes(websocket, options.user, options.area)
             messages = list(options.messages)
             sent_all_messages = not messages
 
@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     options = BatchWsClientOptions(
         url=args.url,
         user=args.user,
-        location=args.location,
+        area=args.area,
         messages=tuple(args.message),
     )
     try:

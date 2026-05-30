@@ -349,9 +349,9 @@ def print_microphones(config: Config) -> None:
         print("No microphones configured.")
         return
     for microphone in config.microphones:
-        location = microphone.location or "unknown location"
+        area = microphone.area or "unknown area"
         print(
-            f"{microphone.name}\ttype={microphone.type}\tlocation={location}"
+            f"{microphone.name}\ttype={microphone.type}\tarea={area}"
             f"\tinitial_silence={microphone.initial_silence_seconds:g}s"
             f"\tend_silence={microphone.end_silence_seconds:g}s"
             f"\tfollow_up_timeout={microphone.follow_up_timeout_seconds:g}s"

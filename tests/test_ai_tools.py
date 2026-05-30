@@ -113,7 +113,7 @@ def test_home_assistant_tool_runs_local_agent_loop_with_context(monkeypatch) -> 
     endpoint = FakeConversationEndpoint([])
     conversation = Conversation(
         conversation_id="conversation-1",
-        attributes={"location": "office", "user": "maciek"},
+        attributes={"area": "office", "user": "maciek"},
     )
 
     asyncio.run(tool.run(conversation, endpoint, TextMessage(text="włącz klimę")))
@@ -121,7 +121,7 @@ def test_home_assistant_tool_runs_local_agent_loop_with_context(monkeypatch) -> 
     assert fake_loop.config.model == "qwen3:8b"
     assert fake_loop.config.ollama_url == "http://ollama:11434"
     assert "Current user: maciek" in fake_loop.system_prompt
-    assert "Current location: office" in fake_loop.system_prompt
+    assert "Current area: office" in fake_loop.system_prompt
     assert "area_id=office; name=Office; aliases=Biuro, Pracownia" in fake_loop.system_prompt
     assert "hvac_mode: fan_only aliases:" in fake_loop.system_prompt
     assert fake_loop.messages == ["włącz klimę"]
@@ -370,7 +370,7 @@ def test_home_assistant_modify_devices_rejects_over_broad_batch_without_global_w
         fake_call_home_assistant_service,
     )
     tool = _sample_tool(_sample_inventory())
-    tool.set_request_context(user_message="ustaw klimę na 26 stopni", location="office")
+    tool.set_request_context(user_message="ustaw klimę na 26 stopni", area="office")
 
     with pytest.raises(ValueError, match="The user did not ask for all matching devices"):
         asyncio.run(tool.modify_devices(["klima", "salon ac"], "target_temperature", 26))
@@ -389,7 +389,7 @@ def test_home_assistant_modify_devices_allows_batch_with_global_wording(monkeypa
         fake_call_home_assistant_service,
     )
     tool = _sample_tool(_sample_inventory())
-    tool.set_request_context(user_message="wyłącz wszystkie klimatyzacje", location="office")
+    tool.set_request_context(user_message="wyłącz wszystkie klimatyzacje", area="office")
 
     result = asyncio.run(tool.modify_devices(["klima", "salon ac"], "hvac_mode", "off"))
 

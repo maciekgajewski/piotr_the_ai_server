@@ -27,7 +27,7 @@ def test_select_microphone_config_uses_only_configured_microphone() -> None:
     microphone = MicrophoneConfig(
         type="box3_esphome",
         name="box3-office",
-        location="office",
+        area="office",
         options={"address": "box.local", "api_key": "secret"},
     )
     config = _config(microphones=(microphone,))
@@ -38,8 +38,8 @@ def test_select_microphone_config_uses_only_configured_microphone() -> None:
 def test_select_microphone_config_requires_name_when_multiple() -> None:
     config = _config(
         microphones=(
-            MicrophoneConfig(type="test", name="one", location=None, options={}),
-            MicrophoneConfig(type="test", name="two", location=None, options={}),
+            MicrophoneConfig(type="test", name="one", area=None, options={}),
+            MicrophoneConfig(type="test", name="two", area=None, options={}),
         )
     )
 
@@ -48,7 +48,7 @@ def test_select_microphone_config_requires_name_when_multiple() -> None:
 
 
 def test_select_microphone_config_rejects_unknown_name() -> None:
-    config = _config(microphones=(MicrophoneConfig(type="test", name="one", location=None, options={}),))
+    config = _config(microphones=(MicrophoneConfig(type="test", name="one", area=None, options={}),))
 
     with pytest.raises(ValueError, match="unknown microphone"):
         mic_protocol_test.select_microphone_config(config, "missing")

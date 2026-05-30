@@ -89,11 +89,11 @@ class HomeAssistantDomainAgent:
             logger_name=f"{__name__}.HomeAssistantToolSet[{conversation.conversation_id}:{task_id}]",
         )
         request_text = _task_request_text(task)
-        toolset.set_request_context(user_message=request_text, location=conversation.location)
+        toolset.set_request_context(user_message=request_text, area=conversation.area)
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
             home_assistant_context=self._connection.system_prompt_context(
                 user=conversation.user,
-                location=conversation.location,
+                area=conversation.area,
             )
         )
         loop_config = AgentLoopConfig(model=self._model, ollama_url=self._ollama_url)
@@ -102,7 +102,7 @@ class HomeAssistantDomainAgent:
             "execution_hints": _execution_hints(task, active_context),
             "conversation": {
                 "user": conversation.user,
-                "location": conversation.location,
+                "area": conversation.area,
             },
         }
         logger.debug("running Home Assistant DSA task=%s active_context=%s", task, active_context)
@@ -162,8 +162,8 @@ class HomeAssistantDomainToolSet(AgentCallableSet):
     def last_execution_result(self) -> dict[str, Any] | None:
         return self._last_execution_result
 
-    def set_request_context(self, *, user_message: str, location: str | None) -> None:
-        self._tools.set_request_context(user_message=user_message, location=location)
+    def set_request_context(self, *, user_message: str, area: str | None) -> None:
+        self._tools.set_request_context(user_message=user_message, area=area)
 
     @AgentCallableSet.tool(
         description=(
@@ -526,7 +526,7 @@ def _execution_hints(task: DomainTask, active_context: dict[str, Any]) -> list[s
     selected_area = selector.get("area")
     selected_name = selector.get("name")
     if isinstance(selected_scope, str) and selected_scope == "all":
-        hints.append("Selection scope is all/global. Do not restrict to conversation.location or current room.")
+        hints.append("Selection scope is all/global. Do not restrict to conversation.area or current area.")
         if isinstance(selected_domain, str) and selected_domain:
             hints.append(f"Find every matching device with device_type={selected_domain!r} and empty area_name.")
     elif isinstance(selected_area, str) and selected_area:

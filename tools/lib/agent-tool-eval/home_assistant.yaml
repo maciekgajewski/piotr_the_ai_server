@@ -3,7 +3,7 @@ domain: home_assistant
 defaults:
   model: qwen3:8b
   ollama_url: http://127.0.0.1:11434
-  location: Office
+  area: Office
   user: Maciek
   think: false
   request_timeout_seconds: 60
@@ -109,8 +109,8 @@ home_assistant:
             step: 0.5
 
 scenarios:
-  - name: office-turn-off-climate-from-current-location
-    location: Office
+  - name: office-turn-off-climate-from-current-area
+    area: Office
     message: wyłącz klimatyzację
     expected_calls:
       - tool: list_devices
@@ -139,7 +139,7 @@ scenarios:
       contains_all: [klimatyz, wyłącz]
 
   - name: turn-off-all-climate-devices
-    location: Office
+    area: Office
     message: wyłącz wszystkie klimatyzacje
     expected_calls:
       - tool: find_devices
@@ -185,7 +185,7 @@ scenarios:
       contains_all: [wszystkie, klimatyz, wyłącz]
 
   - name: living-room-climate-fan-only-by-room-alias
-    location: Office
+    area: Office
     message: włącz klimatyzator w salonie w trybie wentylacji
     expected_calls:
       - tool: list_devices
@@ -213,8 +213,8 @@ scenarios:
     confirmation:
       contains_all: [salon, wentylac]
 
-  - name: current-location-set-climate-temperature
-    location: Office
+  - name: current-area-set-climate-temperature
+    area: Office
     message: ustaw klimę na 26 stopni
     expected_calls:
       - tool: list_devices
@@ -243,7 +243,7 @@ scenarios:
       contains_all: ["26"]
 
   - name: follow-up-uses-existing-climate-context
-    location: Living room
+    area: Living room
     messages:
       - Włącz klimatyzację w salonie
       - Super! I ustaw ją na 22 stopnie

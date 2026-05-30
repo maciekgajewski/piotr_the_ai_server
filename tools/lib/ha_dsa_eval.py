@@ -28,7 +28,7 @@ class Scenario:
     expected_effects: tuple[Any, ...]
     reply_expectations: tuple[Any, ...]
     active_context: dict[str, Any] = field(default_factory=dict)
-    location: str | None = None
+    area: str | None = None
     user: str | None = None
     strict: bool = False
 
@@ -102,7 +102,7 @@ def _load_scenarios(config: dict[str, Any]) -> list[Scenario]:
                 expected_calls=agent_tool_eval._parse_expected_calls(raw_scenario.get("expected_calls", []), name),
                 expected_effects=agent_tool_eval._parse_expected_effects(raw_scenario.get("expected_effects", []), name),
                 reply_expectations=agent_tool_eval._parse_reply_expectations(raw_scenario, name),
-                location=_str_or_none(raw_scenario.get("location")),
+                area=_str_or_none(raw_scenario.get("area")),
                 user=_str_or_none(raw_scenario.get("user")),
                 strict=bool(raw_scenario.get("strict", False)),
             )
@@ -128,13 +128,13 @@ async def _run_scenario(
 ) -> Any:
     model = args.model or _str_or_default(defaults.get("model"), "qwen3:4b-instruct")
     ollama_url = args.ollama_url or _str_or_default(defaults.get("ollama_url"), "http://127.0.0.1:11434")
-    location = scenario.location or _str_or_none(defaults.get("location"))
+    area = scenario.area or _str_or_none(defaults.get("area"))
     user = scenario.user or _str_or_none(defaults.get("user"))
     fake_connection = agent_tool_eval.FakeHomeAssistantConnection(inventory, scenario.expected_calls, transcript=False)
     dsa = HomeAssistantDomainAgent(model=model, ollama_url=ollama_url, connection=fake_connection)
     conversation = Conversation(
         conversation_id=f"ha-dsa-eval-{scenario.name}",
-        attributes={key: value for key, value in (("location", location), ("user", user)) if isinstance(value, str)},
+        attributes={key: value for key, value in (("area", area), ("user", user)) if isinstance(value, str)},
     )
     started_at = time.perf_counter()
     result = agent_tool_eval.ScenarioResult(
@@ -144,7 +144,7 @@ async def _run_scenario(
             expected_calls=scenario.expected_calls,
             expected_effects=scenario.expected_effects,
             reply_expectations=scenario.reply_expectations,
-            location=location,
+            area=area,
             user=user,
             strict=scenario.strict,
         )

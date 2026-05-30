@@ -37,12 +37,12 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
 
     async def run(self, conversation: Conversation, endpoint: ConversationEndpoint, request: TextMessage) -> None:
         self._start_owned_connection()
-        system_prompt = self._connection.system_prompt_context(user=conversation.user, location=conversation.location)
+        system_prompt = self._connection.system_prompt_context(user=conversation.user, area=conversation.area)
         self._logger.debug(
-            "starting Home Assistant conversation conversation_id=%s user=%s location=%s initial_request=%r inventory_ready=%s system_prompt=%r",
+            "starting Home Assistant conversation conversation_id=%s user=%s area=%s initial_request=%r inventory_ready=%s system_prompt=%r",
             conversation.conversation_id,
             conversation.user,
-            conversation.location,
+            conversation.area,
             request.text,
             self._connection.inventory is not None,
             system_prompt,
@@ -53,7 +53,7 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
         )
 
         async with AgentLoop(config=loop_config, system_prompt=system_prompt, tools=self) as loop:
-            self.set_request_context(user_message=request.text, location=conversation.location)
+            self.set_request_context(user_message=request.text, area=conversation.area)
             reply = await loop.send_user_message(request.text)
             self._logger.debug(
                 "sending Home Assistant reply conversation_id=%s reply=%r end_conversation=%s loop_eval_count=%s",
@@ -73,7 +73,7 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
                     conversation.conversation_id,
                     follow_up.text,
                 )
-                self.set_request_context(user_message=follow_up.text, location=conversation.location)
+                self.set_request_context(user_message=follow_up.text, area=conversation.area)
                 reply = await loop.send_user_message(follow_up.text)
                 self._logger.debug(
                     "sending Home Assistant follow-up reply conversation_id=%s reply=%r end_conversation=%s loop_eval_count=%s",

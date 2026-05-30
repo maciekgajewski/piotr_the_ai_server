@@ -190,7 +190,7 @@ microphones:
     name: box3-office
     address: piotr-box3-01-cbfaA8.local
     api_key: abc
-    location: office
+    area: office
   - type: box3_esphome
     name: box3-roaming
     address: 192.168.1.42
@@ -206,7 +206,7 @@ microphones:
         MicrophoneConfig(
             type="box3_esphome",
             name="box3-office",
-            location="office",
+            area="office",
             initial_silence_seconds=3.0,
             end_silence_seconds=0.9,
             follow_up_timeout_seconds=15.0,
@@ -215,7 +215,7 @@ microphones:
         MicrophoneConfig(
             type="box3_esphome",
             name="box3-roaming",
-            location=None,
+            area=None,
             initial_silence_seconds=3.0,
             end_silence_seconds=0.9,
             follow_up_timeout_seconds=15.0,
@@ -314,6 +314,27 @@ tts:
         capture_seconds=4.5,
     )
     assert config.tts == TtsConfig(voice="pl_PL-darkman-medium", volume=0.7)
+
+
+def test_load_config_rejects_legacy_microphone_location(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+websocket:
+  port: 2137
+agent:
+  type: echo
+microphones:
+  - type: box3_esphome
+    name: box3-office
+    address: box.local
+    api_key: abc
+    location: office
+""",
+    )
+
+    with pytest.raises(ValueError, match="microphones\\[0\\]\\.location has been renamed"):
+        load_config_from_yaml(config_path)
 
 
 def test_load_config_requires_websocket_port(tmp_path: Path) -> None:

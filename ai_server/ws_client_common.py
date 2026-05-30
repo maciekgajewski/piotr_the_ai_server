@@ -27,12 +27,12 @@ class WaitState:
     starts_new_conversation: bool
 
 
-async def send_session_attributes(websocket, user: str | None, location: str | None) -> None:
+async def send_session_attributes(websocket, user: str | None, area: str | None) -> None:
     attributes = {}
     if user:
         attributes["user"] = user
-    if location:
-        attributes["location"] = location
+    if area:
+        attributes["area"] = area
     await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes=attributes)))
 
 

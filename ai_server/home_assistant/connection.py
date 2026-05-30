@@ -177,7 +177,7 @@ class HomeAssistantConnection:
         value: JsonScalar,
         *,
         user_message: str = "",
-        current_location: str | None = None,
+        current_area: str | None = None,
     ) -> dict[str, Any]:
         inventory = self._inventory
         if inventory is None:
@@ -188,7 +188,7 @@ class HomeAssistantConnection:
             inventory,
             resolved_devices,
             user_message=user_message,
-            current_location=current_location,
+            current_area=current_area,
         )
         if scope_rejection is not None:
             return scope_rejection
@@ -206,9 +206,9 @@ class HomeAssistantConnection:
             "errors": errors,
         }
 
-    def system_prompt_context(self, *, user: str | None, location: str | None) -> str:
+    def system_prompt_context(self, *, user: str | None, area: str | None) -> str:
         inventory = self._inventory
-        location_text = location or "unknown"
+        area_text = area or "unknown"
         user_text = user or "unknown"
         area_lines = []
         if inventory is None:
@@ -222,13 +222,13 @@ class HomeAssistantConnection:
             [
                 "You are a Home Assistant control agent.",
                 "Reply in Polish. Use tools to inspect devices and perform modifications.",
-                "If the user does not name a room, prefer the current location when it is known.",
+                "If the user does not name an area, prefer the current area when it is known.",
                 "Critical action rules:",
                 "- list_devices and list_modifiable_properties only inspect Home Assistant; they never change devices.",
                 "- For user requests to turn on, turn off, set, change, open, close, dim, brighten, heat, cool, or adjust a device, you must call modify_device.",
                 "- Never claim that a device was changed unless modify_device or modify_devices returned status=ok for that exact requested change.",
                 "- If you inspected devices but did not call modify_device, say that you found the device but have not changed it yet.",
-                "- If the current room has exactly one device matching the requested type or alias, that device is specific enough; call modify_device without asking for confirmation.",
+                "- If the current area has exactly one device matching the requested type or alias, that device is specific enough; call modify_device without asking for confirmation.",
                 "- Do not ask for confirmation for ordinary reversible smart-home changes unless multiple matching devices or values remain ambiguous.",
                 "- If you cannot choose the device, property, or value after inspecting available devices/properties, ask a clarification question instead of claiming success.",
                 "- For explicit global or all-device requests, use find_devices. If multiple devices match, inspect common properties with list_common_modifiable_properties, then call modify_devices.",
@@ -242,17 +242,17 @@ class HomeAssistantConnection:
                 '- Example: user says "wyłącz wszystkie klimatyzatory"; call find_devices(query="klimatyzator klima klimatyzacja", device_type="climate"), then list_common_modifiable_properties, then modify_devices for every matching device.',
                 """
 Scope rules:
-- If the user names a room or area, restrict the action to that area.
-- If the user does not name a room, prefer the current location only for singular or local requests.
-- If the user says "all", "every", "wszystkie", "każde", "wszędzie", "w całym domu", or similar global wording, do not restrict to the current location. Search all areas.
-- If the user does not use global wording, never modify devices outside the named room or current location.
+- If the user names an area or room, restrict the action to that area.
+- If the user does not name an area, prefer the current area only for singular or local requests.
+- If the user says "all", "every", "wszystkie", "każde", "wszędzie", "w całym domu", or similar global wording, do not restrict to the current area. Search all areas.
+- If the user does not use global wording, never modify devices outside the named area or current area.
 - For requests about all devices of a type, find every matching device before modifying any of them.
 - For multiple matching devices, modify every matching device unless the request is ambiguous or unsafe.
 - Do not report success for "all" unless every matching device was attempted. Still reply in one sentence.
 """,
                 f"Current user: {user_text}",
-                f"Current location: {location_text}",
-                "Known rooms and aliases:",
+                f"Current area: {area_text}",
+                "Known areas and aliases:",
                 *area_lines,
                 "Device type vocabulary:",
                 _format_device_type_vocabulary(),
@@ -1035,7 +1035,7 @@ def _batch_scope_rejection(
     devices: list[HomeAssistantDevice],
     *,
     user_message: str,
-    current_location: str | None,
+    current_area: str | None,
 ) -> dict[str, Any] | None:
     if len(devices) <= 1:
         return None
@@ -1044,12 +1044,12 @@ def _batch_scope_rejection(
     if _has_global_scope(user_message):
         return None
 
-    current_area = _resolve_current_area(inventory, current_location)
-    if current_area is not None and all(device.area_id == current_area.area_id for device in devices):
+    resolved_current_area = _resolve_current_area(inventory, current_area)
+    if resolved_current_area is not None and all(device.area_id == resolved_current_area.area_id for device in devices):
         return None
 
     rejected_devices = [_device_to_mapping(device, inventory) for device in devices]
-    target_area_text = current_area.name if current_area is not None else "the named/current room"
+    target_area_text = resolved_current_area.name if resolved_current_area is not None else "the named/current area"
     return {
         "status": "rejected",
         "error": "batch_scope_not_allowed",
@@ -1058,16 +1058,16 @@ def _batch_scope_rejection(
             f"Use modify_device for the single matching device in {target_area_text}, "
             "or ask a clarification question if no single device is clear."
         ),
-        "current_location": current_location or "",
-        "current_area": _area_to_mapping(current_area) if current_area is not None else None,
+        "current_area_name": current_area or "",
+        "current_area": _area_to_mapping(resolved_current_area) if resolved_current_area is not None else None,
         "rejected_devices": rejected_devices,
     }
 
 
-def _resolve_current_area(inventory: HomeAssistantInventory, current_location: str | None) -> HomeAssistantArea | None:
-    if not current_location:
+def _resolve_current_area(inventory: HomeAssistantInventory, current_area: str | None) -> HomeAssistantArea | None:
+    if not current_area:
         return None
-    area = _resolve_area(inventory, current_location)
+    area = _resolve_area(inventory, current_area)
     if isinstance(area, dict):
         return None
     return area

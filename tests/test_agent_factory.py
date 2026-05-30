@@ -127,6 +127,7 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert isinstance(agent, OrchestratorAgent)
             assert agent._model == "qwen3:4b-instruct"
             assert agent._ollama._base_url == "http://ollama:11434"
+            assert agent._server_config == ServerConfig(timezone="Europe/Warsaw", location="Wrocław")
             assert agent._domain_agents["home_assistant"]._model == "qwen3:8b"
             assert isinstance(agent._domain_agents["time"], CurrentTimeDomainAgent)
             assert agent._domain_agents["time"]._timezone == "Europe/Warsaw"

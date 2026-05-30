@@ -81,7 +81,7 @@ class Box3EsphomeMicrophone:
         if expected_name is not None and not isinstance(expected_name, str):
             raise ValueError(f"microphone {config.name} expected_name must be a string when provided")
 
-        context = MicrophoneContext(type=config.type, name=config.name, location=config.location)
+        context = MicrophoneContext(type=config.type, name=config.name, area=config.area)
         playback_target = PlaybackTarget(
             type=config.type,
             name=config.name,

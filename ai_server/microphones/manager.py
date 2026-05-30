@@ -67,8 +67,8 @@ class MicrophoneManager:
         endpoint = MicrophoneAgentEndpoint()
         session_id = f"mic-{microphone.context.name}-{uuid.uuid4()}"
         attributes = {}
-        if microphone.context.location:
-            attributes["location"] = microphone.context.location
+        if microphone.context.area:
+            attributes["area"] = microphone.context.area
         session = Session(session_id=session_id, endpoint=endpoint, attributes=attributes)
         session_task = asyncio.create_task(session.run(self._agent))
         try:

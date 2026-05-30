@@ -36,9 +36,9 @@ class Session:
                     f"{__name__}.Session[{self.session_id}].Conversation[{conversation.conversation_id}]"
                 )
                 conversation_logger.info(
-                    "started user=%r location=%r attributes=%s",
+                    "started user=%r area=%r attributes=%s",
                     conversation.user,
-                    conversation.location,
+                    conversation.area,
                     conversation.attributes,
                 )
                 try:
@@ -56,9 +56,9 @@ class Session:
         assert isinstance(event, SessionAttributes), f"expected SessionAttributes, got {type(event).__name__}"
         self.attributes = _merge_attributes(self.attributes or {}, event.attributes)
         self._logger.info(
-            "session attributes user=%r location=%r attributes=%s",
+            "session attributes user=%r area=%r attributes=%s",
             self.attributes.get("user"),
-            self.attributes.get("location"),
+            self.attributes.get("area"),
             self.attributes,
         )
 

@@ -24,7 +24,7 @@ def test_home_assistant_domain_agent_runs_one_agent_loop_task() -> None:
         connection=FakeHomeAssistantConnection(),
         loop_factory=fake_loop.factory,
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"location": "office", "user": "maciek"})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office", "user": "maciek"})
     task = {
         "id": "t1",
         "domain": "home_assistant",
@@ -51,13 +51,13 @@ def test_home_assistant_domain_agent_runs_one_agent_loop_task() -> None:
     assert fake_loop.config.model == "qwen3:4b-instruct"
     assert fake_loop.config.ollama_url == "http://ollama:11434"
     assert isinstance(fake_loop.tools, HomeAssistantDomainToolSet)
-    assert "Current location: office" in fake_loop.system_prompt
+    assert "Current area: office" in fake_loop.system_prompt
     payload = json.loads(fake_loop.messages[0])
     assert payload["task"] == task
     assert "active_context" not in payload
     assert "execution_hints" in payload
     assert fake_loop.tools._tools._current_user_message == "ustaw ją na 22 stopnie"
-    assert fake_loop.tools._tools._current_location == "office"
+    assert fake_loop.tools._tools._current_area == "office"
     assert FakeHomeAssistantConnection.calls == [
         ("find_devices", {"query": "", "device_type": "climate", "area_name": "salon"}),
         ("list_modifiable_properties", {"device": "Living room air conditioner"}),
@@ -83,8 +83,8 @@ class FakeHomeAssistantConnection:
     inventory = object()
     calls = []
 
-    def system_prompt_context(self, *, user: str | None, location: str | None) -> str:
-        return f"Current user: {user or 'unknown'}\nCurrent location: {location or 'unknown'}"
+    def system_prompt_context(self, *, user: str | None, area: str | None) -> str:
+        return f"Current user: {user or 'unknown'}\nCurrent area: {area or 'unknown'}"
 
     async def find_devices(self, query: str = "", device_type: str = "", area_name: str = ""):
         self.calls.append(("find_devices", {"query": query, "device_type": device_type, "area_name": area_name}))
@@ -116,7 +116,7 @@ class FakeHomeAssistantConnection:
         self.calls.append(("modify_device", {"device": device, "property_name": property_name, "value": value}))
         return {"status": "ok"}
 
-    async def modify_devices(self, devices: list[str], property_name: str, value, *, user_message: str = "", current_location: str | None = None):
+    async def modify_devices(self, devices: list[str], property_name: str, value, *, user_message: str = "", current_area: str | None = None):
         self.calls.append(("modify_devices", {"devices": devices, "property_name": property_name, "value": value}))
         return {"status": "ok"}
 

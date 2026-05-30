@@ -30,8 +30,8 @@ def test_session_attributes_parse_arbitrary_non_empty_string_attributes() -> Non
 
 
 def test_new_conversation_parse_arbitrary_non_empty_string_attributes() -> None:
-    assert endpoint_event_from_json('{"type":"new_conversation","attributes":{"location":"office"}}') == (
-        NewConversation(attributes={"location": "office"})
+    assert endpoint_event_from_json('{"type":"new_conversation","attributes":{"area":"office"}}') == (
+        NewConversation(attributes={"area": "office"})
     )
 
 

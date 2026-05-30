@@ -7,13 +7,13 @@ from dataclasses import dataclass
 class MicrophoneContext:
     type: str
     name: str
-    location: str | None = None
+    area: str | None = None
 
     @property
     def instance_id(self) -> str:
-        if self.location is None:
+        if self.area is None:
             return f"{self.type}:{self.name}"
-        return f"{self.type}:{self.name}@{self.location}"
+        return f"{self.type}:{self.name}@{self.area}"
 
 
 @dataclass(frozen=True)

@@ -12,22 +12,22 @@ class HomeAssistantToolSet(AgentCallableSet):
     def __init__(self, connection: HomeAssistantConnection, *, logger_name: str | None = None) -> None:
         self._connection = connection
         self._current_user_message = ""
-        self._current_location: str | None = None
+        self._current_area: str | None = None
         self._logger = logging.getLogger(logger_name or f"{__name__}.{type(self).__name__}")
 
-    def set_request_context(self, *, user_message: str, location: str | None) -> None:
+    def set_request_context(self, *, user_message: str, area: str | None) -> None:
         self._current_user_message = user_message
-        self._current_location = location
+        self._current_area = area
 
     @AgentCallableSet.tool(
         description=(
-            "Inspect only: list controllable Home Assistant devices in an area or room. "
+            "Inspect only: list controllable Home Assistant devices in an area. "
             "This does not modify anything. For an action request, call modify_device after selecting the device."
         )
     )
     async def list_devices(
         self,
-        area_name: Annotated[str, "Area id, room name, or any Home Assistant-provided room alias."],
+        area_name: Annotated[str, "Area id, area name, or any Home Assistant-provided area alias."],
     ) -> list[dict[str, Any]] | dict[str, Any]:
         self._logger.debug("list_devices called area_name=%r", area_name)
         return await self._connection.list_devices(area_name)
@@ -39,7 +39,7 @@ class HomeAssistantToolSet(AgentCallableSet):
         self,
         query: Annotated[str, "Optional search text matched against device, entity, alias, type, and area names."] = "",
         device_type: Annotated[str, "Optional Home Assistant device type/domain such as climate, light, switch, fan, or cover."] = "",
-        area_name: Annotated[str, "Optional area id, room name, or room alias."] = "",
+        area_name: Annotated[str, "Optional area id, area name, or area alias."] = "",
     ) -> list[dict[str, Any]] | dict[str, Any]:
         self._logger.debug("find_devices called query=%r device_type=%r area_name=%r", query, device_type, area_name)
         return await self._connection.find_devices(query=query, device_type=device_type, area_name=area_name)
@@ -80,7 +80,7 @@ class HomeAssistantToolSet(AgentCallableSet):
     @AgentCallableSet.tool(
         description=(
             "Modify the same property on multiple Home Assistant devices. "
-            "Use only when the user explicitly asks for all/every matching devices or all target devices are in the requested room."
+            "Use only when the user explicitly asks for all/every matching devices or all target devices are in the requested area."
         )
     )
     async def modify_devices(
@@ -96,7 +96,7 @@ class HomeAssistantToolSet(AgentCallableSet):
             property_name,
             value,
             user_message=self._current_user_message,
-            current_location=self._current_location,
+            current_area=self._current_area,
         )
         if result.get("status") == "rejected":
             raise ValueError(_batch_rejection_message(result, property_name, value))

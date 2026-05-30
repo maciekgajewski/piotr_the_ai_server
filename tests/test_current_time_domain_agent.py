@@ -28,7 +28,7 @@ def test_current_time_domain_agent_uses_configured_timezone_and_location(tmp_pat
     assert result["status"] == "ok"
     assert result["timezone"] == "Europe/Warsaw"
     assert result["time"] == "14:05"
-    assert result["text"] == "Teraz w Wrocławiu jest 14:05."
+    assert result["text"] == "14:05"
 
 
 def test_current_time_domain_agent_resolves_jacksonville_from_query(tmp_path: Path) -> None:
@@ -51,6 +51,79 @@ def test_current_time_domain_agent_resolves_jacksonville_from_query(tmp_path: Pa
     assert result["status"] == "ok"
     assert result["timezone"] == "America/New_York"
     assert result["text"] == "Teraz w jacksonville jest 08:30."
+
+
+def test_current_time_domain_agent_uses_geo_location_from_command(tmp_path: Path) -> None:
+    agent = CurrentTimeDomainAgent(
+        timezone="Europe/Warsaw",
+        location="Wrocław",
+        cache_dir=tmp_path,
+        now_factory=lambda zone: dt.datetime(2026, 5, 29, 8, 30, tzinfo=zone),
+    )
+    conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office"})
+
+    result = asyncio.run(
+        agent.run_task(
+            conversation,
+            {"id": "t1", "domain": "time", "command": {"query": "która godzina jest teraz w Jacksonville", "geo_location": "Jacksonville"}},
+            {},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["timezone"] == "America/New_York"
+    assert result["location"] == "Jacksonville"
+
+
+def test_current_time_domain_agent_uses_configured_timezone_when_model_copies_area_as_geo_location(tmp_path: Path) -> None:
+    resolver = FailingTimezoneResolver()
+    agent = CurrentTimeDomainAgent(
+        timezone="Europe/Warsaw",
+        location="Wrocław",
+        cache_dir=tmp_path,
+        now_factory=lambda zone: dt.datetime(2026, 5, 30, 10, 4, tzinfo=zone),
+        timezone_resolver=resolver,
+    )
+    conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office"})
+
+    result = asyncio.run(
+        agent.run_task(
+            conversation,
+            {"id": "t1", "domain": "time", "command": {"query": "Która godzina.", "geo_location": "office"}},
+            {},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["timezone"] == "Europe/Warsaw"
+    assert result["location"] == "Wrocław"
+    assert result["time"] == "10:04"
+    assert result["text"] == "10:04"
+    assert not resolver.called
+
+
+def test_current_time_domain_agent_ignores_non_explicit_geo_location(tmp_path: Path) -> None:
+    resolver = FailingTimezoneResolver()
+    agent = CurrentTimeDomainAgent(
+        timezone="Europe/Warsaw",
+        location="Wrocław",
+        cache_dir=tmp_path,
+        now_factory=lambda zone: dt.datetime(2026, 5, 30, 10, 4, tzinfo=zone),
+        timezone_resolver=resolver,
+    )
+    conversation = Conversation(conversation_id="conversation-1", attributes={})
+
+    result = asyncio.run(
+        agent.run_task(
+            conversation,
+            {"id": "t1", "domain": "time", "command": {"query": "Która godzina.", "geo_location": "office"}},
+            {},
+        )
+    )
+
+    assert result["timezone"] == "Europe/Warsaw"
+    assert result["location"] == "Wrocław"
+    assert not resolver.called
 
 
 def test_current_time_domain_agent_handles_date_components(tmp_path: Path) -> None:
@@ -106,3 +179,15 @@ class FakeOnlineTimezoneResolver(TimezoneResolver):
         self.online_lookup_count += 1
         ZoneInfo("America/Chicago")
         return "America/Chicago"
+
+
+class FailingTimezoneResolver:
+    def __init__(self) -> None:
+        self.called = False
+
+    async def resolve(self, location: str) -> str:
+        self.called = True
+        raise AssertionError(f"unexpected timezone lookup for {location}")
+
+    async def close(self) -> None:
+        pass

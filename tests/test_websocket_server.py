@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from aiohttp import WSCloseCode
 from aiohttp import web
+import pytest
 
 from ai_server import batch_ws_client
 from ai_server.agent.echo import EchoAgent
@@ -66,7 +67,7 @@ def test_batch_websocket_client_drives_interrogator_flow(capsys) -> None:
                     BatchWsClientOptions(
                         url=f"ws://127.0.0.1:{port}/chat",
                         user="Maciek",
-                        location="office",
+                        area="office",
                         messages=("cześć", "koniec"),
                     )
                 ),
@@ -109,7 +110,7 @@ def test_batch_websocket_client_does_not_reconnect_after_drop(capsys) -> None:
                     BatchWsClientOptions(
                         url=f"ws://127.0.0.1:{port}/chat",
                         user=None,
-                        location=None,
+                        area=None,
                         messages=("hello",),
                     )
                 ),
@@ -135,6 +136,26 @@ def test_chat_client_help_command_prints_available_commands(capsys) -> None:
     assert "/help  Show this help." in output
     assert "/exit  Exit the chat client." in output
     assert chat_client.CLIENT_TEXT_STYLE in output
+
+
+def test_chat_client_accepts_area_option() -> None:
+    args = chat_client.parse_args(["--area", "office", "ws://127.0.0.1:2137/chat"])
+
+    assert args.area == "office"
+
+
+def test_batch_ws_client_accepts_area_option() -> None:
+    args = batch_ws_client.parse_args(["--area", "office", "--message", "cześć"])
+
+    assert args.area == "office"
+
+
+def test_ws_clients_reject_location_option() -> None:
+    with pytest.raises(SystemExit):
+        chat_client.parse_args(["--location", "office"])
+
+    with pytest.raises(SystemExit):
+        batch_ws_client.parse_args(["--location", "office"])
 
 
 def test_chat_client_main_returns_130_on_interrupt(monkeypatch) -> None:

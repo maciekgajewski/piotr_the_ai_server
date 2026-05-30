@@ -3,6 +3,7 @@ domain: orchestrator
 defaults:
   model: qwen3:4b-instruct
   ollama_url: http://127.0.0.1:11434
+  area: office
 
 scenarios:
   - name: compose-ha-and-wikipedia
@@ -176,7 +177,7 @@ scenarios:
               domain: time
               command:
                 query: która godzina jest teraz w Jacksonville
-                location: Jacksonville
+                geo_location: Jacksonville
               depends_on: []
               status: ready
               clarification_question: null
@@ -204,11 +205,45 @@ scenarios:
             intent: turn_off
       - domain: time
         command:
-          location: Jacksonville
+          geo_location: Jacksonville
     expected_replies:
       - Wyłączyłem klimatyzację w biurze. W Jacksonville jest 08:30.
 
-  - name: ha-office-turn-off-climate-from-current-location
+  - name: short-local-time-reply
+    messages:
+      - Która godzina.
+    model_responses:
+      - plan:
+          kind: single_task
+          tasks:
+            - id: t1
+              domain: time
+              command:
+                query: Która godzina.
+              depends_on: []
+              status: ready
+              clarification_question: null
+          context_updates:
+            salient_entities: []
+            active_domain: null
+          needs_clarification: false
+          clarification_question: null
+      - final_reply: "10:46"
+    domain_results:
+      time:
+        t1:
+          status: ok
+          text: "10:46"
+          timezone: Europe/Warsaw
+          location: Wrocław
+    expected_tasks:
+      - domain: time
+        command:
+          query: Która godzina.
+    expected_replies:
+      - "10:46"
+
+  - name: ha-office-turn-off-climate-from-current-area
     messages:
       - wyłącz klimatyzację
     domain_results:
@@ -267,7 +302,7 @@ scenarios:
             intent: set_hvac_mode
     expected_replies: []
 
-  - name: ha-current-location-set-climate-temperature
+  - name: ha-current-area-set-climate-temperature
     messages:
       - ustaw klimę na 26 stopni
     domain_results:

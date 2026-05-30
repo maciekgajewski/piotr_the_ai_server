@@ -4,7 +4,7 @@ This document describes the state machine shared by websocket and microphone inp
 
 ## Entities
 
-- Session: top-level connection or microphone session. It has optional string attributes such as `user` and `location`.
+- Session: top-level connection or microphone session. It has optional string attributes such as `user` and `area`.
 - Conversation: at most one active per Session. It has a generated `conversation_id`, effective attributes, and per-conversation mutable state.
 - ConversationEndpoint: limited agent API for active conversation message streams. It can receive user message events and send assistant message events. It cannot send lifecycle events.
 
@@ -163,8 +163,8 @@ Each websocket text frame contains exactly one JSON event object. Event type nam
 Client to server:
 
 ```json
-{"type":"session_attributes","attributes":{"user":"Maciek","location":"office"}}
-{"type":"new_conversation","attributes":{"location":"kitchen"}}
+{"type":"session_attributes","attributes":{"user":"Maciek","area":"office"}}
+{"type":"new_conversation","attributes":{"area":"kitchen"}}
 {"type":"message_begin"}
 {"type":"message_fragment","text":"cześć"}
 {"type":"message_end"}
