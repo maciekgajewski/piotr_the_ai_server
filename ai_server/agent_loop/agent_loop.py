@@ -5,10 +5,9 @@ import logging
 import time
 from typing import Any, Callable
 
-from aiohttp import ClientSession, ClientTimeout
-
 from ai_server.agent_loop.config import AgentLoopConfig
 from ai_server.agent_loop.interfaces import HttpSession
+from ai_server.agent_loop.ollama_connection import AgentLoopOllamaConnection
 from ai_server.agent_loop.messages import AgentReply
 from ai_server.agent_loop.agent_callable_set import AgentCallableSet
 
@@ -23,16 +22,19 @@ class AgentLoop:
         system_prompt: str,
         tools: AgentCallableSet,
         session: HttpSession | None = None,
+        ollama_connection: AgentLoopOllamaConnection | None = None,
         context_message_observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
+        if session is not None and ollama_connection is not None:
+            raise ValueError("session and ollama_connection cannot both be provided")
         self._config = config
         self._system_prompt = system_prompt
         self._tools = tools
         self._tool_schemas = tools.get_tool_schemas()
         self._messages: list[dict[str, Any]] = []
-        self._session = session
+        self._ollama_connection = ollama_connection or AgentLoopOllamaConnection(base_url=config.ollama_url, session=session)
+        self._owns_ollama_connection = ollama_connection is None
         self._context_message_observer = context_message_observer
-        self._owns_session = session is None
         self._eval_count = 0
         self._turn_number = 0
         self._instance_id = f"{id(self):x}"
@@ -50,9 +52,9 @@ class AgentLoop:
         await self.close()
 
     async def close(self) -> None:
-        if self._owns_session and self._session is not None:
-            self._logger.debug("closing owned AgentLoop HTTP session")
-            await self._session.close()
+        if self._owns_ollama_connection:
+            self._logger.debug("closing owned AgentLoop Ollama connection")
+            await self._ollama_connection.close()
 
     async def send_user_message(self, message: str) -> AgentReply:
         self._logger.debug(
@@ -175,26 +177,16 @@ class AgentLoop:
 
         self._turn_number += 1
         self._logger.debug("turn=%s request=%s", self._turn_number, payload)
-        response = await self._post_chat(payload)
+        response = await self._ollama_connection.chat(
+            payload,
+            model=self._config.model,
+            fallback_model=self._config.fallback_model,
+            fallback_backoff_seconds=self._config.fallback_backoff_seconds,
+            request_timeout_seconds=self._config.request_timeout_seconds,
+        )
         if response.get("done") is not True:
             raise ValueError("Ollama chat response did not finish")
         return response
-
-    async def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
-        session = self._session
-        if session is None:
-            timeout = ClientTimeout(total=self._config.request_timeout_seconds)
-            session = ClientSession(timeout=timeout)
-            self._session = session
-
-        url = f"{self._config.ollama_url.rstrip('/')}/api/chat"
-        async with session.post(url, json=payload) as response:
-            if response.status >= 400:
-                raise RuntimeError(f"Ollama chat failed with status {response.status}")
-            body = await response.json()
-        if not isinstance(body, dict):
-            raise ValueError("Ollama chat response must be a JSON object")
-        return body
 
     def _record_eval_count(self, response: dict[str, Any], elapsed_ms: int) -> None:
         eval_count = response.get("eval_count", 0)

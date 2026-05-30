@@ -100,8 +100,10 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             type="orchestrator",
             options={
                 "model": "qwen3:4b-instruct",
+                "fallback_model": "qwen3:4b-instruct-fallback",
+                "fallback_backoff_seconds": 120,
                 "domain_agents": {
-                    "home_assistant": {"model": "qwen3:8b"},
+                    "home_assistant": {"model": "qwen3:8b", "fallback_model": "qwen3:4b"},
                     "time": {},
                     "wikipedia": {},
                 },
@@ -129,11 +131,50 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert agent._ollama._base_url == "http://ollama:11434"
             assert agent._server_config == ServerConfig(timezone="Europe/Warsaw", location="Wrocław")
             assert agent._domain_agents["home_assistant"]._model == "qwen3:8b"
+            assert agent._domain_agents["home_assistant"]._fallback_model == "qwen3:4b"
+            assert agent._domain_agents["home_assistant"]._fallback_backoff_seconds == 120
             assert isinstance(agent._domain_agents["time"], CurrentTimeDomainAgent)
             assert agent._domain_agents["time"]._timezone == "Europe/Warsaw"
             assert agent._domain_agents["time"]._location == "Wrocław"
             assert isinstance(agent._domain_agents["wikipedia"], WikipediaDomainAgent)
             assert agent._domain_agents["wikipedia"]._languages == ("pl", "en")
+        finally:
+            await agent.close()
+
+    monkeypatch.setattr(OrchestratorAgent, "preload", fake_preload)
+
+    asyncio.run(create_and_check_agent())
+
+
+def test_create_agent_home_assistant_domain_agent_inherits_orchestrator_models(monkeypatch) -> None:
+    async def fake_preload(self) -> None:
+        pass
+
+    async def create_and_check_agent() -> None:
+        config = AgentConfig(
+            type="orchestrator",
+            options={
+                "model": "gpt-oss:20b-cloud",
+                "fallback_model": "qwen3:4b-instruct",
+                "domain_agents": {
+                    "home_assistant": {},
+                },
+                "home_assistant": {
+                    "url": "http://ha.local:8123",
+                    "token": "secret-token",
+                },
+            },
+        )
+        home_assistant_connection = HomeAssistantConnection(parse_home_assistant_options(config.options))
+        agent = await create_agent(
+            config,
+            "http://ollama:11434",
+            home_assistant_connection=home_assistant_connection,
+        )
+
+        try:
+            assert agent._domain_agents["home_assistant"]._model == "gpt-oss:20b-cloud"
+            assert agent._domain_agents["home_assistant"]._fallback_model == "qwen3:4b-instruct"
         finally:
             await agent.close()
 

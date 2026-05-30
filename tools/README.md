@@ -21,7 +21,7 @@ smoke-tests the local API endpoint used by the AI server.
 tools/ollama-cloud-setup-test.sh
 ```
 
-The default model is `gpt-oss:120b-cloud`. Override it with:
+The default model is `gpt-oss:20b-cloud`. Override it with:
 
 ```bash
 tools/ollama-cloud-setup-test.sh --model MODEL-NAME-CLOUD

@@ -50,6 +50,7 @@ def test_home_assistant_domain_agent_runs_one_agent_loop_task() -> None:
     assert result["entities"] == ["climate.living_room"]
     assert fake_loop.config.model == "qwen3:4b-instruct"
     assert fake_loop.config.ollama_url == "http://ollama:11434"
+    assert fake_loop.config.fallback_model is None
     assert isinstance(fake_loop.tools, HomeAssistantDomainToolSet)
     assert "Current area: office" in fake_loop.system_prompt
     payload = json.loads(fake_loop.messages[0])
@@ -129,10 +130,11 @@ class FakeAgentLoop:
         self.tools = None
         self.messages = []
 
-    def factory(self, *, config, system_prompt, tools):
+    def factory(self, *, config, system_prompt, tools, ollama_connection=None):
         self.config = config
         self.system_prompt = system_prompt
         self.tools = tools
+        self.ollama_connection = ollama_connection
         return self
 
     async def __aenter__(self):

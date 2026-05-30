@@ -7,17 +7,20 @@ server:
 
 agent:
   type: polite_reply
-  model: qwen3:4b
+  model: gpt-oss:20b-cloud
+  fallback_model: qwen3:4b-instruct
 
 # Orchestrator example:
 # agent:
 #   type: orchestrator
-#   model: qwen3:4b-instruct
+#   model: gpt-oss:20b-cloud
+#   fallback_model: qwen3:4b-instruct
 #   domain_agents:
 #     time: {}
 #     wikipedia: {}
 #     home_assistant:
-#       model: qwen3:4b-instruct
+#       model: gpt-oss:20b-cloud
+#       fallback_model: qwen3:4b-instruct
 
 websocket:
   host: 0.0.0.0

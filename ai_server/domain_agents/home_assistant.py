@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Annotated, Any, Callable
 
-from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig
+from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.home_assistant.toolset import HomeAssistantToolSet
@@ -66,10 +66,17 @@ class HomeAssistantDomainAgent:
         model: str,
         ollama_url: str,
         connection: HomeAssistantConnection,
+        fallback_model: str | None = None,
+        fallback_backoff_seconds: float = 300.0,
+        ollama_connection: AgentLoopOllamaConnection | None = None,
         loop_factory: Callable[..., AgentLoop] = AgentLoop,
     ) -> None:
         self._model = model
         self._ollama_url = ollama_url
+        self._fallback_model = fallback_model
+        self._fallback_backoff_seconds = fallback_backoff_seconds
+        self._ollama_connection = ollama_connection or AgentLoopOllamaConnection(base_url=ollama_url)
+        self._owns_ollama_connection = ollama_connection is None
         self._connection = connection
         self._loop_factory = loop_factory
         self._logger = logging.getLogger(f"{__name__}.HomeAssistantDomainAgent[{model}]")
@@ -96,7 +103,12 @@ class HomeAssistantDomainAgent:
                 area=conversation.area,
             )
         )
-        loop_config = AgentLoopConfig(model=self._model, ollama_url=self._ollama_url)
+        loop_config = AgentLoopConfig(
+            model=self._model,
+            ollama_url=self._ollama_url,
+            fallback_model=self._fallback_model,
+            fallback_backoff_seconds=self._fallback_backoff_seconds,
+        )
         payload = {
             "task": task,
             "execution_hints": _execution_hints(task, active_context),
@@ -106,7 +118,12 @@ class HomeAssistantDomainAgent:
             },
         }
         logger.debug("running Home Assistant DSA task=%s active_context=%s", task, active_context)
-        async with self._loop_factory(config=loop_config, system_prompt=system_prompt, tools=toolset) as loop:
+        async with self._loop_factory(
+            config=loop_config,
+            system_prompt=system_prompt,
+            tools=toolset,
+            ollama_connection=self._ollama_connection,
+        ) as loop:
             reply = await loop.send_user_message(json.dumps(payload, ensure_ascii=False))
         logger.debug("Home Assistant DSA raw reply=%r end_conversation=%s", reply.reply_text, reply.end_conversation)
         if reply.end_conversation:
@@ -140,7 +157,8 @@ class HomeAssistantDomainAgent:
         return parsed_reply
 
     async def close(self) -> None:
-        pass
+        if self._owns_ollama_connection:
+            await self._ollama_connection.close()
 
 
 class HomeAssistantDomainToolSet(AgentCallableSet):

@@ -7,6 +7,7 @@ from typing import Annotated, Any
 import pytest
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, MODEL_FAILURE_REPLY
+from ai_server.agent_loop.ollama_connection import AgentLoopOllamaConnection
 
 
 class FakeResponse:
@@ -30,7 +31,7 @@ class FakeSession:
         self.requests: list[dict[str, Any]] = []
         self.closed = False
 
-    def post(self, url: str, json: dict[str, Any]):
+    def post(self, url: str, json: dict[str, Any], timeout=None):
         self.requests.append({"url": url, "json": copy.deepcopy(json)})
         return self.responses.pop(0)
 
@@ -346,3 +347,213 @@ def test_agent_loop_returns_failure_reply_on_unrecoverable_error() -> None:
 
     assert reply.reply_text == MODEL_FAILURE_REPLY
     assert reply.end_conversation is True
+
+
+def test_agent_loop_retries_with_fallback_model_on_main_model_rejection() -> None:
+    session = FakeSession(
+        [
+            FakeResponse({"error": "rejected"}, status=429),
+            FakeResponse(
+                {
+                    "done": True,
+                    "eval_count": 4,
+                    "message": {"role": "assistant", "content": "Fallback działa."},
+                }
+            ),
+        ]
+    )
+    loop = AgentLoop(
+        AgentLoopConfig(
+            model="gpt-oss:20b-cloud",
+            fallback_model="qwen3:4b-instruct",
+        ),
+        "System.",
+        ExampleTools(),
+        session=session,
+    )
+
+    reply = asyncio.run(loop.send_user_message("hej"))
+
+    assert reply.reply_text == "Fallback działa."
+    assert reply.end_conversation is False
+    assert [request["json"]["model"] for request in session.requests] == [
+        "gpt-oss:20b-cloud",
+        "qwen3:4b-instruct",
+    ]
+
+
+def test_agent_loop_shared_backoff_uses_fallback_for_matching_model_pair() -> None:
+    now = 1000.0
+    session = FakeSession(
+        [
+            FakeResponse({"error": "rejected"}, status=403),
+            FakeResponse(
+                {
+                    "done": True,
+                    "eval_count": 1,
+                    "message": {"role": "assistant", "content": "Pierwszy fallback."},
+                }
+            ),
+            FakeResponse(
+                {
+                    "done": True,
+                    "eval_count": 2,
+                    "message": {"role": "assistant", "content": "Drugi fallback."},
+                }
+            ),
+        ]
+    )
+    connection = AgentLoopOllamaConnection(
+        base_url="http://ollama:11434",
+        session=session,
+        now_factory=lambda: now,
+    )
+    config = AgentLoopConfig(
+        model="gpt-oss:20b-cloud",
+        ollama_url="http://ollama:11434",
+        fallback_model="qwen3:4b-instruct",
+        fallback_backoff_seconds=300,
+    )
+
+    first_loop = AgentLoop(config, "System.", ExampleTools(), ollama_connection=connection)
+    second_loop = AgentLoop(config, "System.", ExampleTools(), ollama_connection=connection)
+
+    first_reply = asyncio.run(first_loop.send_user_message("hej"))
+    second_reply = asyncio.run(second_loop.send_user_message("hej znowu"))
+
+    assert first_reply.reply_text == "Pierwszy fallback."
+    assert second_reply.reply_text == "Drugi fallback."
+    assert [request["json"]["model"] for request in session.requests] == [
+        "gpt-oss:20b-cloud",
+        "qwen3:4b-instruct",
+        "qwen3:4b-instruct",
+    ]
+
+
+def test_agent_loop_backoff_is_scoped_to_model_pair() -> None:
+    now = 1000.0
+    session = FakeSession(
+        [
+            FakeResponse({"error": "rejected"}, status=403),
+            FakeResponse(
+                {
+                    "done": True,
+                    "eval_count": 1,
+                    "message": {"role": "assistant", "content": "Fallback."},
+                }
+            ),
+            FakeResponse(
+                {
+                    "done": True,
+                    "eval_count": 2,
+                    "message": {"role": "assistant", "content": "Main."},
+                }
+            ),
+        ]
+    )
+    connection = AgentLoopOllamaConnection(
+        base_url="http://ollama:11434",
+        session=session,
+        now_factory=lambda: now,
+    )
+
+    first_loop = AgentLoop(
+        AgentLoopConfig(
+            model="gpt-oss:20b-cloud",
+            ollama_url="http://ollama:11434",
+            fallback_model="qwen3:4b-instruct",
+        ),
+        "System.",
+        ExampleTools(),
+        ollama_connection=connection,
+    )
+    second_loop = AgentLoop(
+        AgentLoopConfig(
+            model="gpt-oss:120b-cloud",
+            ollama_url="http://ollama:11434",
+            fallback_model="qwen3:4b-instruct",
+        ),
+        "System.",
+        ExampleTools(),
+        ollama_connection=connection,
+    )
+
+    asyncio.run(first_loop.send_user_message("hej"))
+    second_reply = asyncio.run(second_loop.send_user_message("hej znowu"))
+
+    assert second_reply.reply_text == "Main."
+    assert [request["json"]["model"] for request in session.requests] == [
+        "gpt-oss:20b-cloud",
+        "qwen3:4b-instruct",
+        "gpt-oss:120b-cloud",
+    ]
+
+
+def test_agent_loop_retries_main_model_after_backoff_expires() -> None:
+    now = 1000.0
+
+    def current_time() -> float:
+        return now
+
+    session = FakeSession(
+        [
+            FakeResponse({"error": "rejected"}, status=403),
+            FakeResponse(
+                {
+                    "done": True,
+                    "eval_count": 1,
+                    "message": {"role": "assistant", "content": "Fallback."},
+                }
+            ),
+            FakeResponse(
+                {
+                    "done": True,
+                    "eval_count": 2,
+                    "message": {"role": "assistant", "content": "Main wrócił."},
+                }
+            ),
+        ]
+    )
+    connection = AgentLoopOllamaConnection(
+        base_url="http://ollama:11434",
+        session=session,
+        now_factory=current_time,
+    )
+    config = AgentLoopConfig(
+        model="gpt-oss:20b-cloud",
+        ollama_url="http://ollama:11434",
+        fallback_model="qwen3:4b-instruct",
+        fallback_backoff_seconds=10,
+    )
+
+    first_loop = AgentLoop(config, "System.", ExampleTools(), ollama_connection=connection)
+    asyncio.run(first_loop.send_user_message("hej"))
+    now = 1011.0
+    second_loop = AgentLoop(config, "System.", ExampleTools(), ollama_connection=connection)
+    second_reply = asyncio.run(second_loop.send_user_message("hej znowu"))
+
+    assert second_reply.reply_text == "Main wrócił."
+    assert [request["json"]["model"] for request in session.requests] == [
+        "gpt-oss:20b-cloud",
+        "qwen3:4b-instruct",
+        "gpt-oss:20b-cloud",
+    ]
+
+
+def test_agent_loop_without_fallback_keeps_failure_behavior_on_rejection() -> None:
+    session = FakeSession([FakeResponse({"error": "rejected"}, status=429)])
+    loop = AgentLoop(AgentLoopConfig(model="gpt-oss:20b-cloud"), "System.", ExampleTools(), session=session)
+
+    reply = asyncio.run(loop.send_user_message("hej"))
+
+    assert reply.reply_text == MODEL_FAILURE_REPLY
+    assert reply.end_conversation is True
+    assert [request["json"]["model"] for request in session.requests] == ["gpt-oss:20b-cloud"]
+
+
+def test_agent_loop_config_validates_fallback_fields() -> None:
+    with pytest.raises(ValueError, match="fallback_model must be a non-empty string"):
+        AgentLoopConfig(model="main", fallback_model="")
+
+    with pytest.raises(ValueError, match="fallback_backoff_seconds must be positive"):
+        AgentLoopConfig(model="main", fallback_model="fallback", fallback_backoff_seconds=0)

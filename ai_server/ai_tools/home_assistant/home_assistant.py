@@ -25,11 +25,14 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
         connection = connection or HomeAssistantConnection(parse_home_assistant_options(config.options))
         HomeAssistantToolSet.__init__(self, connection, logger_name=f"{self.__module__}.{type(self).__name__}[{self.name}]")
         self._agent_loop_model = _parse_agent_loop_model(config.options)
+        self._agent_loop_fallback_model = _parse_agent_loop_fallback_model(config.options)
+        self._agent_loop_fallback_backoff_seconds = _parse_agent_loop_fallback_backoff_seconds(config.options)
         self._ollama_url = _parse_ollama_url(config.options)
         self._start_task: asyncio.Task[None] | None = None
         self._logger.debug(
-            "configured HomeAssistantTool agent_loop_model=%s ollama_url=%s owns_connection=%s",
+            "configured HomeAssistantTool agent_loop_model=%s fallback_model=%s ollama_url=%s owns_connection=%s",
             self._agent_loop_model,
+            self._agent_loop_fallback_model,
             self._ollama_url,
             self._owns_connection,
         )
@@ -50,6 +53,8 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
         loop_config = AgentLoopConfig(
             model=self._agent_loop_model,
             ollama_url=self._ollama_url,
+            fallback_model=self._agent_loop_fallback_model,
+            fallback_backoff_seconds=self._agent_loop_fallback_backoff_seconds,
         )
 
         async with AgentLoop(config=loop_config, system_prompt=system_prompt, tools=self) as loop:
@@ -114,6 +119,22 @@ def _parse_agent_loop_model(options: dict[str, Any]) -> str:
     if not isinstance(agent_loop_model, str) or not agent_loop_model:
         raise ValueError("agent.model must be a non-empty string for HomeAssistantTool")
     return agent_loop_model
+
+
+def _parse_agent_loop_fallback_model(options: dict[str, Any]) -> str | None:
+    fallback_model = options.get("fallback_model")
+    if fallback_model is None:
+        return None
+    if not isinstance(fallback_model, str) or not fallback_model:
+        raise ValueError("agent.fallback_model must be a non-empty string for HomeAssistantTool when provided")
+    return fallback_model
+
+
+def _parse_agent_loop_fallback_backoff_seconds(options: dict[str, Any]) -> float:
+    fallback_backoff_seconds = options.get("fallback_backoff_seconds", 300.0)
+    if not isinstance(fallback_backoff_seconds, (int, float)) or isinstance(fallback_backoff_seconds, bool) or fallback_backoff_seconds <= 0:
+        raise ValueError("agent.fallback_backoff_seconds must be a positive number for HomeAssistantTool")
+    return float(fallback_backoff_seconds)
 
 
 def _parse_ollama_url(options: dict[str, Any]) -> str:

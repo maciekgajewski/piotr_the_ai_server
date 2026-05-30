@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from aiohttp import ClientTimeout
+
 
 class HttpResponse(Protocol):
     status: int
@@ -17,7 +19,7 @@ class HttpResponse(Protocol):
 
 
 class HttpSession(Protocol):
-    def post(self, url: str, json: dict[str, Any]) -> HttpResponse:
+    def post(self, url: str, json: dict[str, Any], timeout: ClientTimeout | None = None) -> HttpResponse:
         raise NotImplementedError
 
     async def close(self) -> None:

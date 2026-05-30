@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-DEFAULT_MODEL="gpt-oss:120b-cloud"
+DEFAULT_MODEL="gpt-oss:20b-cloud"
 MODEL="$DEFAULT_MODEL"
 SIGNIN=1
 PULL=1
@@ -18,7 +18,7 @@ Sign in the Docker Compose ollama service, pull an Ollama cloud model, and
 smoke-test local cloud offload through http://127.0.0.1:11434/api/chat.
 
 Options:
-  --model MODEL   Cloud model to pull and test. Default: gpt-oss:120b-cloud
+  --model MODEL   Cloud model to pull and test. Default: gpt-oss:20b-cloud
   --no-signin    Skip the interactive `ollama signin` step.
   --no-pull      Skip `ollama pull`.
   --no-start     Do not start the ollama Compose service.

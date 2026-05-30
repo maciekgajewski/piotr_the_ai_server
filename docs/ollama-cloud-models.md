@@ -25,7 +25,7 @@ By default it:
 
 - starts the `ollama` Compose service
 - runs interactive `ollama signin` inside the container
-- pulls `gpt-oss:120b-cloud`
+- pulls `gpt-oss:20b-cloud`
 - sends a short request to `http://127.0.0.1:11434/api/chat`
 
 Use a different cloud model:
@@ -57,7 +57,7 @@ docker compose exec ollama ollama signin
 Pull a cloud model:
 
 ```bash
-docker compose exec ollama ollama pull gpt-oss:120b-cloud
+docker compose exec ollama ollama pull gpt-oss:20b-cloud
 ```
 
 Test the local Ollama API:
@@ -66,7 +66,7 @@ Test the local Ollama API:
 curl http://127.0.0.1:11434/api/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-oss:120b-cloud",
+    "model": "gpt-oss:20b-cloud",
     "messages": [{"role": "user", "content": "Reply with exactly: piotr cloud ok"}],
     "stream": false
   }'
@@ -81,7 +81,8 @@ to offload, for example:
 ```yaml
 agent:
   type: polite_reply
-  model: gpt-oss:120b-cloud
+  model: gpt-oss:20b-cloud
+  fallback_model: qwen3:4b-instruct
 ```
 
 Then run:

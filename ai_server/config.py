@@ -152,6 +152,13 @@ def _parse_agent_config(raw_config: dict[str, Any], home_assistant_config: Any =
         model = options.get("model")
         if not isinstance(model, str) or not model:
             raise ValueError("agent.model must be a non-empty string for orchestrator")
+        _validate_optional_non_empty_string(options, "fallback_model", "agent.fallback_model")
+        if "fallback_backoff_seconds" in options:
+            options["fallback_backoff_seconds"] = _parse_optional_positive_float(
+                options.get("fallback_backoff_seconds"),
+                300.0,
+                "agent.fallback_backoff_seconds",
+            )
         domain_agents = options.get("domain_agents", {})
         if not isinstance(domain_agents, dict):
             raise ValueError("agent.domain_agents must be a mapping for orchestrator")
@@ -160,6 +167,12 @@ def _parse_agent_config(raw_config: dict[str, Any], home_assistant_config: Any =
         type=agent_type,
         options=options,
     )
+
+
+def _validate_optional_non_empty_string(options: dict[str, Any], key: str, field: str) -> None:
+    value = options.get(key)
+    if value is not None and (not isinstance(value, str) or not value):
+        raise ValueError(f"{field} must be a non-empty string when provided")
 
 
 def _parse_websocket_config(raw_config: dict[str, Any]) -> WebsocketConfig:

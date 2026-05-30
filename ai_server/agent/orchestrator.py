@@ -141,8 +141,10 @@ class OrchestratorAgent:
         logger = logging.getLogger(f"{__name__}.OrchestratorAgent[{conversation.conversation_id}]")
         async for message in endpoint.messages():
             started_at = time.perf_counter()
+            logger.info(f"Received message: {message.text}")
             try:
                 reply_text = await self._handle_message(conversation, message.text)
+                logger.info(f"Generating reply: {reply_text}")
             except Exception:
                 elapsed_ms = _elapsed_ms(started_at)
                 logger.exception("orchestration failed request_len=%s duration_ms=%s", len(message.text), elapsed_ms)
@@ -324,7 +326,7 @@ def _parse_plan(content: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raw_plan = _repair_malformed_plan(content)
         if raw_plan is None:
-            raise ValueError("orchestrator plan must be valid JSON") from exc
+            raise ValueError(f"orchestrator plan must be valid JSON. Got: {content}") from exc
     if isinstance(raw_plan, str):
         repaired_plan = _repair_malformed_plan(raw_plan)
         if repaired_plan is not None:

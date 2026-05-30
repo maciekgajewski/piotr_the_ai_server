@@ -4,10 +4,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+DEFAULT_FALLBACK_BACKOFF_SECONDS = 300.0
+
+
 @dataclass(frozen=True)
 class AgentLoopConfig:
     model: str
     ollama_url: str = "http://127.0.0.1:11434"
+    fallback_model: str | None = None
+    fallback_backoff_seconds: float = DEFAULT_FALLBACK_BACKOFF_SECONDS
     options: dict[str, Any] = field(default_factory=dict)
     keep_alive: str | int | None = None
     think: bool | str | None = False
@@ -20,6 +25,10 @@ class AgentLoopConfig:
             raise ValueError("model must be a non-empty string")
         if not self.ollama_url:
             raise ValueError("ollama_url must be a non-empty string")
+        if self.fallback_model is not None and not self.fallback_model:
+            raise ValueError("fallback_model must be a non-empty string when provided")
+        if self.fallback_backoff_seconds <= 0:
+            raise ValueError("fallback_backoff_seconds must be positive")
         if not isinstance(self.options, dict):
             raise ValueError("options must be a dict")
         if self.request_timeout_seconds is not None and self.request_timeout_seconds <= 0:

@@ -30,6 +30,8 @@ def create_domain_agents(
                 raise ValueError("agent.domain_agents.home_assistant requires home_assistant config")
             domain_agents[domain] = HomeAssistantDomainAgent(
                 model=_domain_agent_model(config.options, raw_options, domain),
+                fallback_model=_domain_agent_fallback_model(config.options, raw_options, domain),
+                fallback_backoff_seconds=_domain_agent_fallback_backoff_seconds(config.options, raw_options, domain),
                 ollama_url=ollama_url,
                 connection=home_assistant_connection,
             )
@@ -73,6 +75,22 @@ def _domain_agent_model(agent_options: dict[str, Any], domain_options: dict[str,
     if not isinstance(model, str) or not model:
         raise ValueError(f"agent.domain_agents.{domain}.model must be a non-empty string")
     return model
+
+
+def _domain_agent_fallback_model(agent_options: dict[str, Any], domain_options: dict[str, Any], domain: str) -> str | None:
+    fallback_model = domain_options.get("fallback_model", agent_options.get("fallback_model"))
+    if fallback_model is None:
+        return None
+    if not isinstance(fallback_model, str) or not fallback_model:
+        raise ValueError(f"agent.domain_agents.{domain}.fallback_model must be a non-empty string when provided")
+    return fallback_model
+
+
+def _domain_agent_fallback_backoff_seconds(agent_options: dict[str, Any], domain_options: dict[str, Any], domain: str) -> float:
+    value = domain_options.get("fallback_backoff_seconds", agent_options.get("fallback_backoff_seconds", 300.0))
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"agent.domain_agents.{domain}.fallback_backoff_seconds must be a positive number")
+    return float(value)
 
 
 def _optional_domain_string(domain_options: dict[str, Any], domain: str, key: str, default: str | None) -> str | None:

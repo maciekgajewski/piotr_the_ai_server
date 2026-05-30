@@ -177,6 +177,36 @@ agent:
     )
 
 
+def test_load_config_with_orchestrator_fallback_model(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+websocket:
+  port: 2137
+agent:
+  type: orchestrator
+  model: gpt-oss:20b-cloud
+  fallback_model: qwen3:4b-instruct
+  fallback_backoff_seconds: 120
+  domain_agents:
+    home_assistant:
+      fallback_model: qwen3:8b
+""",
+    )
+
+    assert load_config_from_yaml(config_path).agent == AgentConfig(
+        type="orchestrator",
+        options={
+            "model": "gpt-oss:20b-cloud",
+            "fallback_model": "qwen3:4b-instruct",
+            "fallback_backoff_seconds": 120.0,
+            "domain_agents": {
+                "home_assistant": {"fallback_model": "qwen3:8b"},
+            },
+        },
+    )
+
+
 def test_load_config_with_voice_defaults_and_multiple_microphones(tmp_path: Path) -> None:
     config_path = write_config(
         tmp_path,
@@ -372,6 +402,14 @@ agent:
         (
             "websocket:\n  port: 2137\nagent:\n  type: polite_reply\n  model: 123",
             "agent.model must be a non-empty string for polite_reply",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  model: main\n  fallback_model: ''",
+            "agent.fallback_model must be a non-empty string when provided",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  model: main\n  fallback_backoff_seconds: 0",
+            "agent.fallback_backoff_seconds must be a positive number",
         ),
         ("websocket:\n  port: nope\nagent:\n  type: echo", "websocket.port must be an integer"),
         ("websocket:\n  port: 0\nagent:\n  type: echo", "websocket.port must be between 1 and 65535"),
