@@ -1,11 +1,13 @@
 import asyncio
+import logging
 
 import pytest
 
 from ai_server.config import ConversationConfig, MicrophoneConfig, SttConfig, TtsConfig
 from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, TextMessage, WaitForNewConversation
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
-from ai_server.microphones.manager import MicrophoneManager, init_mics
+from ai_server.microphones.interfaces import MicrophoneUnavailable
+from ai_server.microphones.manager import MicrophoneManager, _MicrophoneAvailabilityLogger, init_mics
 from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, ConversationTimeoutCue, MessageEndCue
 from ai_server.microphones.messages import StartFollowUpListening
 from ai_server.microphones.messages import StartWakeWordListening
@@ -53,6 +55,42 @@ class FakeMicrophone:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class UnavailableMicrophone(FakeMicrophone):
+    def __init__(self) -> None:
+        super().__init__(events=[])
+        self.unavailable_seen = asyncio.Event()
+
+    async def send_output_event(self, event) -> None:
+        self.unavailable_seen.set()
+        raise MicrophoneUnavailable("address=box.local error=offline")
+
+
+class FlakyWakeWordMicrophone(FakeMicrophone):
+    def __init__(self) -> None:
+        super().__init__()
+        self.wake_word_attempts = 0
+
+    async def send_output_event(self, event) -> None:
+        self.sent_audio_events.append(event)
+        if isinstance(event, StartWakeWordListening):
+            self.wake_word_attempts += 1
+            if self.wake_word_attempts <= 2:
+                raise MicrophoneUnavailable(f"offline-{self.wake_word_attempts}")
+
+
+class FlakyPlaybackMicrophone(FakeMicrophone):
+    def __init__(self) -> None:
+        super().__init__()
+        self.playback_attempts = 0
+
+    async def send_output_event(self, event) -> None:
+        self.sent_audio_events.append(event)
+        if isinstance(event, AudioStart) and event.rate is not None:
+            self.playback_attempts += 1
+            if self.playback_attempts <= 2:
+                raise MicrophoneUnavailable(f"playback-offline-{self.playback_attempts}")
 
 
 class FakeSttSession:
@@ -266,6 +304,113 @@ def test_microphone_manager_keeps_session_alive_after_tts_error() -> None:
         assert microphone.closed is False
 
         await manager.close()
+
+    asyncio.run(run())
+
+
+def test_microphone_manager_logs_unavailable_microphone_without_stack_trace(caplog) -> None:
+    async def run() -> None:
+        microphone = UnavailableMicrophone()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=FakeStt(),
+            tts=FakeTts(),
+            agent=FakeAgent(),
+            follow_up_timeout_seconds=0.1,
+        )
+
+        with caplog.at_level("WARNING", logger="ai_server.microphones.manager"):
+            await manager.start()
+            await asyncio.wait_for(microphone.unavailable_seen.wait(), timeout=1)
+            await manager.close()
+
+        records = [
+            record
+            for record in caplog.records
+            if "microphone unavailable; retrying soon" in record.getMessage()
+        ]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+
+    asyncio.run(run())
+
+
+def test_microphone_availability_logger_warns_once_and_logs_recovery(caplog) -> None:
+    logger = logging.getLogger("test.microphone.availability")
+    availability = _MicrophoneAvailabilityLogger(logger)
+
+    with caplog.at_level("DEBUG", logger="test.microphone.availability"):
+        availability.unavailable(MicrophoneUnavailable("offline-one"))
+        availability.unavailable(MicrophoneUnavailable("offline-two"))
+        availability.available()
+        availability.available()
+
+    messages = [(record.levelname, record.getMessage()) for record in caplog.records]
+    assert messages == [
+        ("WARNING", "microphone unavailable; retrying soon error=offline-one"),
+        ("DEBUG", "microphone still unavailable; retrying soon error=offline-two"),
+        ("INFO", "microphone available again"),
+    ]
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+def test_microphone_manager_retries_unavailable_microphone_and_logs_recovery(caplog) -> None:
+    async def run() -> None:
+        microphone = FlakyWakeWordMicrophone()
+        tts = FakeTts()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=FakeStt(),
+            tts=tts,
+            agent=FakeAgent(),
+            follow_up_timeout_seconds=0.1,
+        )
+
+        with caplog.at_level("DEBUG", logger="ai_server.microphones.manager"):
+            await manager.start()
+            await asyncio.wait_for(tts.spoke.wait(), timeout=2)
+            await manager.close()
+
+        availability_records = [
+            (record.levelname, record.getMessage())
+            for record in caplog.records
+            if "microphone " in record.getMessage()
+        ]
+        assert ("WARNING", "microphone unavailable; retrying soon error=offline-1") in availability_records
+        assert ("DEBUG", "microphone still unavailable; retrying soon error=offline-2") in availability_records
+        assert ("INFO", "microphone available again") in availability_records
+        assert microphone.wake_word_attempts == 3
+
+    asyncio.run(run())
+
+
+def test_microphone_manager_retries_prepared_reply_when_playback_is_unavailable(caplog) -> None:
+    async def run() -> None:
+        microphone = FlakyPlaybackMicrophone()
+        tts = FakeTts()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=FakeStt(),
+            tts=tts,
+            agent=FakeAgent(),
+            follow_up_timeout_seconds=0.1,
+        )
+
+        with caplog.at_level("DEBUG", logger="ai_server.microphones.manager"):
+            await manager.start()
+            await asyncio.wait_for(tts.spoke.wait(), timeout=2)
+            await manager.close()
+
+        assert microphone.playback_attempts == 3
+        assert tts.synthesized == ["reply:cześć", "reply:cześć", "reply:cześć"]
+        availability_records = [
+            (record.levelname, record.getMessage())
+            for record in caplog.records
+            if "microphone " in record.getMessage()
+        ]
+        assert ("WARNING", "microphone unavailable; retrying soon error=playback-offline-1") in availability_records
+        assert ("DEBUG", "microphone still unavailable; retrying soon error=playback-offline-2") in availability_records
+        assert ("INFO", "microphone available again") in availability_records
 
     asyncio.run(run())
 

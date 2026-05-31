@@ -271,6 +271,8 @@ agent:
 microphones:
   initial_silence_seconds: 4
   end_silence_seconds: 1.2
+  speech_peak_threshold: 600
+  post_speech_ignore_seconds: 1.5
   follow_up_timeout_seconds: 12.5
   devices:
     - type: box3_esphome
@@ -279,6 +281,8 @@ microphones:
       api_key: abc
       initial_silence_seconds: 5
       end_silence_seconds: 0.8
+      speech_peak_threshold: 900
+      post_speech_ignore_seconds: 2
       follow_up_timeout_seconds: 3
 """,
     )
@@ -288,10 +292,14 @@ microphones:
     assert config.microphone_defaults == MicrophoneDefaultsConfig(
         initial_silence_seconds=4.0,
         end_silence_seconds=1.2,
+        speech_peak_threshold=600,
+        post_speech_ignore_seconds=1.5,
         follow_up_timeout_seconds=12.5,
     )
     assert config.microphones[0].initial_silence_seconds == 5.0
     assert config.microphones[0].end_silence_seconds == 0.8
+    assert config.microphones[0].speech_peak_threshold == 900
+    assert config.microphones[0].post_speech_ignore_seconds == 2.0
     assert config.microphones[0].follow_up_timeout_seconds == 3.0
 
 
@@ -453,6 +461,22 @@ agent:
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  devices:\n    - type: box3_esphome\n      name: box\n      address: host\n      api_key: key\n      end_silence_seconds: nope",
             r"microphones\[0\].end_silence_seconds must be a positive number",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  speech_peak_threshold: 0",
+            r"microphones.speech_peak_threshold must be an integer between 1 and 32767",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  devices:\n    - type: box3_esphome\n      name: box\n      address: host\n      api_key: key\n      speech_peak_threshold: loud",
+            r"microphones\[0\].speech_peak_threshold must be an integer between 1 and 32767",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  post_speech_ignore_seconds: -1",
+            r"microphones.post_speech_ignore_seconds must be a non-negative number",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  devices:\n    - type: box3_esphome\n      name: box\n      address: host\n      api_key: key\n      post_speech_ignore_seconds: nope",
+            r"microphones\[0\].post_speech_ignore_seconds must be a non-negative number",
         ),
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  - name: box",

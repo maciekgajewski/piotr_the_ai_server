@@ -11,7 +11,7 @@ from ai_server.messages import ConversationEnded, MessageBegin, MessageEnd, Mess
 from ai_server.messages import WaitForNewConversation, WaitForNewMessage
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.drivers import create_microphone
-from ai_server.microphones.interfaces import Microphone, SpeechToText, SttSession, TextToSpeech
+from ai_server.microphones.interfaces import Microphone, MicrophoneUnavailable, SpeechToText, SttSession, TextToSpeech
 from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, ConversationTimeoutCue, MessageEndCue
 from ai_server.microphones.messages import StartFollowUpListening, StartWakeWordListening, TextEnd, TextFragment
 from ai_server.microphones.stt import WyomingFasterWhisperSpeechToText
@@ -71,13 +71,27 @@ class MicrophoneManager:
             attributes["area"] = microphone.context.area
         session = Session(session_id=session_id, endpoint=endpoint, attributes=attributes)
         session_task = asyncio.create_task(session.run(self._agent))
+        availability_logger = _MicrophoneAvailabilityLogger(logger)
+        pending_event = None
+        pending_reply: TextMessage | None = None
         try:
             while True:
+                event = None
                 try:
-                    event = await endpoint.receive_from_session()
+                    if pending_reply is not None:
+                        await self._speak_reply(microphone, pending_reply, logger)
+                        availability_logger.available()
+                        pending_reply = None
+                        pending_event = None
+                        continue
+
+                    event = pending_event
+                    if event is None:
+                        event = await endpoint.receive_from_session()
                     if isinstance(event, WaitForNewConversation):
-                        logger.info("opening microphone for wake-word listening")
+                        logger.debug("opening microphone for wake-word listening")
                         await microphone.send_output_event(StartWakeWordListening())
+                        availability_logger.available()
                         captured = await self._capture_utterance(
                             microphone=microphone,
                             endpoint=endpoint,
@@ -88,11 +102,13 @@ class MicrophoneManager:
                         if not captured:
                             logger.info("wake-word stream had no transcript; ending conversation")
                             await endpoint.send_to_session(ConversationEnded())
+                        pending_event = None
                         continue
                     if isinstance(event, WaitForNewMessage):
                         follow_up_timeout = self._follow_up_timeout_for(microphone)
-                        logger.info("opening microphone for follow-up timeout_seconds=%s", follow_up_timeout)
+                        logger.debug("opening microphone for follow-up timeout_seconds=%s", follow_up_timeout)
                         await microphone.send_output_event(StartFollowUpListening())
+                        availability_logger.available()
                         captured = await self._capture_utterance(
                             microphone=microphone,
                             endpoint=endpoint,
@@ -104,15 +120,25 @@ class MicrophoneManager:
                             logger.info("follow-up timed out; ending conversation")
                             await microphone.send_output_event(ConversationTimeoutCue())
                             await endpoint.send_to_session(ConversationEnded())
+                        pending_event = None
                         continue
                     if isinstance(event, MessageBegin):
                         reply = await self._receive_agent_reply(endpoint, first_event=event)
+                        pending_reply = reply
                         await self._speak_reply(microphone, reply, logger)
+                        availability_logger.available()
+                        pending_reply = None
+                        pending_event = None
                         continue
 
                     raise ValueError(f"unsupported session event: {type(event).__name__}")
                 except asyncio.CancelledError:
                     raise
+                except MicrophoneUnavailable as error:
+                    if pending_reply is None:
+                        pending_event = event
+                    availability_logger.unavailable(error)
+                    await asyncio.sleep(0.5)
                 except Exception:
                     logger.exception("microphone conversation handling failed; returning to wake-word wait")
                     await asyncio.sleep(0.5)
@@ -362,3 +388,22 @@ async def init_mics(
 
 def _microphone_logger(microphone: Microphone) -> logging.Logger:
     return logging.getLogger(f"{__name__}.MicrophoneManager[{microphone.context.instance_id}]")
+
+
+class _MicrophoneAvailabilityLogger:
+    def __init__(self, logger: logging.Logger) -> None:
+        self._logger = logger
+        self._unavailable = False
+
+    def unavailable(self, error: BaseException) -> None:
+        if self._unavailable:
+            self._logger.debug("microphone still unavailable; retrying soon error=%s", error)
+            return
+        self._logger.warning("microphone unavailable; retrying soon error=%s", error)
+        self._unavailable = True
+
+    def available(self) -> None:
+        if not self._unavailable:
+            return
+        self._logger.info("microphone available again")
+        self._unavailable = False

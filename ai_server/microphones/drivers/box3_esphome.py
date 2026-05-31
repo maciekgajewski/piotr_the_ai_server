@@ -6,6 +6,7 @@ from contextlib import suppress
 from dataclasses import replace
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import ipaddress
 import logging
 import queue
 import socket
@@ -17,6 +18,7 @@ from ai_server.config import MicrophoneConfig
 from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioEvent, AudioStart, ConversationTimeoutCue
 from ai_server.microphones.messages import MessageEndCue, MicrophoneOutputEvent, StartFollowUpListening
 from ai_server.microphones.messages import StartWakeWordListening
+from ai_server.microphones.interfaces import MicrophoneUnavailable
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 
 try:
@@ -38,6 +40,7 @@ VOICE_ASSISTANT_REARM_DELAY_SECONDS = 0.2
 PLAY_MESSAGE_END_CUE_SERVICE = "play_message_end_cue"
 PLAY_CONVERSATION_TIMEOUT_CUE_SERVICE = "play_conversation_timeout_cue"
 START_FOLLOW_UP_LISTENING_SERVICE = "start_follow_up_listening"
+FOLLOW_UP_WAKE_WORD = "follow_up"
 
 
 class Box3EsphomeMicrophone:
@@ -47,6 +50,8 @@ class Box3EsphomeMicrophone:
         playback_target: PlaybackTarget,
         initial_silence_seconds: float,
         end_silence_seconds: float,
+        speech_peak_threshold: int,
+        post_speech_ignore_seconds: float,
         client_info: str = "ai-server-esphome-satellite",
     ) -> None:
         self.context = context
@@ -54,6 +59,8 @@ class Box3EsphomeMicrophone:
         self._logger = logging.getLogger(f"{__name__}.Box3EsphomeMicrophone[{context.instance_id}]")
         self._initial_silence_seconds = initial_silence_seconds
         self._end_silence_seconds = end_silence_seconds
+        self._speech_peak_threshold = speech_peak_threshold
+        self._post_speech_ignore_seconds = post_speech_ignore_seconds
         self._client_info = client_info
         self._client = None
         self._unsubscribe = None
@@ -61,6 +68,7 @@ class Box3EsphomeMicrophone:
         self._stream_done = asyncio.Event()
         self._events: asyncio.Queue[AudioEvent] = asyncio.Queue()
         self._chunks: list[bytes] = []
+        self._pending_audio_chunks: list[bytes] = []
         self._wake_word: str | None = None
         self._byte_count = 0
         self._audio_chunk_count = 0
@@ -68,6 +76,9 @@ class Box3EsphomeMicrophone:
         self._speech_candidate_started_at: float | None = None
         self._last_speech_at: float | None = None
         self._stream_started_at: float | None = None
+        self._ignore_audio_until: float | None = None
+        self._ignored_audio_chunk_count = 0
+        self._ignored_audio_byte_count = 0
         self._speech_done = asyncio.Event()
         self._audio_ended = False
         self._late_audio_chunk_count = 0
@@ -94,6 +105,8 @@ class Box3EsphomeMicrophone:
             playback_target=playback_target,
             initial_silence_seconds=config.initial_silence_seconds,
             end_silence_seconds=config.end_silence_seconds,
+            speech_peak_threshold=config.speech_peak_threshold,
+            post_speech_ignore_seconds=config.post_speech_ignore_seconds,
         )
 
     async def wait_for_event(self) -> AudioEvent:
@@ -115,20 +128,20 @@ class Box3EsphomeMicrophone:
             await self._finish_playback()
             return
         if isinstance(event, MessageEndCue):
-            self._logger.info("requesting ESPHome satellite message-end cue")
+            self._logger.debug("requesting ESPHome satellite message-end cue")
             await self._execute_api_service(PLAY_MESSAGE_END_CUE_SERVICE)
             return
         if isinstance(event, StartWakeWordListening):
-            self._logger.info("requesting ESPHome satellite wake-word listening")
+            self._logger.debug("requesting ESPHome satellite wake-word listening")
             await self._start_wake_word_listening()
             return
         if isinstance(event, StartFollowUpListening):
-            self._logger.info("requesting ESPHome satellite follow-up listening")
+            self._logger.debug("requesting ESPHome satellite follow-up listening")
             await self._finish_voice_assistant_run()
             await self._execute_api_service(START_FOLLOW_UP_LISTENING_SERVICE)
             return
         if isinstance(event, ConversationTimeoutCue):
-            self._logger.info("requesting ESPHome satellite conversation-timeout cue")
+            self._logger.debug("requesting ESPHome satellite conversation-timeout cue")
             await self._execute_api_service(PLAY_CONVERSATION_TIMEOUT_CUE_SERVICE)
             return
         raise ValueError(f"unsupported microphone output event: {type(event).__name__}")
@@ -156,14 +169,21 @@ class Box3EsphomeMicrophone:
             noise_psk=self.playback_target.api_key,
             expected_name=self.playback_target.expected_name,
         )
-        self._logger.info("connecting to ESPHome satellite address=%s", self.playback_target.address)
-        await self._client.connect(login=True)
+        self._logger.debug("connecting to ESPHome satellite address=%s", self.playback_target.address)
+        try:
+            await self._client.connect(login=True)
+        except _expected_unavailable_errors() as error:
+            if self._playback_stream is not None:
+                self._playback_stream.close()
+                self._playback_stream = None
+            await self._mark_disconnected()
+            raise MicrophoneUnavailable(f"address={self.playback_target.address} error={error}") from error
         connected_address = self._client.connected_address
-        if isinstance(connected_address, str) and connected_address:
+        if isinstance(connected_address, str) and _is_ipv4_address(connected_address):
             self.playback_target = replace(self.playback_target, address=connected_address)
-        elif isinstance(connected_address, tuple) and connected_address:
+        elif isinstance(connected_address, tuple) and connected_address and _is_ipv4_address(str(connected_address[0])):
             self.playback_target = replace(self.playback_target, address=str(connected_address[0]))
-        self._logger.info("connected to ESPHome satellite address=%s", self.playback_target.address)
+        self._logger.debug("connected to ESPHome satellite address=%s", self.playback_target.address)
         self._subscribe_voice_assistant()
 
     def _subscribe_voice_assistant(self) -> None:
@@ -174,7 +194,7 @@ class Box3EsphomeMicrophone:
             handle_audio=self._handle_audio,
             handle_stop=self._handle_stop,
         )
-        self._logger.info("subscribed to ESPHome satellite voice assistant")
+        self._logger.debug("subscribed to ESPHome satellite voice assistant")
 
     def _unsubscribe_voice_assistant(self) -> None:
         if self._unsubscribe is None:
@@ -187,26 +207,33 @@ class Box3EsphomeMicrophone:
         if event.rate is None or event.width is None or event.channels is None:
             raise ValueError("playback AudioStart requires rate, width, and channels")
 
-        await self._finish_playback()
-        await self._ensure_connected()
-        connect_host = await _resolve_connect_host(self.playback_target.address)
-        local_ip = _local_ip_for(connect_host)
-        playback_stream = Box3PlaybackStream(
-            local_ip=local_ip,
-            rate=event.rate,
-            width=event.width,
-            channels=event.channels,
-            logger=self._logger,
-        )
-        playback_stream.start()
-        self._playback_stream = playback_stream
-        url = f"http://{local_ip}:{playback_stream.port}{STREAM_PATH}"
-        key = await _media_player_key(self._client)
-        if event.volume is not None:
-            self._client.media_player_command(key, volume=event.volume)
-            await asyncio.sleep(0.1)
-        self._client.media_player_command(key, media_url=url, announcement=True)
-        self._logger.info("playback stream started url=%s", url)
+        try:
+            await self._finish_playback()
+            await self._ensure_connected()
+            connect_host = await _resolve_connect_host(self.playback_target.address)
+            local_ip = _local_ip_for(connect_host)
+            playback_stream = Box3PlaybackStream(
+                local_ip=local_ip,
+                rate=event.rate,
+                width=event.width,
+                channels=event.channels,
+                logger=self._logger,
+            )
+            playback_stream.start()
+            self._playback_stream = playback_stream
+            url = f"http://{_host_for_url(local_ip)}:{playback_stream.port}{STREAM_PATH}"
+            key = await _media_player_key(self._client)
+            if event.volume is not None:
+                self._client.media_player_command(key, volume=event.volume)
+                await asyncio.sleep(0.1)
+            self._client.media_player_command(key, media_url=url, announcement=True)
+            self._logger.debug("playback stream started url=%s", url)
+        except _expected_unavailable_errors() as error:
+            if self._playback_stream is not None:
+                self._playback_stream.close()
+                self._playback_stream = None
+            await self._mark_disconnected()
+            raise MicrophoneUnavailable(f"address={self.playback_target.address} error={error}") from error
 
     async def _finish_playback(self) -> None:
         if self._playback_stream is None:
@@ -263,13 +290,19 @@ class Box3EsphomeMicrophone:
         wake_word_phrase: str | None,
     ) -> int:
         self._chunks.clear()
+        self._pending_audio_chunks.clear()
         self._wake_word = wake_word_phrase
         self._byte_count = 0
         self._audio_chunk_count = 0
         self._speech_started = False
         self._speech_candidate_started_at = None
         self._last_speech_at = None
-        self._stream_started_at = time.monotonic()
+        now = time.monotonic()
+        ignore_seconds = self._post_speech_ignore_seconds if wake_word_phrase == FOLLOW_UP_WAKE_WORD else 0.0
+        self._stream_started_at = now + ignore_seconds
+        self._ignore_audio_until = now + ignore_seconds if ignore_seconds > 0 else None
+        self._ignored_audio_chunk_count = 0
+        self._ignored_audio_byte_count = 0
         self._speech_done.clear()
         self._audio_ended = False
         self._late_audio_chunk_count = 0
@@ -279,11 +312,13 @@ class Box3EsphomeMicrophone:
         self._stream_started.set()
         self._events.put_nowait(AudioStart(wake_word=wake_word_phrase))
         self._logger.info(
-            "voice assistant stream started conversation_id=%s wake_word=%r flags=%s audio_settings=%s",
+            "voice assistant stream started conversation_id=%s wake_word=%r flags=%s audio_settings=%s "
+            "post_speech_ignore_seconds=%.2f",
             _conversation_id,
             wake_word_phrase,
             _flags,
             _audio_settings,
+            ignore_seconds,
         )
         return 0
 
@@ -294,18 +329,68 @@ class Box3EsphomeMicrophone:
             if self._audio_ended:
                 self._drop_late_audio_chunk()
                 continue
+            if self._is_audio_ignored(chunk):
+                continue
             self._chunks.append(chunk)
-            self._events.put_nowait(AudioChunk(data=chunk))
             self._byte_count += len(chunk)
             self._audio_chunk_count += 1
-            self._observe_audio_level(chunk)
+            if self._speech_started:
+                self._events.put_nowait(AudioChunk(data=chunk))
+                self._observe_audio_level(chunk)
+                continue
 
-        if self._audio_chunk_count == 1 or self._audio_chunk_count % 50 == 0:
+            self._pending_audio_chunks.append(chunk)
+            self._observe_audio_level(chunk)
+            if self._speech_started:
+                self._flush_pending_audio_chunks()
+                continue
+            if self._audio_ended:
+                self._pending_audio_chunks.clear()
+
+        if self._audio_chunk_count > 0 and (self._audio_chunk_count == 1 or self._audio_chunk_count % 50 == 0):
             self._logger.debug(
                 "received audio chunks=%s bytes=%s",
                 self._audio_chunk_count,
                 self._byte_count,
             )
+
+    def _flush_pending_audio_chunks(self) -> None:
+        if not self._pending_audio_chunks:
+            return
+        for chunk in self._pending_audio_chunks:
+            self._events.put_nowait(AudioChunk(data=chunk))
+        self._logger.debug(
+            "flushed speech pre-roll chunks=%s bytes=%s",
+            len(self._pending_audio_chunks),
+            sum(len(chunk) for chunk in self._pending_audio_chunks),
+        )
+        self._pending_audio_chunks.clear()
+
+    def _is_audio_ignored(self, chunk: bytes) -> bool:
+        if self._ignore_audio_until is None:
+            return False
+        now = time.monotonic()
+        if now >= self._ignore_audio_until:
+            if self._ignored_audio_chunk_count > 0:
+                self._logger.debug(
+                    "finished post-speech audio ignore window ignored_chunks=%s ignored_bytes=%s",
+                    self._ignored_audio_chunk_count,
+                    self._ignored_audio_byte_count,
+                )
+            self._ignore_audio_until = None
+            return False
+
+        self._ignored_audio_chunk_count += 1
+        self._ignored_audio_byte_count += len(chunk)
+        if self._ignored_audio_chunk_count == 1 or self._ignored_audio_chunk_count % 50 == 0:
+            remaining_seconds = self._ignore_audio_until - now
+            self._logger.debug(
+                "ignored post-speech audio chunks=%s bytes=%s remaining_seconds=%.2f",
+                self._ignored_audio_chunk_count,
+                self._ignored_audio_byte_count,
+                remaining_seconds,
+            )
+        return True
 
     async def _handle_stop(self, _aborted: bool) -> None:
         self._logger.info(
@@ -334,12 +419,16 @@ class Box3EsphomeMicrophone:
 
     async def _execute_api_service(self, service_name: str) -> None:
         await self._ensure_connected()
-        _, services = await self._client.list_entities_services()
-        for service in services:
-            if service.name == service_name:
-                await self._client.execute_service(service, {})
-                self._logger.debug("executed ESPHome satellite API service=%s", service_name)
-                return
+        try:
+            _, services = await self._client.list_entities_services()
+            for service in services:
+                if service.name == service_name:
+                    await self._client.execute_service(service, {})
+                    self._logger.debug("executed ESPHome satellite API service=%s", service_name)
+                    return
+        except _expected_unavailable_errors() as error:
+            await self._mark_disconnected()
+            raise MicrophoneUnavailable(f"address={self.playback_target.address} error={error}") from error
 
         raise RuntimeError(f"ESPHome satellite API service not found: {service_name}")
 
@@ -348,12 +437,16 @@ class Box3EsphomeMicrophone:
         if self._client is not None:
             self._unsubscribe_voice_assistant()
             self._subscribe_voice_assistant()
-            self._logger.info("ESPHome satellite wake-word listening armed")
+            self._logger.debug("ESPHome satellite wake-word listening armed")
 
     async def _finish_voice_assistant_run(self) -> None:
         await self._ensure_connected()
         if self._voice_assistant_run_active:
-            self._send_run_end_once()
+            try:
+                self._send_run_end_once()
+            except _expected_unavailable_errors() as error:
+                await self._mark_disconnected()
+                raise MicrophoneUnavailable(f"address={self.playback_target.address} error={error}") from error
             self._voice_assistant_run_active = False
             await asyncio.sleep(VOICE_ASSISTANT_REARM_DELAY_SECONDS)
 
@@ -364,10 +457,22 @@ class Box3EsphomeMicrophone:
         self._run_end_sent = True
         self._logger.debug("sent VOICE_ASSISTANT_RUN_END")
 
+    async def _mark_disconnected(self) -> None:
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        client = self._client
+        self._client = None
+        if client is not None:
+            with suppress(Exception):
+                await client.disconnect()
+
     def _finish_audio_stream(self) -> None:
         if self._audio_ended:
             return
         self._audio_ended = True
+        if not self._speech_started:
+            self._pending_audio_chunks.clear()
         if not self._stream_done.is_set():
             self._send_voice_assistant_event("VOICE_ASSISTANT_STT_VAD_END")
             self._logger.debug("sent VOICE_ASSISTANT_STT_VAD_END")
@@ -400,7 +505,7 @@ class Box3EsphomeMicrophone:
     def _observe_audio_level(self, data: bytes) -> None:
         peak = _pcm16_peak(data)
         now = time.monotonic()
-        if peak >= SPEECH_PEAK_THRESHOLD:
+        if peak >= self._speech_peak_threshold:
             if not self._speech_started:
                 if self._speech_candidate_started_at is None:
                     self._speech_candidate_started_at = now
@@ -452,6 +557,14 @@ def _pcm16_peak(data: bytes) -> int:
         return 0
 
     return max(abs(sample) for sample in samples)
+
+
+def _expected_unavailable_errors() -> tuple[type[BaseException], ...]:
+    errors: tuple[type[BaseException], ...] = (OSError, TimeoutError)
+    api_connection_error = getattr(aioesphomeapi, "APIConnectionError", None)
+    if api_connection_error is not None:
+        errors = (api_connection_error, *errors)
+    return errors
 
 
 class Box3PlaybackStream:
@@ -612,18 +725,35 @@ async def _resolve_connect_host(host: str, port: int = API_PORT) -> str:
     _require_aioesphomeapi()
 
     results = await aioesphomeapi.host_resolver.async_resolve_host([host], port, timeout=10.0)
+    first_host = host
     for result in results:
         sockaddr = result.sockaddr
         if isinstance(sockaddr, tuple) and len(sockaddr) >= 2:
-            return str(sockaddr[0])
+            result_host = str(sockaddr[0])
+            if _is_ipv4_address(result_host):
+                return result_host
+            first_host = result_host
 
-    return host
+    return first_host
 
 
 def _local_ip_for(host: str, port: int = API_PORT) -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.connect((host, port))
         return sock.getsockname()[0]
+
+
+def _is_ipv4_address(value: str) -> bool:
+    try:
+        return isinstance(ipaddress.ip_address(value), ipaddress.IPv4Address)
+    except ValueError:
+        return False
+
+
+def _host_for_url(host: str) -> str:
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
 
 
 async def _media_player_key(client) -> int:

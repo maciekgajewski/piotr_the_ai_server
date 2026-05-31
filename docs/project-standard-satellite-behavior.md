@@ -32,6 +32,25 @@ ESPHome satellites must expose these API services when the hardware can play loc
 
 The AI server uses these service names to keep follow-up conversations and end-of-message feedback consistent across satellite models.
 
+## Silence Calibration
+
+The AI server owns utterance end detection for ESPHome satellites. Keep default timing consistent unless a room needs tuning:
+
+- `initial_silence_seconds`: default `3.0`
+- `end_silence_seconds`: default `0.9`
+- `speech_peak_threshold`: default `500`
+- `post_speech_ignore_seconds`: default `1.0`
+
+Set `speech_peak_threshold` per microphone when a device has a different noise floor. Calibrate with:
+
+```bash
+tools/mic-silence-calibrate.sh --config /home/maciek/ai_server_config.yaml --microphone voice-pe-bedroom
+```
+
+Apply the recommended threshold only to the noisy microphone, not globally, unless all satellites are measured together.
+
+Use `post_speech_ignore_seconds` when follow-up listening hears the satellite's own reply or room echo. The ignored window applies to follow-up streams and discards early audio instead of sending it to STT.
+
 ## Button Behavior
 
 A physical push-to-talk or touch-to-talk control should start a normal voice assistant run using synthetic wake word `button`, unless the satellite is muted, already running, or handling a timer/alarm state.

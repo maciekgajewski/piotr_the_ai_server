@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import socket
 import struct
 import sys
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from ai_server.config import MicrophoneConfig
 import ai_server.microphones.drivers.box3_esphome as box3_esphome
 from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.drivers.box3_esphome import Box3EsphomeMicrophone
+from ai_server.microphones.interfaces import MicrophoneUnavailable
 from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, MessageEndCue, StartFollowUpListening
 from ai_server.microphones.messages import StartWakeWordListening
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
@@ -22,6 +24,8 @@ def test_box3_microphone_from_config() -> None:
             type="box3_esphome",
             name="box3-office",
             area="office",
+            speech_peak_threshold=900,
+            post_speech_ignore_seconds=1.5,
             options={
                 "address": "box.local",
                 "api_key": "secret",
@@ -42,6 +46,8 @@ def test_box3_microphone_from_config() -> None:
         api_key="secret",
         expected_name="box3-office",
     )
+    assert microphone._speech_peak_threshold == 900
+    assert microphone._post_speech_ignore_seconds == 1.5
 
 
 def test_create_microphone_returns_box3_esphome_microphone() -> None:
@@ -78,6 +84,7 @@ def test_box3_microphone_emits_audio_events_without_automatic_run_end(monkeypatc
 
         monkeypatch.setattr(microphone, "_ensure_connected", fake_ensure_connected)
         monkeypatch.setattr(microphone, "_send_voice_assistant_event", fake_send_voice_assistant_event)
+        monkeypatch.setattr(box3_esphome, "SPEECH_START_SECONDS", 0)
         start_task = asyncio.create_task(microphone.wait_for_event())
         await asyncio.sleep(0)
         await microphone._handle_start("conversation", 0, object(), "Ryszardzie")
@@ -177,6 +184,51 @@ def test_box3_microphone_drops_audio_chunks_after_audio_end(monkeypatch) -> None
     asyncio.run(run())
 
 
+def test_box3_microphone_ignores_initial_follow_up_audio(monkeypatch) -> None:
+    async def run() -> None:
+        now = 100.0
+
+        def fake_monotonic() -> float:
+            return now
+
+        microphone = Box3EsphomeMicrophone.from_config(
+            MicrophoneConfig(
+                type="box3_esphome",
+                name="voice-pe-bedroom",
+                area="bedroom",
+                post_speech_ignore_seconds=1.0,
+                options={"address": "box.local", "api_key": "secret"},
+            )
+        )
+
+        async def fake_ensure_connected() -> None:
+            pass
+
+        monkeypatch.setattr(microphone, "_ensure_connected", fake_ensure_connected)
+        monkeypatch.setattr(box3_esphome.time, "monotonic", fake_monotonic)
+
+        await microphone._handle_start("conversation", 0, object(), "follow_up")
+        assert microphone._stream_started_at == 101.0
+
+        now = 100.5
+        await microphone._handle_audio(_pcm16_chunk(4000))
+
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioStart(wake_word="follow_up")
+        assert microphone._events.empty()
+        assert microphone._audio_chunk_count == 0
+        assert microphone._ignored_audio_chunk_count == 1
+
+        now = 101.1
+        accepted_chunk = _pcm16_chunk(0)
+        await microphone._handle_audio(accepted_chunk)
+
+        assert microphone._events.empty()
+        assert microphone._audio_chunk_count == 1
+        assert microphone._pending_audio_chunks == [accepted_chunk]
+
+    asyncio.run(run())
+
+
 def test_box3_microphone_detects_initial_silence_timeout(monkeypatch) -> None:
     async def run() -> None:
         microphone = Box3EsphomeMicrophone.from_config(
@@ -207,8 +259,9 @@ def test_box3_microphone_detects_initial_silence_timeout(monkeypatch) -> None:
         silence_chunk = _pcm16_chunk(0)
         await microphone._handle_audio(silence_chunk)
 
-        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=silence_chunk)
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioEnd()
+        assert microphone._events.empty()
+        assert microphone._pending_audio_chunks == []
         assert events == ["VOICE_ASSISTANT_STT_VAD_END"]
 
     asyncio.run(run())
@@ -265,6 +318,7 @@ def test_box3_microphone_ignores_short_startup_audio_blip(monkeypatch) -> None:
                 area=None,
                 initial_silence_seconds=0.05,
                 end_silence_seconds=0.01,
+                post_speech_ignore_seconds=0,
                 options={"address": "box.local", "api_key": "secret"},
             )
         )
@@ -290,10 +344,9 @@ def test_box3_microphone_ignores_short_startup_audio_blip(monkeypatch) -> None:
         await asyncio.sleep(0.04)
         await microphone._handle_audio(silence)
 
-        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=blip)
-        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=silence)
-        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioChunk(data=silence)
         assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioEnd()
+        assert microphone._events.empty()
+        assert microphone._pending_audio_chunks == []
         assert events == ["VOICE_ASSISTANT_STT_VAD_END"]
 
     asyncio.run(run())
@@ -333,6 +386,128 @@ def test_box3_microphone_updates_playback_target_to_connected_ip(monkeypatch) ->
         await microphone._ensure_connected()
 
         assert microphone.playback_target.address == "192.168.0.180"
+
+    asyncio.run(run())
+
+
+def test_box3_microphone_preserves_hostname_when_connected_address_is_ipv6(monkeypatch) -> None:
+    class FakeClient:
+        connected_address = "2a02:a317:e4df:b400:22f8:3bff:fe0a:cf27"
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def connect(self, login: bool) -> None:
+            assert login is True
+
+        def subscribe_voice_assistant(self, **kwargs):
+            return lambda: None
+
+    fake_module = SimpleNamespace(APIClient=FakeClient)
+    monkeypatch.setitem(sys.modules, "aioesphomeapi", fake_module)
+    monkeypatch.setattr(box3_esphome, "aioesphomeapi", fake_module)
+
+    async def run() -> None:
+        microphone = Box3EsphomeMicrophone.from_config(
+            MicrophoneConfig(
+                type="box3_esphome",
+                name="voice-pe-bedroom",
+                area="bedroom",
+                options={"address": "piotr-voice-pe-bedroom-01.local", "api_key": "secret"},
+            )
+        )
+
+        await microphone._ensure_connected()
+
+        assert microphone.playback_target.address == "piotr-voice-pe-bedroom-01.local"
+
+    asyncio.run(run())
+
+
+def test_box3_microphone_reports_connection_failure_as_unavailable(monkeypatch) -> None:
+    class APIConnectionError(Exception):
+        pass
+
+    class FakeClient:
+        disconnect_called = False
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def connect(self, login: bool) -> None:
+            assert login is True
+            raise APIConnectionError("offline")
+
+        async def disconnect(self) -> None:
+            FakeClient.disconnect_called = True
+
+    fake_module = SimpleNamespace(APIClient=FakeClient, APIConnectionError=APIConnectionError)
+    monkeypatch.setitem(sys.modules, "aioesphomeapi", fake_module)
+    monkeypatch.setattr(box3_esphome, "aioesphomeapi", fake_module)
+
+    async def run() -> None:
+        microphone = Box3EsphomeMicrophone.from_config(
+            MicrophoneConfig(
+                type="box3_esphome",
+                name="box3-office",
+                area=None,
+                options={"address": "box.local", "api_key": "secret"},
+            )
+        )
+
+        with pytest.raises(MicrophoneUnavailable, match="address=box.local"):
+            await microphone._ensure_connected()
+
+        assert microphone._client is None
+        assert FakeClient.disconnect_called is True
+
+    asyncio.run(run())
+
+
+def test_box3_microphone_reports_playback_routing_failure_as_unavailable(monkeypatch) -> None:
+    class FakeClient:
+        connected_address = "2a02:a317:e4df:b400:22f8:3bff:fe0a:cf27"
+        disconnect_called = False
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def connect(self, login: bool) -> None:
+            assert login is True
+
+        async def disconnect(self) -> None:
+            FakeClient.disconnect_called = True
+
+        def subscribe_voice_assistant(self, **kwargs):
+            return lambda: None
+
+    async def fake_resolve_connect_host(host: str, port: int = box3_esphome.API_PORT) -> str:
+        return "2a02:a317:e4df:b400:22f8:3bff:fe0a:cf27"
+
+    def fake_local_ip_for(host: str, port: int = box3_esphome.API_PORT) -> str:
+        raise socket.gaierror(-9, "Address family for hostname not supported")
+
+    fake_module = SimpleNamespace(APIClient=FakeClient)
+    monkeypatch.setitem(sys.modules, "aioesphomeapi", fake_module)
+    monkeypatch.setattr(box3_esphome, "aioesphomeapi", fake_module)
+    monkeypatch.setattr(box3_esphome, "_resolve_connect_host", fake_resolve_connect_host)
+    monkeypatch.setattr(box3_esphome, "_local_ip_for", fake_local_ip_for)
+
+    async def run() -> None:
+        microphone = Box3EsphomeMicrophone.from_config(
+            MicrophoneConfig(
+                type="box3_esphome",
+                name="voice-pe-bedroom",
+                area="bedroom",
+                options={"address": "piotr-voice-pe-bedroom-01.local", "api_key": "secret"},
+            )
+        )
+
+        with pytest.raises(MicrophoneUnavailable, match="Address family for hostname not supported"):
+            await microphone.send_output_event(AudioStart(rate=22050, width=2, channels=1, volume=0.7))
+
+        assert microphone._client is None
+        assert FakeClient.disconnect_called is True
 
     asyncio.run(run())
 

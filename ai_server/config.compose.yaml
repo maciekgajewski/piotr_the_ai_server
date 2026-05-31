@@ -29,6 +29,8 @@ tts:
 microphones:
   initial_silence_seconds: 3
   end_silence_seconds: 0.9
+  speech_peak_threshold: 500
+  post_speech_ignore_seconds: 1
   follow_up_timeout_seconds: 15
   devices:
     # - type: box3_esphome

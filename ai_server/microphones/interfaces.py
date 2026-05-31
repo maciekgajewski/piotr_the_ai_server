@@ -7,6 +7,10 @@ from ai_server.microphones.messages import AudioChunk, AudioEvent, MicrophoneOut
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 
 
+class MicrophoneUnavailable(Exception):
+    """Raised when a microphone is temporarily unreachable."""
+
+
 class Microphone(Protocol):
     context: MicrophoneContext
     playback_target: PlaybackTarget

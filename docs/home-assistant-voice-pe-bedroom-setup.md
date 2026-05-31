@@ -47,9 +47,16 @@ Add this microphone device to the active AI server config:
     api_key: 7hzfuZW1JytUqcwP9Nrn53FfOW5zWmJj10p5CXU8ZDY=
     expected_name: piotr-voice-pe-bedroom-01
     area: bedroom
+    speech_peak_threshold: 2950
 ```
 
 The driver type is currently named `box3_esphome`, but it speaks the generic ESPHome voice assistant API used by both the Box 3 and Voice PE satellites.
+
+The bedroom Voice PE has a higher room-noise floor than the Box 3. Recalibrate if it is moved:
+
+```bash
+tools/mic-silence-calibrate.sh --config /home/maciek/ai_server_config.yaml --microphone voice-pe-bedroom
+```
 
 ## First-Run Checks
 

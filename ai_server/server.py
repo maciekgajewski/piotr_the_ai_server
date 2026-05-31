@@ -23,6 +23,9 @@ THIRD_PARTY_LOGGERS = (
     "urllib3",
     "zeroconf",
 )
+QUIET_THIRD_PARTY_LOGGERS = (
+    "aioesphomeapi.connection",
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -51,6 +54,8 @@ def configure_logging(log_level: str) -> None:
     logging.getLogger().setLevel(level)
     for logger_name in THIRD_PARTY_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.INFO)
+    for logger_name in QUIET_THIRD_PARTY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.ERROR)
 
 
 async def run_server(config: Config, ollama_url: str) -> None:

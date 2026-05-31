@@ -20,9 +20,12 @@ DEFAULT_TTS_VOLUME = 1.0
 DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS = 15.0
 DEFAULT_INITIAL_SILENCE_SECONDS = 3.0
 DEFAULT_END_SILENCE_SECONDS = 0.9
+DEFAULT_SPEECH_PEAK_THRESHOLD = 500
+DEFAULT_POST_SPEECH_IGNORE_SECONDS = 1.0
 DEFAULT_CACHE_DIR = "~/.ai-server/cache/"
 LOG_LEVELS = frozenset(("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"))
 STT_DEVICES = frozenset(("auto", "cuda", "cpu"))
+PCM16_MAX_POSITIVE = 32767
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,8 @@ class ConversationConfig:
 class MicrophoneDefaultsConfig:
     initial_silence_seconds: float = DEFAULT_INITIAL_SILENCE_SECONDS
     end_silence_seconds: float = DEFAULT_END_SILENCE_SECONDS
+    speech_peak_threshold: int = DEFAULT_SPEECH_PEAK_THRESHOLD
+    post_speech_ignore_seconds: float = DEFAULT_POST_SPEECH_IGNORE_SECONDS
     follow_up_timeout_seconds: float = DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS
 
 
@@ -79,6 +84,8 @@ class MicrophoneConfig:
     options: dict[str, Any]
     initial_silence_seconds: float = DEFAULT_INITIAL_SILENCE_SECONDS
     end_silence_seconds: float = DEFAULT_END_SILENCE_SECONDS
+    speech_peak_threshold: int = DEFAULT_SPEECH_PEAK_THRESHOLD
+    post_speech_ignore_seconds: float = DEFAULT_POST_SPEECH_IGNORE_SECONDS
     follow_up_timeout_seconds: float = DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS
 
 
@@ -334,6 +341,16 @@ def _parse_microphones_config(
             defaults.end_silence_seconds,
             f"microphones[{index}].end_silence_seconds",
         )
+        speech_peak_threshold = _parse_optional_pcm16_threshold(
+            raw_microphone.get("speech_peak_threshold"),
+            defaults.speech_peak_threshold,
+            f"microphones[{index}].speech_peak_threshold",
+        )
+        post_speech_ignore_seconds = _parse_optional_non_negative_float(
+            raw_microphone.get("post_speech_ignore_seconds"),
+            defaults.post_speech_ignore_seconds,
+            f"microphones[{index}].post_speech_ignore_seconds",
+        )
         follow_up_timeout_seconds = _parse_optional_positive_float(
             raw_microphone.get("follow_up_timeout_seconds"),
             defaults.follow_up_timeout_seconds,
@@ -350,6 +367,8 @@ def _parse_microphones_config(
                 "area",
                 "initial_silence_seconds",
                 "end_silence_seconds",
+                "speech_peak_threshold",
+                "post_speech_ignore_seconds",
                 "follow_up_timeout_seconds",
             )
         }
@@ -369,6 +388,8 @@ def _parse_microphones_config(
                 area=area,
                 initial_silence_seconds=initial_silence_seconds,
                 end_silence_seconds=end_silence_seconds,
+                speech_peak_threshold=speech_peak_threshold,
+                post_speech_ignore_seconds=post_speech_ignore_seconds,
                 follow_up_timeout_seconds=follow_up_timeout_seconds,
                 options=options,
             )
@@ -392,6 +413,16 @@ def _parse_microphone_defaults(
             DEFAULT_END_SILENCE_SECONDS,
             "microphones.end_silence_seconds",
         ),
+        speech_peak_threshold=_parse_optional_pcm16_threshold(
+            raw_config.get("speech_peak_threshold"),
+            DEFAULT_SPEECH_PEAK_THRESHOLD,
+            "microphones.speech_peak_threshold",
+        ),
+        post_speech_ignore_seconds=_parse_optional_non_negative_float(
+            raw_config.get("post_speech_ignore_seconds"),
+            DEFAULT_POST_SPEECH_IGNORE_SECONDS,
+            "microphones.post_speech_ignore_seconds",
+        ),
         follow_up_timeout_seconds=_parse_optional_positive_float(
             raw_config.get("follow_up_timeout_seconds"),
             legacy_follow_up_timeout_seconds,
@@ -406,6 +437,22 @@ def _parse_optional_positive_float(value: Any, default: float, field: str) -> fl
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
         raise ValueError(f"{field} must be a positive number")
     return float(value)
+
+
+def _parse_optional_non_negative_float(value: Any, default: float, field: str) -> float:
+    if value is None:
+        return default
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{field} must be a non-negative number")
+    return float(value)
+
+
+def _parse_optional_pcm16_threshold(value: Any, default: int, field: str) -> int:
+    if value is None:
+        return default
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= PCM16_MAX_POSITIVE:
+        raise ValueError(f"{field} must be an integer between 1 and {PCM16_MAX_POSITIVE}")
+    return value
 
 
 def _parse_log_level(raw_config: dict[str, Any]) -> str:
