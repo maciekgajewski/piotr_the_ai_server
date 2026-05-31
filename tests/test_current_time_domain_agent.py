@@ -28,7 +28,7 @@ def test_current_time_domain_agent_uses_configured_timezone_and_location(tmp_pat
     assert result["status"] == "ok"
     assert result["timezone"] == "Europe/Warsaw"
     assert result["time"] == "14:05"
-    assert result["text"] == "14:05"
+    assert result["text"] == "czternasta zero pięć"
 
 
 def test_current_time_domain_agent_resolves_jacksonville_from_query(tmp_path: Path) -> None:
@@ -50,7 +50,7 @@ def test_current_time_domain_agent_resolves_jacksonville_from_query(tmp_path: Pa
 
     assert result["status"] == "ok"
     assert result["timezone"] == "America/New_York"
-    assert result["text"] == "Teraz w jacksonville jest 08:30."
+    assert result["text"] == "Teraz w jacksonville jest ósma trzydzieści."
 
 
 def test_current_time_domain_agent_uses_geo_location_from_command(tmp_path: Path) -> None:
@@ -98,8 +98,29 @@ def test_current_time_domain_agent_uses_configured_timezone_when_model_copies_ar
     assert result["timezone"] == "Europe/Warsaw"
     assert result["location"] == "Wrocław"
     assert result["time"] == "10:04"
-    assert result["text"] == "10:04"
+    assert result["text"] == "dziesiąta zero cztery"
     assert not resolver.called
+
+
+def test_current_time_domain_agent_formats_full_hour_as_words(tmp_path: Path) -> None:
+    agent = CurrentTimeDomainAgent(
+        timezone="Europe/Warsaw",
+        location="Wrocław",
+        cache_dir=tmp_path,
+        now_factory=lambda zone: dt.datetime(2026, 5, 30, 8, 0, tzinfo=zone),
+    )
+    conversation = Conversation(conversation_id="conversation-1", attributes={})
+
+    result = asyncio.run(
+        agent.run_task(
+            conversation,
+            {"id": "t1", "domain": "time", "command": {"query": "Która godzina?"}},
+            {},
+        )
+    )
+
+    assert result["time"] == "08:00"
+    assert result["text"] == "ósma zero zero"
 
 
 def test_current_time_domain_agent_trusts_command_geo_location_when_query_is_shortened(tmp_path: Path) -> None:

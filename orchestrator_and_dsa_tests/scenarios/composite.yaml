@@ -37,7 +37,7 @@ cases:
           query:
             $any: ["Która godzina?", "Która godzina", "która godzina?"]
     expected_replies:
-      - contains_all: ["10:46"]
+      - contains_all: [dziesiąta, czterdzieści, sześć]
 
   - id: wikipedia_only
     messages:

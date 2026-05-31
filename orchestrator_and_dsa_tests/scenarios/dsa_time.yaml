@@ -14,7 +14,7 @@ cases:
       location: Wrocław
       time: "10:46"
     expected_replies:
-      - exact: "10:46"
+      - exact: dziesiąta czterdzieści sześć
 
   - id: jacksonville_time
     task:
@@ -29,7 +29,7 @@ cases:
       location: Jacksonville
       time: "04:46"
     expected_replies:
-      - contains_all: [Jacksonville, "04:46"]
+      - contains_all: [Jacksonville, czwarta, czterdzieści, sześć]
 
   - id: day_of_week
     task:

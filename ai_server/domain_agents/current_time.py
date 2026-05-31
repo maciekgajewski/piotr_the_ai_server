@@ -45,6 +45,60 @@ MONTHS = (
     "listopada",
     "grudnia",
 )
+NUMBERS_MINUTES = {
+    0: "zero",
+    1: "jeden",
+    2: "dwa",
+    3: "trzy",
+    4: "cztery",
+    5: "pięć",
+    6: "sześć",
+    7: "siedem",
+    8: "osiem",
+    9: "dziewięć",
+    10: "dziesięć",
+    11: "jedenaście",
+    12: "dwanaście",
+    13: "trzynaście",
+    14: "czternaście",
+    15: "piętnaście",
+    16: "szesnaście",
+    17: "siedemnaście",
+    18: "osiemnaście",
+    19: "dziewiętnaście",
+}
+TENS_MINUTES = {
+    20: "dwadzieścia",
+    30: "trzydzieści",
+    40: "czterdzieści",
+    50: "pięćdziesiąt",
+}
+NUMBERS_HOURS = {
+    0: "zerowa",
+    1: "pierwsza",
+    2: "druga",
+    3: "trzecia",
+    4: "czwarta",
+    5: "piąta",
+    6: "szósta",
+    7: "siódma",
+    8: "ósma",
+    9: "dziewiąta",
+    10: "dziesiąta",
+    11: "jedenasta",
+    12: "dwunasta",
+    13: "trzynasta",
+    14: "czternasta",
+    15: "piętnasta",
+    16: "szesnasta",
+    17: "siedemnasta",
+    18: "osiemnasta",
+    19: "dziewiętnasta",
+    20: "dwudziesta",
+    21: "dwudziesta pierwsza",
+    22: "dwudziesta druga",
+    23: "dwudziesta trzecia",
+}
 
 
 class CurrentTimeDomainAgent:
@@ -272,7 +326,7 @@ def _response_kind(command: dict[str, Any], query: str) -> str:
 
 def _format_reply(now: dt.datetime, response_kind: str, *, location: str, concise: bool = False) -> str:
     if concise and response_kind == "current_time":
-        return now.strftime("%H:%M")
+        return _format_time_text(now)
     location_text = f" w {_display_location(location)}" if location else ""
     if response_kind == "day_of_week":
         return f"Dzisiaj{location_text} jest {WEEKDAYS[now.weekday()]}."
@@ -282,7 +336,23 @@ def _format_reply(now: dt.datetime, response_kind: str, *, location: str, concis
         return f"Jest {MONTHS[now.month - 1]}."
     if response_kind == "current_date":
         return f"Dzisiaj{location_text} jest {now.day} {MONTHS[now.month - 1]} {now.year}."
-    return f"Teraz{location_text} jest {now:%H:%M}."
+    return f"Teraz{location_text} jest {_format_time_text(now)}."
+
+
+def _format_time_text(now: dt.datetime) -> str:
+    return f"{NUMBERS_HOURS[now.hour]} {_format_minute_text(now.minute)}"
+
+
+def _format_minute_text(minute: int) -> str:
+    if minute < 10:
+        return f"{NUMBERS_MINUTES[0]} {NUMBERS_MINUTES[minute]}"
+    if minute < 20:
+        return NUMBERS_MINUTES[minute]
+    tens = minute - minute % 10
+    rest = minute % 10
+    if rest == 0:
+        return TENS_MINUTES[tens]
+    return f"{TENS_MINUTES[tens]} {NUMBERS_MINUTES[rest]}"
 
 
 def _unknown_timezone_result(location: str) -> dict[str, Any]:

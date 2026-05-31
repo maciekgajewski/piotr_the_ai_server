@@ -34,7 +34,7 @@ cases:
       time:
         t2:
           status: ok
-          text: W Jacksonville jest 04:46.
+          text: W Jacksonville jest czwarta czterdzieści sześć.
           timezone: America/New_York
     expected_tasks:
       - domain: home_assistant
