@@ -4,7 +4,7 @@ import logging
 import pytest
 
 from ai_server.config import ConversationConfig, MicrophoneConfig, SttConfig, TtsConfig
-from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, TextMessage, WaitForNewConversation
+from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, RequestFollowUp, TextMessage, WaitForNewConversation
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.interfaces import MicrophoneUnavailable
 from ai_server.microphones.manager import MicrophoneManager, _MicrophoneAvailabilityLogger, init_mics
@@ -26,6 +26,14 @@ class FakeAgent:
 
     async def close(self) -> None:
         pass
+
+
+class FakeFollowUpAgent(FakeAgent):
+    async def run_conversation(self, conversation, endpoint) -> None:
+        async for message in endpoint.messages():
+            self.messages.append(message.text)
+            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
+            await endpoint.send(RequestFollowUp())
 
 
 class FakeMicrophone:
@@ -230,7 +238,7 @@ def test_microphone_manager_sends_transcript_to_agent_and_speaks_reply() -> None
             AudioStart(rate=22050, width=2, channels=1, volume=1.0),
             AudioChunk(data=b"reply-audio"),
             AudioEnd(),
-            StartFollowUpListening(),
+            StartWakeWordListening(),
         ]
 
     asyncio.run(run())
@@ -254,7 +262,7 @@ def test_microphone_manager_treats_empty_follow_up_as_timeout() -> None:
             ]
         )
         tts = FakeTts()
-        agent = FakeAgent()
+        agent = FakeFollowUpAgent()
         manager = MicrophoneManager(
             microphones=[microphone],
             stt=stt,
@@ -379,7 +387,7 @@ def test_microphone_manager_retries_unavailable_microphone_and_logs_recovery(cap
         assert ("WARNING", "microphone unavailable; retrying soon error=offline-1") in availability_records
         assert ("DEBUG", "microphone still unavailable; retrying soon error=offline-2") in availability_records
         assert ("INFO", "microphone available again") in availability_records
-        assert microphone.wake_word_attempts == 3
+        assert microphone.wake_word_attempts == 4
 
     asyncio.run(run())
 

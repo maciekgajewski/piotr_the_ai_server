@@ -177,7 +177,7 @@ class CurrentTimeDomainAgent:
             timezone_source,
             response_kind,
         )
-        return {
+        result = {
             "status": "ok",
             "text": text,
             "needs_clarification": False,
@@ -198,6 +198,9 @@ class CurrentTimeDomainAgent:
                 "minute": now.minute,
             },
         }
+        if response_kind == "current_time":
+            result["final_reply_mode"] = "verbatim"
+        return result
 
     async def close(self) -> None:
         await self._timezone_resolver.close()

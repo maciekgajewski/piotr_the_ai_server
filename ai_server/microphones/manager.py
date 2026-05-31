@@ -7,8 +7,8 @@ from contextlib import suppress
 
 from ai_server.agent import Agent
 from ai_server.config import ConversationConfig, MicrophoneConfig, SttConfig, TtsConfig
-from ai_server.messages import ConversationEnded, MessageBegin, MessageEnd, MessageFragment, NewConversation, TextMessage
-from ai_server.messages import WaitForNewConversation, WaitForNewMessage
+from ai_server.messages import ConversationEnded, MessageBegin, MessageEnd, MessageFragment, NewConversation, RequestFollowUp
+from ai_server.messages import TextMessage, WaitForNewConversation, WaitForNewMessage
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.interfaces import Microphone, MicrophoneUnavailable, SpeechToText, SttSession, TextToSpeech
@@ -104,7 +104,7 @@ class MicrophoneManager:
                             await endpoint.send_to_session(ConversationEnded())
                         pending_event = None
                         continue
-                    if isinstance(event, WaitForNewMessage):
+                    if isinstance(event, (RequestFollowUp, WaitForNewMessage)):
                         follow_up_timeout = self._follow_up_timeout_for(microphone)
                         logger.debug("opening microphone for follow-up timeout_seconds=%s", follow_up_timeout)
                         await microphone.send_output_event(StartFollowUpListening())

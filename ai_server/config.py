@@ -9,6 +9,7 @@ import yaml
 
 DEFAULT_WEBSOCKET_HOST = "0.0.0.0"
 DEFAULT_WEBSOCKET_PATH = "/chat"
+DEFAULT_WEBSOCKET_FOLLOW_UP_TIMEOUT_SECONDS = 60.0
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_STT_MODEL = "medium"
 DEFAULT_STT_LANGUAGE = "pl"
@@ -33,6 +34,7 @@ class WebsocketConfig:
     port: int
     host: str = DEFAULT_WEBSOCKET_HOST
     path: str = DEFAULT_WEBSOCKET_PATH
+    follow_up_timeout_seconds: float = DEFAULT_WEBSOCKET_FOLLOW_UP_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -204,7 +206,18 @@ def _parse_websocket_config(raw_config: dict[str, Any]) -> WebsocketConfig:
     if not isinstance(path, str) or not path.startswith("/"):
         raise ValueError("websocket.path must be a string starting with '/'")
 
-    return WebsocketConfig(port=port, host=host, path=path)
+    follow_up_timeout_seconds = _parse_optional_positive_float(
+        raw_config.get("follow_up_timeout_seconds"),
+        DEFAULT_WEBSOCKET_FOLLOW_UP_TIMEOUT_SECONDS,
+        "websocket.follow_up_timeout_seconds",
+    )
+
+    return WebsocketConfig(
+        port=port,
+        host=host,
+        path=path,
+        follow_up_timeout_seconds=follow_up_timeout_seconds,
+    )
 
 
 def _parse_server_config(raw_config: Any) -> ServerConfig:

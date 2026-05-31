@@ -1,6 +1,6 @@
 import pytest
 
-from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, SessionAttributes
+from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, RequestFollowUp, SessionAttributes
 from ai_server.messages import TextMessage, WaitForNewConversation, endpoint_event_from_json, endpoint_event_to_json
 from ai_server.messages import session_event_from_json, session_event_to_json, text_message_to_events
 
@@ -20,6 +20,15 @@ def test_session_event_json_roundtrip() -> None:
     payload = session_event_to_json(event)
 
     assert payload == '{"type": "wait_for_new_conversation"}'
+    assert session_event_from_json(payload) == event
+
+
+def test_request_follow_up_session_event_json_roundtrip() -> None:
+    event = RequestFollowUp(timeout_seconds=60.0)
+
+    payload = session_event_to_json(event)
+
+    assert payload == '{"type": "request_follow_up", "timeout_seconds": 60.0}'
     assert session_event_from_json(payload) == event
 
 

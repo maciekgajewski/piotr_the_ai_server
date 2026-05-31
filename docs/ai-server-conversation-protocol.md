@@ -6,7 +6,7 @@ This document describes the state machine shared by websocket and microphone inp
 
 - Session: top-level connection or microphone session. It has optional string attributes such as `user` and `area`.
 - Conversation: at most one active per Session. It has a generated `conversation_id`, effective attributes, and per-conversation mutable state.
-- ConversationEndpoint: limited agent API for active conversation message streams. It can receive user message events and send assistant message events. It cannot send lifecycle events.
+- ConversationEndpoint: limited agent API for active conversation message streams. It can receive user message events, send assistant message events, and explicitly request follow-up input.
 
 Attributes are string key/value pairs. Empty keys and empty values are invalid. Conversation attributes override Session attributes only when provided.
 
@@ -67,11 +67,12 @@ The agent coroutine processes the active Conversation. It may send zero or more 
 - zero or more `MessageFragment`
 - `MessageEnd`
 
-The agent gives the floor to the user by awaiting the next input event or by iterating to the next message through `ConversationEndpoint.messages()`.
+By default, the conversation ends when the agent tries to read after the completed user message. Most services are single-request-reply.
+The agent gives the floor back to the user only by sending `RequestFollowUp` and then awaiting the next input event or iterating to the next message through `ConversationEndpoint.messages()`.
 
 Allowed transitions:
 
-- agent awaits next input -> WaitingForNewMessage
+- agent sends `RequestFollowUp` -> WaitingForNewMessage
 - agent coroutine returns -> WaitingForNewConversation
 - endpoint sends `ConversationEnded` -> WaitingForNewConversation
 - endpoint closed -> Closed
@@ -80,7 +81,7 @@ Session asserts that no assistant message is left open when the agent coroutine 
 
 ### WaitingForNewMessage
 
-Session sends `WaitForNewMessage`.
+Session sends `RequestFollowUp`.
 
 Allowed client events:
 
@@ -91,6 +92,9 @@ Allowed client events:
 For microphone input, timeout while waiting for a follow-up sends `ConversationEnded`. The default lives under
 `microphones.follow_up_timeout_seconds`, with per-device `follow_up_timeout_seconds` overrides. The legacy
 `conversation.follow_up_timeout_seconds` value is still accepted as a fallback for old configs.
+
+For websocket input, timeout while waiting for a follow-up sends `ConversationEnded`. The default lives under
+`websocket.follow_up_timeout_seconds` and defaults to 60 seconds.
 
 ## Microphone Event Mapping
 
@@ -103,7 +107,7 @@ Microphone drivers expose raw audio input events to the server:
 The server sends microphone output/control events:
 
 - `StartWakeWordListening`: silent transition into wake-word mode. Sent only when Session has emitted `WaitForNewConversation`.
-- `StartFollowUpListening`: audible cue followed by transition into follow-up listening mode. Sent only when Session has emitted `WaitForNewMessage`.
+- `StartFollowUpListening`: audible cue followed by transition into follow-up listening mode. Sent only when Session has emitted `RequestFollowUp`.
 - `MessageEndCue`: audible cue after a complete user audio stream has been captured.
 - `ConversationTimeoutCue`: audible cue when follow-up input times out.
 - `AudioStart`, `AudioChunk`, `AudioEnd`: assistant audio playback.
@@ -117,7 +121,7 @@ Mapping:
 | microphone `AudioChunk` stream | STT input; transcript fragments become `MessageFragment` |
 | microphone `AudioEnd` and transcript end | `MessageEnd`, then `MessageEndCue` |
 | assistant `MessageBegin` / `MessageFragment` / `MessageEnd` | playback `AudioStart` / `AudioChunk` / `AudioEnd` |
-| `WaitForNewMessage` | `StartFollowUpListening`, including the follow-up cue |
+| `RequestFollowUp` | `StartFollowUpListening`, including the follow-up cue |
 | follow-up microphone `AudioStart` / `AudioChunk` / `AudioEnd` | `MessageBegin` / `MessageFragment` / `MessageEnd`, then `MessageEndCue` |
 | follow-up timeout | `ConversationTimeoutCue`, then `ConversationEnded` |
 
@@ -145,6 +149,14 @@ async for message in endpoint.messages():
     await endpoint.send_message(TextMessage(text=f"reply: {message.text}"))
 ```
 
+Agents that need another user message must explicitly request it:
+
+```python
+async for message in endpoint.messages():
+    await endpoint.send_message(TextMessage(text=f"reply: {message.text}"))
+    await endpoint.send(RequestFollowUp())
+```
+
 Streaming agents can use low-level message events:
 
 ```python
@@ -154,7 +166,15 @@ await endpoint.send(MessageFragment(text="partial"))
 await endpoint.send(MessageEnd())
 ```
 
-`ConversationEndpoint.receive()` raises `ConversationEnded` when the input side ends the conversation. `ConversationEndpoint.messages()` stops normally in the same case.
+`ConversationEndpoint.receive()` raises `ConversationEnded` when the input side ends the conversation, or when the agent tries to read another message without first sending `RequestFollowUp`. `ConversationEndpoint.messages()` stops normally in the same case.
+
+## Domain Agent Result Presentation
+
+Domain agents return task result dictionaries to the orchestrator. A successful result can include
+`final_reply_mode: "verbatim"` when its `text` is already the exact user-facing reply for a single-task
+conversation. The orchestrator returns that text directly only when it is the sole successful task result.
+For multi-task conversations, the final response writer still composes a combined reply and is instructed to
+preserve verbatim result text.
 
 ## Websocket JSON Appendix
 
@@ -175,13 +195,13 @@ Server to client:
 
 ```json
 {"type":"wait_for_new_conversation"}
-{"type":"wait_for_new_message"}
+{"type":"request_follow_up","timeout_seconds":60.0}
 {"type":"message_begin"}
 {"type":"message_fragment","text":"odpowiedź"}
 {"type":"message_end"}
 ```
 
-The websocket chat client sends `SessionAttributes` immediately after connecting. When it receives `WaitForNewConversation`, the next user text is sent as `NewConversation` plus a message stream. When it receives `WaitForNewMessage`, the next user text is sent as only a message stream.
+The websocket chat client sends `SessionAttributes` immediately after connecting. When it receives `WaitForNewConversation`, the next user text is sent as `NewConversation` plus a message stream. When it receives `RequestFollowUp`, the next user text is sent as only a message stream. If no follow-up text arrives before `websocket.follow_up_timeout_seconds`, the server ends the conversation and sends `WaitForNewConversation`.
 
 Interactive prompts are:
 
@@ -190,4 +210,4 @@ Interactive prompts are:
 - `waiting for server> `
 - `disconnected; reconnecting> `
 
-Batch mode uses `tools/batch-ws-client.sh` with repeated `--message` arguments. After all batch messages are sent, the client exits when the next wait-state event arrives, either `WaitForNewMessage` or `WaitForNewConversation`.
+Batch mode uses `tools/batch-ws-client.sh` with repeated `--message` arguments. After all batch messages are sent, the client exits when the next wait-state event arrives, either `RequestFollowUp`, legacy `WaitForNewMessage`, or `WaitForNewConversation`.

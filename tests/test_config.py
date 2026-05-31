@@ -8,6 +8,7 @@ from ai_server.config import (
     MicrophoneDefaultsConfig,
     ServerConfig,
     DEFAULT_LOG_LEVEL,
+    DEFAULT_WEBSOCKET_FOLLOW_UP_TIMEOUT_SECONDS,
     DEFAULT_WEBSOCKET_HOST,
     DEFAULT_WEBSOCKET_PATH,
     Config,
@@ -43,6 +44,7 @@ agent:
             host=DEFAULT_WEBSOCKET_HOST,
             port=2137,
             path=DEFAULT_WEBSOCKET_PATH,
+            follow_up_timeout_seconds=DEFAULT_WEBSOCKET_FOLLOW_UP_TIMEOUT_SECONDS,
         )
     )
 
@@ -55,6 +57,7 @@ websocket:
   host: 127.0.0.1
   port: 2137
   path: /chat
+  follow_up_timeout_seconds: 45
 agent:
   type: echo
   temperature: 0
@@ -64,7 +67,7 @@ agent:
     assert load_config_from_yaml(config_path) == Config(
         agent=AgentConfig(type="echo", options={"temperature": 0}),
         log_level=DEFAULT_LOG_LEVEL,
-        websocket=WebsocketConfig(host="127.0.0.1", port=2137, path="/chat")
+        websocket=WebsocketConfig(host="127.0.0.1", port=2137, path="/chat", follow_up_timeout_seconds=45.0)
     )
 
 
@@ -438,6 +441,10 @@ agent:
         (
             "websocket:\n  port: 2137\n  path: chat\nagent:\n  type: echo",
             "websocket.path must be a string starting with '/'",
+        ),
+        (
+            "websocket:\n  port: 2137\n  follow_up_timeout_seconds: 0\nagent:\n  type: echo",
+            "websocket.follow_up_timeout_seconds must be a positive number",
         ),
         ("log_level: noisy\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "log_level must be one of"),
         ("log_level: 1\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "log_level must be a string"),

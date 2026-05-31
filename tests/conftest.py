@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 
 from ai_server.interfaces import ConversationEndpoint
 from ai_server.messages import ConversationInputEvent, ConversationOutputEvent, MessageBegin, MessageEnd, MessageFragment
-from ai_server.messages import TextMessage, text_message_to_events
+from ai_server.messages import RequestFollowUp, TextMessage, text_message_to_events
 
 
 class FakeConversationEndpoint(ConversationEndpoint):
@@ -13,6 +13,8 @@ class FakeConversationEndpoint(ConversationEndpoint):
         for message in incoming or []:
             self._incoming.extend(text_message_to_events(message))
         self.sent: list[ConversationOutputEvent] = []
+        self.control_events: list[ConversationOutputEvent] = []
+        self._unconsumed_follow_up_requests = 0
 
     async def receive(self) -> ConversationInputEvent:
         if not self._incoming:
@@ -20,10 +22,19 @@ class FakeConversationEndpoint(ConversationEndpoint):
         return self._incoming.pop(0)
 
     async def send(self, event: ConversationOutputEvent) -> None:
+        if isinstance(event, RequestFollowUp):
+            self.control_events.append(event)
+            self._unconsumed_follow_up_requests += 1
+            return
         self.sent.append(event)
 
     async def messages(self) -> AsyncIterator[TextMessage]:
+        message_count = 0
         while self._incoming:
+            if message_count > 0:
+                if self._unconsumed_follow_up_requests <= 0:
+                    return
+                self._unconsumed_follow_up_requests -= 1
             text_parts: list[str] = []
             while True:
                 event = await self.receive()
@@ -34,6 +45,7 @@ class FakeConversationEndpoint(ConversationEndpoint):
                     text_parts.append(event.text)
                     continue
                 if isinstance(event, MessageEnd):
+                    message_count += 1
                     yield TextMessage(text="".join(text_parts))
                     break
                 raise AssertionError(f"unsupported test event: {type(event).__name__}")

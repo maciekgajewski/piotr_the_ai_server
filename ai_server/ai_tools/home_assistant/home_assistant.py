@@ -9,7 +9,7 @@ from ai_server.config import AgentConfig
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 from ai_server.home_assistant.toolset import HomeAssistantToolSet
 from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import TextMessage
+from ai_server.messages import RequestFollowUp, TextMessage
 
 
 class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
@@ -72,6 +72,7 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
                 self._logger.debug("ending Home Assistant conversation after initial reply conversation_id=%s", conversation.conversation_id)
                 return
 
+            await endpoint.send(RequestFollowUp())
             async for follow_up in endpoint.messages():
                 self._logger.debug(
                     "received Home Assistant follow-up conversation_id=%s message=%r",
@@ -91,6 +92,7 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
                 if reply.end_conversation:
                     self._logger.debug("ending Home Assistant conversation after follow-up conversation_id=%s", conversation.conversation_id)
                     return
+                await endpoint.send(RequestFollowUp())
         self._logger.debug("Home Assistant conversation input stream ended conversation_id=%s", conversation.conversation_id)
 
     async def close(self) -> None:

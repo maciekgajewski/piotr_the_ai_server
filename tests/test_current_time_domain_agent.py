@@ -29,6 +29,7 @@ def test_current_time_domain_agent_uses_configured_timezone_and_location(tmp_pat
     assert result["timezone"] == "Europe/Warsaw"
     assert result["time"] == "14:05"
     assert result["text"] == "czternasta zero pięć"
+    assert result["final_reply_mode"] == "verbatim"
 
 
 def test_current_time_domain_agent_resolves_jacksonville_from_query(tmp_path: Path) -> None:
@@ -166,6 +167,7 @@ def test_current_time_domain_agent_handles_date_components(tmp_path: Path) -> No
     )
 
     assert result["text"] == "Dzisiaj w Wrocławiu jest piątek."
+    assert "final_reply_mode" not in result
     assert result["components"]["day_of_week"] == "piątek"
 
 

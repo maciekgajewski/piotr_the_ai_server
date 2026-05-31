@@ -103,7 +103,7 @@ def test_parse_plan_rejects_invalid_response(content: str, error: str) -> None:
         _parse_plan(content)
 
 
-def test_orchestrator_dispatches_tasks_and_uses_followup_context(caplog) -> None:
+def test_orchestrator_does_not_read_followup_without_explicit_request(caplog) -> None:
     plan_one = {
         "kind": "single_task",
         "confidence": 0.9,
@@ -118,26 +118,10 @@ def test_orchestrator_dispatches_tasks_and_uses_followup_context(caplog) -> None
         "needs_clarification": False,
         "clarification_question": None,
     }
-    plan_two = {
-        "kind": "followup",
-        "confidence": 0.9,
-        "tasks": [
-            {
-                "id": "t2",
-                "domain": "home_assistant",
-                "command": _ha_command("set_temperature", "set it to 26 degrees", {"temperature": 26}),
-            }
-        ],
-        "context_updates": {"salient_entities": ["climate.salon"], "active_domain": "home_assistant"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
     ollama = FakeOllamaClient(
         [
             json.dumps(plan_one),
             "Włączyłem klimatyzację w salonie.",
-            json.dumps(plan_two),
-            "Ustawiłem klimatyzację w salonie na 26 stopni.",
         ]
     )
     domain_agent = RecordingDomainAgent()
@@ -156,22 +140,22 @@ def test_orchestrator_dispatches_tasks_and_uses_followup_context(caplog) -> None
 
     assert endpoint.sent == list(
         text_message_to_events(TextMessage(text="Włączyłem klimatyzację w salonie."))
-    ) + list(text_message_to_events(TextMessage(text="Ustawiłem klimatyzację w salonie na 26 stopni.")))
-    assert [task["id"] for task in domain_agent.tasks] == ["t1", "t2"]
-    second_planning_payload = json.loads(ollama.requests[2]["messages"][-1]["content"])
-    assert second_planning_payload["conversation"]["area"] == "office"
-    assert second_planning_payload["conversation"]["server_location"] == "Wrocław"
-    assert second_planning_payload["conversation"]["server_timezone"] == "Europe/Warsaw"
-    assert "location" not in second_planning_payload["conversation"]
-    assert "room" not in second_planning_payload["conversation"]
-    assert second_planning_payload["active_context"]["salient_entities"] == ["climate.salon"]
+    )
+    assert endpoint.control_events == []
+    assert [task["id"] for task in domain_agent.tasks] == ["t1"]
+    planning_payload = json.loads(ollama.requests[0]["messages"][-1]["content"])
+    assert planning_payload["conversation"]["area"] == "office"
+    assert planning_payload["conversation"]["server_location"] == "Wrocław"
+    assert planning_payload["conversation"]["server_timezone"] == "Europe/Warsaw"
+    assert "location" not in planning_payload["conversation"]
+    assert "room" not in planning_payload["conversation"]
     assert conversation.state["orchestrator"]["active_domain"] == "home_assistant"
     assert "received message text='włącz klimę w salonie'" in caplog.text
     assert "planning output model=qwen3:4b-instruct kind=single_task confidence=0.9" in caplog.text
     assert "dispatching task task=" in caplog.text
     assert "task result task_id=t1" in caplog.text
     assert "final reply output model=qwen3:4b-instruct text='Włączyłem klimatyzację w salonie.'" in caplog.text
-    assert "produced reply text='Ustawiłem klimatyzację w salonie na 26 stopni.'" in caplog.text
+    assert "produced reply text='Ustawiłem klimatyzację w salonie na 26 stopni.'" not in caplog.text
 
 
 def test_orchestrator_reports_unsupported_domain_to_final_synthesis() -> None:
@@ -200,6 +184,34 @@ def test_orchestrator_reports_unsupported_domain_to_final_synthesis() -> None:
         }
     ]
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Wikipedia nie jest jeszcze podłączona.")))
+
+
+def test_orchestrator_returns_single_verbatim_task_result_without_final_synthesis() -> None:
+    plan = {
+        "kind": "single_task",
+        "confidence": 0.9,
+        "tasks": [{"id": "t1", "domain": "wikipedia", "command": {"topic": "Albert Einstein"}}],
+        "context_updates": {"salient_entities": [], "active_domain": "wikipedia"},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    ollama = FakeOllamaClient([json.dumps(plan)])
+    domain_agent = RecordingDomainAgent(
+        [{"status": "ok", "text": "Tekst kontrolowany przez DSA.", "final_reply_mode": "verbatim"}]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="qwen3:4b-instruct",
+        domain_agents={"wikipedia": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="sprawdź Einsteina na Wikipedii")])
+    conversation = Conversation(conversation_id="conversation-1", attributes={})
+
+    asyncio.run(agent.run_conversation(conversation, endpoint))
+
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Tekst kontrolowany przez DSA.")))
+    assert len(ollama.requests) == 1
 
 
 def test_orchestrator_retries_low_confidence_plan_with_clarification_model() -> None:

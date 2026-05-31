@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from ai_server.agent import Agent
 from ai_server.interfaces import CommunicationEndpoint, Conversation, ConversationEndpoint, EndpointClosed
 from ai_server.messages import ConversationEnded, ConversationInputEvent, ConversationOutputEvent, MessageBegin, MessageEnd
-from ai_server.messages import MessageFragment, NewConversation, SessionAttributes, TextMessage, WaitForNewConversation
-from ai_server.messages import WaitForNewMessage, text_message_to_events
+from ai_server.messages import MessageFragment, NewConversation, RequestFollowUp, SessionAttributes, TextMessage
+from ai_server.messages import WaitForNewConversation, text_message_to_events
 
 
 @dataclass
@@ -120,7 +120,8 @@ class _SessionConversationEndpoint(ConversationEndpoint):
         self._conversation = conversation
         self._input_open = False
         self._output_open = False
-        self._wait_before_next_input = False
+        self._requires_follow_up_request = False
+        self._follow_up_requested = False
         self._closed = False
         self._logger = logging.getLogger(
             f"{__name__}.ConversationEndpoint[{session.session_id}:{conversation.conversation_id}]"
@@ -130,9 +131,12 @@ class _SessionConversationEndpoint(ConversationEndpoint):
         if self._closed:
             raise ConversationEnded()
 
-        if self._wait_before_next_input:
-            await self._session.endpoint.send(WaitForNewMessage())
-            self._wait_before_next_input = False
+        if self._requires_follow_up_request:
+            if not self._follow_up_requested:
+                self._closed = True
+                raise ConversationEnded()
+            self._requires_follow_up_request = False
+            self._follow_up_requested = False
 
         try:
             event = await self._session.receive_conversation_event()
@@ -150,12 +154,20 @@ class _SessionConversationEndpoint(ConversationEndpoint):
         if isinstance(event, MessageEnd):
             assert self._input_open, "received MessageEnd before MessageBegin"
             self._input_open = False
-            self._wait_before_next_input = True
+            self._requires_follow_up_request = True
             return event
 
         raise AssertionError(f"unsupported conversation input event: {type(event).__name__}")
 
     async def send(self, event: ConversationOutputEvent) -> None:
+        if isinstance(event, RequestFollowUp):
+            assert self._requires_follow_up_request, "sent RequestFollowUp before completing an input message"
+            assert not self._follow_up_requested, "sent duplicate RequestFollowUp"
+            assert not self._input_open, "sent RequestFollowUp while input message is open"
+            assert not self._output_open, "sent RequestFollowUp while output message is open"
+            self._follow_up_requested = True
+            await self._session.endpoint.send(event)
+            return
         if isinstance(event, MessageBegin):
             assert not self._output_open, "sent MessageBegin while output message is open"
             self._output_open = True
@@ -199,6 +211,7 @@ class _SessionConversationEndpoint(ConversationEndpoint):
     def assert_idle(self) -> None:
         assert not self._input_open, "conversation ended with open input message"
         assert not self._output_open, "conversation ended with open output message"
+        assert not self._follow_up_requested, "conversation ended with requested follow-up not consumed"
 
 
 def _merge_attributes(base: dict[str, str], overrides: dict[str, str]) -> dict[str, str]:

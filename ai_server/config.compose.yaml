@@ -14,6 +14,7 @@ websocket:
   host: 0.0.0.0
   port: 2137
   path: /chat
+  follow_up_timeout_seconds: 60
 
 stt:
   model: base

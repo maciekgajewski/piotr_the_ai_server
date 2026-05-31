@@ -38,6 +38,11 @@ class WaitForNewMessage:
 
 
 @dataclass(frozen=True)
+class RequestFollowUp:
+    timeout_seconds: float | None = None
+
+
+@dataclass(frozen=True)
 class MessageBegin:
     pass
 
@@ -53,11 +58,13 @@ class MessageEnd:
 
 
 ConversationInputEvent: TypeAlias = MessageBegin | MessageFragment | MessageEnd
-ConversationOutputEvent: TypeAlias = MessageBegin | MessageFragment | MessageEnd
+ConversationOutputEvent: TypeAlias = MessageBegin | MessageFragment | MessageEnd | RequestFollowUp
 EndpointToSessionEvent: TypeAlias = (
     SessionAttributes | NewConversation | ConversationEnded | MessageBegin | MessageFragment | MessageEnd
 )
-SessionToEndpointEvent: TypeAlias = WaitForNewConversation | WaitForNewMessage | MessageBegin | MessageFragment | MessageEnd
+SessionToEndpointEvent: TypeAlias = (
+    WaitForNewConversation | WaitForNewMessage | RequestFollowUp | MessageBegin | MessageFragment | MessageEnd
+)
 ProtocolEvent: TypeAlias = EndpointToSessionEvent | SessionToEndpointEvent
 
 
@@ -124,6 +131,19 @@ def session_event_from_mapping(raw_event: dict[str, Any]) -> SessionToEndpointEv
     if event_type == "wait_for_new_message":
         _reject_extra_keys(raw_event, {"type"})
         return WaitForNewMessage()
+    if event_type == "request_follow_up":
+        timeout_seconds = raw_event.get("timeout_seconds")
+        if timeout_seconds is None:
+            _reject_extra_keys(raw_event, {"type"})
+            return RequestFollowUp()
+        if (
+            not isinstance(timeout_seconds, (int, float))
+            or isinstance(timeout_seconds, bool)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("request_follow_up.timeout_seconds must be a positive number")
+        _reject_extra_keys(raw_event, {"type", "timeout_seconds"})
+        return RequestFollowUp(timeout_seconds=float(timeout_seconds))
     if event_type == "message_begin":
         _reject_extra_keys(raw_event, {"type"})
         return MessageBegin()
@@ -170,6 +190,11 @@ def session_event_to_mapping(event: SessionToEndpointEvent) -> dict[str, Any]:
         return {"type": "wait_for_new_conversation"}
     if isinstance(event, WaitForNewMessage):
         return {"type": "wait_for_new_message"}
+    if isinstance(event, RequestFollowUp):
+        payload = {"type": "request_follow_up"}
+        if event.timeout_seconds is not None:
+            payload["timeout_seconds"] = event.timeout_seconds
+        return payload
     if isinstance(event, MessageBegin):
         return {"type": "message_begin"}
     if isinstance(event, MessageFragment):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiohttp import ClientConnectionResetError, WSCloseCode, WSMsgType, web
@@ -7,18 +8,29 @@ from aiohttp import ClientConnectionResetError, WSCloseCode, WSMsgType, web
 from ai_server.agent import Agent
 from ai_server.config import Config
 from ai_server.interfaces import CommunicationEndpoint, EndpointClosed
-from ai_server.messages import EndpointToSessionEvent, SessionToEndpointEvent
+from ai_server.messages import ConversationEnded, EndpointToSessionEvent, RequestFollowUp, SessionToEndpointEvent
 from ai_server.messages import endpoint_event_from_json, session_event_to_json
 from ai_server.sessions import SessionManager
 
 
 class WebsocketCommunicationEndpoint(CommunicationEndpoint):
-    def __init__(self, websocket: web.WebSocketResponse, peer: str) -> None:
+    def __init__(self, websocket: web.WebSocketResponse, peer: str, follow_up_timeout_seconds: float) -> None:
         self._websocket = websocket
+        self._follow_up_timeout_seconds = follow_up_timeout_seconds
+        self._next_receive_timeout_seconds: float | None = None
         self._logger = logging.getLogger(f"{__name__}.WebsocketCommunicationEndpoint[{peer}]")
 
     async def receive(self) -> EndpointToSessionEvent:
-        message = await self._websocket.receive()
+        try:
+            if self._next_receive_timeout_seconds is None:
+                message = await self._websocket.receive()
+            else:
+                timeout_seconds = self._next_receive_timeout_seconds
+                self._next_receive_timeout_seconds = None
+                message = await asyncio.wait_for(self._websocket.receive(), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            self._logger.info("follow-up timed out; ending conversation")
+            return ConversationEnded()
 
         if message.type == WSMsgType.TEXT:
             try:
@@ -40,6 +52,9 @@ class WebsocketCommunicationEndpoint(CommunicationEndpoint):
         raise ValueError(f"unsupported websocket message type: {message.type}")
 
     async def send(self, event: SessionToEndpointEvent) -> None:
+        if isinstance(event, RequestFollowUp):
+            self._next_receive_timeout_seconds = self._follow_up_timeout_seconds
+            event = RequestFollowUp(timeout_seconds=self._follow_up_timeout_seconds)
         payload = session_event_to_json(event)
         self._logger.debug("sending websocket event: %s", payload)
         try:
@@ -66,7 +81,11 @@ def create_app(
         connection_logger.info("accepted websocket connection %s", request.path)
 
         try:
-            endpoint = WebsocketCommunicationEndpoint(websocket, peer)
+            endpoint = WebsocketCommunicationEndpoint(
+                websocket,
+                peer,
+                follow_up_timeout_seconds=config.websocket.follow_up_timeout_seconds,
+            )
             await manager.run_session(endpoint, require_session_attributes=True)
             return websocket
         except AssertionError as exc:

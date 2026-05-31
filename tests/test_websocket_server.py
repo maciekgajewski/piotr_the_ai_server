@@ -2,7 +2,7 @@ import asyncio
 import socket
 from dataclasses import dataclass
 
-from aiohttp import WSCloseCode
+from aiohttp import ClientSession, WSCloseCode
 from aiohttp import web
 import pytest
 
@@ -13,6 +13,10 @@ from ai_server import chat_client
 from ai_server.batch_ws_client import BatchWsClientOptions, run_batch_ws_client
 from ai_server.chat_client import ChatClientOptions
 from ai_server.config import AgentConfig, Config, WebsocketConfig
+from ai_server.interfaces import Conversation, ConversationEndpoint
+from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, RequestFollowUp
+from ai_server.messages import SessionAttributes, TextMessage, WaitForNewConversation, endpoint_event_to_json
+from ai_server.messages import session_event_from_json, text_message_to_events
 from ai_server.websocket_server import create_app
 
 
@@ -27,6 +31,25 @@ class FakeWebsocket:
 @dataclass(frozen=True)
 class FakeWebsocketMessage:
     data: str
+
+
+class SingleReplyAgent:
+    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
+        async for message in endpoint.messages():
+            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
+
+    async def close(self) -> None:
+        pass
+
+
+class FollowUpAgent:
+    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
+        async for message in endpoint.messages():
+            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
+            await endpoint.send(RequestFollowUp())
+
+    async def close(self) -> None:
+        pass
 
 
 def test_websocket_shutdown_closes_active_websockets() -> None:
@@ -81,6 +104,81 @@ def test_batch_websocket_client_drives_interrogator_flow(capsys) -> None:
     output = capsys.readouterr().out
     assert "Twoja wiadomość numer 1 to: cześć\n" in output
     assert "Koniec konwersacji, wysłałeś 2 wiadomości.\n" in output
+
+
+def test_websocket_returns_to_new_conversation_without_requested_follow_up() -> None:
+    async def run() -> None:
+        port = _unused_port()
+        config = Config(
+            agent=AgentConfig(type="single_reply", options={}),
+            websocket=WebsocketConfig(host="127.0.0.1", port=port),
+        )
+        app = create_app(config, SingleReplyAgent())
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
+        await site.start()
+
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={})))
+
+                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+
+                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
+                    for event in text_message_to_events(TextMessage(text="hello")):
+                        await websocket.send_str(endpoint_event_to_json(event))
+
+                    assert await _receive_session_event(websocket) == MessageBegin()
+                    assert await _receive_session_event(websocket) == MessageFragment(text="reply:hello")
+                    assert await _receive_session_event(websocket) == MessageEnd()
+                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_websocket_request_follow_up_times_out_to_new_conversation() -> None:
+    async def run() -> None:
+        port = _unused_port()
+        config = Config(
+            agent=AgentConfig(type="follow_up", options={}),
+            websocket=WebsocketConfig(
+                host="127.0.0.1",
+                port=port,
+                follow_up_timeout_seconds=0.05,
+            ),
+        )
+        app = create_app(config, FollowUpAgent())
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
+        await site.start()
+
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={})))
+
+                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+
+                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
+                    for event in text_message_to_events(TextMessage(text="hello")):
+                        await websocket.send_str(endpoint_event_to_json(event))
+
+                    assert await _receive_session_event(websocket) == MessageBegin()
+                    assert await _receive_session_event(websocket) == MessageFragment(text="reply:hello")
+                    assert await _receive_session_event(websocket) == MessageEnd()
+                    assert await _receive_session_event(websocket) == RequestFollowUp(
+                        timeout_seconds=0.05,
+                    )
+                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
 
 
 def test_batch_websocket_client_does_not_reconnect_after_drop(capsys) -> None:
@@ -212,6 +310,11 @@ def _unused_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+async def _receive_session_event(websocket):
+    message = await asyncio.wait_for(websocket.receive(), timeout=1)
+    return session_event_from_json(message.data)
 
 
 class StrictReceiveWebsocket:

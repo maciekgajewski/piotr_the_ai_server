@@ -12,7 +12,7 @@ from ai_server.agent_loop.agent_callable_set import to_json_value
 from ai_server.config import ServerConfig
 from ai_server.domain_agents import DomainAgent, DomainTask
 from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import TextMessage
+from ai_server.messages import RequestFollowUp, TextMessage
 from ai_server.ollama import OLLAMA_BASE_URL, OllamaClient, OllamaError
 
 
@@ -101,7 +101,7 @@ You are the final response writer for a Polish voice assistant.
 Write the final user-facing reply in Polish.
 Use the task results and clarification state. Be concise.
 Do not claim a task succeeded unless its JSON result says it succeeded.
-For a single successful time task, if task_results[0].text is a short direct answer such as "10:46", return it verbatim.
+When a task result has final_reply_mode="verbatim", preserve that result's text exactly when composing the reply.
 If a task is unsupported, say that capability is not connected yet.
 If clarification is needed, ask exactly the needed question, optionally after summarizing completed independent tasks.
 """
@@ -192,6 +192,8 @@ class OrchestratorAgent:
                     elapsed_ms,
                 )
                 await endpoint.send_message(TextMessage(text=reply_text))
+                if _has_pending_clarification(conversation):
+                    await endpoint.send(RequestFollowUp())
         finally:
             state = conversation.state.get(ORCHESTRATOR_STATE_KEY)
             if isinstance(state, dict) and state.get("pending_clarification") is not None:
@@ -568,6 +570,11 @@ class OrchestratorAgent:
             user_input,
             _results_summary(task_results),
         )
+        verbatim_reply = _single_verbatim_reply(task_results)
+        if verbatim_reply:
+            self._logger.info("final reply using verbatim task result text=%r", verbatim_reply)
+            return verbatim_reply
+
         reply = await self._final_reply_with_model(self._orchestrator_model, prompt)
         if reply or self._clarification_model is None:
             return reply or GENERATION_FAILURE_MESSAGE
@@ -605,6 +612,19 @@ class OrchestratorAgent:
 
 def _elapsed_ms(started_at: float) -> int:
     return round((time.perf_counter() - started_at) * 1000)
+
+
+def _single_verbatim_reply(task_results: list[dict[str, Any]]) -> str | None:
+    if len(task_results) != 1:
+        return None
+    result = task_results[0]
+    if result.get("status") != "ok" or result.get("final_reply_mode") != "verbatim":
+        return None
+    text = result.get("text")
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    return text or None
 
 
 def _compact_json(value: Any, max_length: int = 500) -> str:
@@ -1053,6 +1073,11 @@ def _orchestrator_state(conversation: Conversation) -> dict[str, Any]:
     state.setdefault("pending_tasks", [])
     state.setdefault("pending_clarification", None)
     return state
+
+
+def _has_pending_clarification(conversation: Conversation) -> bool:
+    state = conversation.state.get(ORCHESTRATOR_STATE_KEY)
+    return isinstance(state, dict) and state.get("pending_clarification") is not None
 
 
 def _active_context(state: dict[str, Any]) -> dict[str, Any]:

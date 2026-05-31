@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from aiohttp import WSMsgType
 
 from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, SessionAttributes, TextMessage
-from ai_server.messages import WaitForNewConversation, WaitForNewMessage
+from ai_server.messages import RequestFollowUp, WaitForNewConversation, WaitForNewMessage
 from ai_server.messages import endpoint_event_to_json, session_event_from_json, text_message_to_events
 
 DEFAULT_WEBSOCKET_URL = "ws://127.0.0.1:2137/chat"
@@ -25,6 +25,8 @@ class WebsocketDisconnected(Exception):
 @dataclass(frozen=True)
 class WaitState:
     starts_new_conversation: bool
+    follow_up_requested: bool = False
+    timeout_seconds: float | None = None
 
 
 async def send_session_attributes(websocket, user: str | None, area: str | None) -> None:
@@ -55,7 +57,18 @@ def handle_websocket_message(websocket, message) -> WaitState | None:
             print(flush=True)
             return None
         if isinstance(event, WaitForNewConversation):
+            print("Conversation ended; waiting for a new conversation.", flush=True)
             return WaitState(starts_new_conversation=True)
+        if isinstance(event, RequestFollowUp):
+            if event.timeout_seconds is None:
+                print("Follow-up requested.", flush=True)
+            else:
+                print(f"Follow-up requested; timeout is {event.timeout_seconds:g}s.", flush=True)
+            return WaitState(
+                starts_new_conversation=False,
+                follow_up_requested=True,
+                timeout_seconds=event.timeout_seconds,
+            )
         if isinstance(event, WaitForNewMessage):
             return WaitState(starts_new_conversation=False)
         raise RuntimeError(f"unsupported server event: {type(event).__name__}")

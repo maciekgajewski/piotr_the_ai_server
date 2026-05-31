@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import MessageBegin, MessageEnd, MessageFragment
+from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, RequestFollowUp
 
 
 class InterrogatorAgent:
@@ -24,6 +24,7 @@ class InterrogatorAgent:
                 endpoint,
                 f"Twoja wiadomość numer {message_number} to: {message.text}",
             )
+            await endpoint.send(RequestFollowUp())
 
     async def close(self) -> None:
         pass
