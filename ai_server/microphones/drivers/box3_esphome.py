@@ -47,7 +47,7 @@ class Box3EsphomeMicrophone:
         playback_target: PlaybackTarget,
         initial_silence_seconds: float,
         end_silence_seconds: float,
-        client_info: str = "ai-server-box3-mic",
+        client_info: str = "ai-server-esphome-satellite",
     ) -> None:
         self.context = context
         self.playback_target = playback_target
@@ -102,7 +102,7 @@ class Box3EsphomeMicrophone:
 
     async def send_output_event(self, event: MicrophoneOutputEvent) -> None:
         if isinstance(event, AudioStart):
-            self._logger.debug("sending audio start event to BOX-3")
+            self._logger.debug("sending audio start event to ESPHome satellite")
             await self._start_playback(event)
             return
         if isinstance(event, AudioChunk):
@@ -111,24 +111,24 @@ class Box3EsphomeMicrophone:
             self._playback_stream.write(event.data)
             return
         if isinstance(event, AudioEnd):
-            self._logger.debug("sending audio end event to BOX-3")
+            self._logger.debug("sending audio end event to ESPHome satellite")
             await self._finish_playback()
             return
         if isinstance(event, MessageEndCue):
-            self._logger.info("requesting BOX-3 message-end cue")
+            self._logger.info("requesting ESPHome satellite message-end cue")
             await self._execute_api_service(PLAY_MESSAGE_END_CUE_SERVICE)
             return
         if isinstance(event, StartWakeWordListening):
-            self._logger.info("requesting BOX-3 wake-word listening")
+            self._logger.info("requesting ESPHome satellite wake-word listening")
             await self._start_wake_word_listening()
             return
         if isinstance(event, StartFollowUpListening):
-            self._logger.info("requesting BOX-3 follow-up listening")
+            self._logger.info("requesting ESPHome satellite follow-up listening")
             await self._finish_voice_assistant_run()
             await self._execute_api_service(START_FOLLOW_UP_LISTENING_SERVICE)
             return
         if isinstance(event, ConversationTimeoutCue):
-            self._logger.info("requesting BOX-3 conversation-timeout cue")
+            self._logger.info("requesting ESPHome satellite conversation-timeout cue")
             await self._execute_api_service(PLAY_CONVERSATION_TIMEOUT_CUE_SERVICE)
             return
         raise ValueError(f"unsupported microphone output event: {type(event).__name__}")
@@ -156,14 +156,14 @@ class Box3EsphomeMicrophone:
             noise_psk=self.playback_target.api_key,
             expected_name=self.playback_target.expected_name,
         )
-        self._logger.info("connecting to BOX-3 address=%s", self.playback_target.address)
+        self._logger.info("connecting to ESPHome satellite address=%s", self.playback_target.address)
         await self._client.connect(login=True)
         connected_address = self._client.connected_address
         if isinstance(connected_address, str) and connected_address:
             self.playback_target = replace(self.playback_target, address=connected_address)
         elif isinstance(connected_address, tuple) and connected_address:
             self.playback_target = replace(self.playback_target, address=str(connected_address[0]))
-        self._logger.info("connected to BOX-3 address=%s", self.playback_target.address)
+        self._logger.info("connected to ESPHome satellite address=%s", self.playback_target.address)
         self._subscribe_voice_assistant()
 
     def _subscribe_voice_assistant(self) -> None:
@@ -174,14 +174,14 @@ class Box3EsphomeMicrophone:
             handle_audio=self._handle_audio,
             handle_stop=self._handle_stop,
         )
-        self._logger.info("subscribed to BOX-3 voice assistant")
+        self._logger.info("subscribed to ESPHome satellite voice assistant")
 
     def _unsubscribe_voice_assistant(self) -> None:
         if self._unsubscribe is None:
             return
         self._unsubscribe()
         self._unsubscribe = None
-        self._logger.debug("unsubscribed from BOX-3 voice assistant")
+        self._logger.debug("unsubscribed from ESPHome satellite voice assistant")
 
     async def _start_playback(self, event: AudioStart) -> None:
         if event.rate is None or event.width is None or event.channels is None:
@@ -221,7 +221,7 @@ class Box3EsphomeMicrophone:
         )
         if not request_seen:
             self._logger.warning(
-                "BOX-3 did not request playback stream within %.1fs",
+                "ESPHome satellite did not request playback stream within %.1fs",
                 STREAM_REQUEST_TIMEOUT_SECONDS,
             )
             playback_stream.close()
@@ -233,7 +233,7 @@ class Box3EsphomeMicrophone:
         )
         if not done_seen:
             self._logger.warning(
-                "BOX-3 playback stream did not finish within %.1fs",
+                "ESPHome satellite playback stream did not finish within %.1fs",
                 STREAM_DONE_TIMEOUT_SECONDS,
             )
         remaining_seconds = playback_stream.remaining_playback_seconds()
@@ -338,17 +338,17 @@ class Box3EsphomeMicrophone:
         for service in services:
             if service.name == service_name:
                 await self._client.execute_service(service, {})
-                self._logger.debug("executed BOX-3 API service=%s", service_name)
+                self._logger.debug("executed ESPHome satellite API service=%s", service_name)
                 return
 
-        raise RuntimeError(f"BOX-3 API service not found: {service_name}")
+        raise RuntimeError(f"ESPHome satellite API service not found: {service_name}")
 
     async def _start_wake_word_listening(self) -> None:
         await self._finish_voice_assistant_run()
         if self._client is not None:
             self._unsubscribe_voice_assistant()
             self._subscribe_voice_assistant()
-            self._logger.info("BOX-3 wake-word listening armed")
+            self._logger.info("ESPHome satellite wake-word listening armed")
 
     async def _finish_voice_assistant_run(self) -> None:
         await self._ensure_connected()
@@ -658,4 +658,4 @@ def wav_header(rate: int, width: int, channels: int) -> bytes:
 
 def _require_aioesphomeapi() -> None:
     if aioesphomeapi is None:
-        raise RuntimeError("aioesphomeapi package is required for BOX-3 microphone support")
+        raise RuntimeError("aioesphomeapi package is required for ESPHome satellite microphone support")

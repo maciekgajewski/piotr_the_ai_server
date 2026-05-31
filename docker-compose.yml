@@ -91,6 +91,8 @@ services:
       - python3
       - -m
       - ai_server.server
+      - --config
+      - /config/ai_server.yaml
       - --ollama-url
       - http://127.0.0.1:11434
 
