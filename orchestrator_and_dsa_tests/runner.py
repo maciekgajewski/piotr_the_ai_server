@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import yaml
 
 import agent_tool_eval
-from ai_server.agent.orchestrator import OrchestratorAgent
+from ai_server.orchestrator import OrchestratorAgent
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
 from ai_server.domain_agents.wikipedia import WikipediaArticle, WikipediaDomainAgent

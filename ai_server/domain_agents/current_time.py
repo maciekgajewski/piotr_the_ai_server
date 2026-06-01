@@ -4,7 +4,6 @@ import datetime as dt
 import json
 import logging
 import re
-import unicodedata
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlencode
@@ -14,6 +13,7 @@ from aiohttp import ClientSession, ClientTimeout
 
 from ai_server.domain_agents.interfaces import DomainTask
 from ai_server.interfaces import Conversation
+from ai_server.utils.text import normalize_text
 
 
 DEFAULT_TIMEZONE = "UTC"
@@ -21,6 +21,7 @@ KNOWN_LOCATION_TIMEZONES = {
     "wroclaw": "Europe/Warsaw",
     "wrocław": "Europe/Warsaw",
     "wroclawiu": "Europe/Warsaw",
+    "wrocławiu": "Europe/Warsaw",
     "polska": "Europe/Warsaw",
     "poland": "Europe/Warsaw",
     "jacksonville": "America/New_York",
@@ -223,10 +224,10 @@ class TimezoneResolver:
         self._logger = logging.getLogger(f"{__name__}.TimezoneResolver")
 
     async def resolve(self, location: str) -> str:
-        normalized_location = _normalized(location)
+        normalized_location = normalize_text(location)
         if not normalized_location:
             return self._configured_timezone or DEFAULT_TIMEZONE
-        if self._configured_location and normalized_location == _normalized(self._configured_location):
+        if self._configured_location and normalized_location == normalize_text(self._configured_location):
             return self._configured_timezone or DEFAULT_TIMEZONE
         if normalized_location in KNOWN_LOCATION_TIMEZONES:
             return KNOWN_LOCATION_TIMEZONES[normalized_location]
@@ -315,7 +316,7 @@ def _response_kind(command: dict[str, Any], query: str) -> str:
     intent = _string_or_empty(command.get("intent"))
     if intent in {"current_time", "current_date", "day_of_week", "month", "year"}:
         return intent
-    normalized_query = _normalized(query)
+    normalized_query = normalize_text(query)
     if "dzien tygodnia" in normalized_query or "dzień tygodnia" in normalized_query:
         return "day_of_week"
     if "ktory rok" in normalized_query or "który rok" in normalized_query:
@@ -369,8 +370,8 @@ def _unknown_timezone_result(location: str) -> dict[str, Any]:
 
 
 def _display_location(location: str) -> str:
-    normalized_location = _normalized(location)
-    if normalized_location in {"wroclaw", "wroclawiu"}:
+    normalized_location = normalize_text(location)
+    if normalized_location in {"wroclaw", "wrocław", "wroclawiu", "wrocławiu"}:
         return "Wrocławiu"
     if normalized_location in {"floryda", "florydzie", "florida"}:
         return "Florydzie"
@@ -398,7 +399,7 @@ def _extract_location(query: str) -> str:
 def _command_geo_location(command_location: str, conversation: Conversation) -> bool:
     if not command_location:
         return False
-    if conversation.area and _normalized(command_location) == _normalized(conversation.area):
+    if conversation.area and normalize_text(command_location) == normalize_text(conversation.area):
         return False
     return True
 
@@ -412,10 +413,12 @@ def _is_short_local_time_question(
 ) -> bool:
     if response_kind != "current_time" or target_timezone or timezone_source != "configured_timezone":
         return False
-    normalized_query = _normalized(query).strip(" ?.!").strip()
+    normalized_query = normalize_text(query)
     return normalized_query in {
         "ktora godzina",
+        "która godzina",
         "ktora jest godzina",
+        "która jest godzina",
         "jaka godzina",
         "jaki czas",
     }
@@ -423,13 +426,3 @@ def _is_short_local_time_question(
 
 def _string_or_empty(value: Any) -> str:
     return value if isinstance(value, str) else ""
-
-
-def _normalized(value: str) -> str:
-    value = value.replace("Ł", "L").replace("ł", "l")
-    without_marks = "".join(
-        character
-        for character in unicodedata.normalize("NFKD", value.strip().casefold())
-        if not unicodedata.combining(character)
-    )
-    return " ".join(without_marks.split())

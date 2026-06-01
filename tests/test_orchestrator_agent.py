@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from ai_server.agent.orchestrator import GENERATION_FAILURE_MESSAGE, OrchestratorAgent, _parse_plan
+from ai_server.orchestrator import GENERATION_FAILURE_MESSAGE, OrchestratorAgent, _parse_plan
 from ai_server.config import ServerConfig
 from ai_server.interfaces import Conversation
 from ai_server.messages import TextMessage, text_message_to_events
@@ -135,7 +135,7 @@ def test_orchestrator_does_not_read_followup_without_explicit_request(caplog) ->
     endpoint = FakeConversationEndpoint([TextMessage(text="włącz klimę w salonie"), TextMessage(text="ustaw ją na 26")])
     conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office"})
 
-    with caplog.at_level(logging.INFO, logger="ai_server.agent.orchestrator"):
+    with caplog.at_level(logging.INFO, logger="ai_server.orchestrator"):
         asyncio.run(agent.run_conversation(conversation, endpoint))
 
     assert endpoint.sent == list(
@@ -212,6 +212,35 @@ def test_orchestrator_returns_single_verbatim_task_result_without_final_synthesi
 
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Tekst kontrolowany przez DSA.")))
     assert len(ollama.requests) == 1
+
+
+def test_orchestrator_short_path_dispatches_known_time_utterance_without_ollama() -> None:
+    ollama = FakeOllamaClient([])
+    domain_agent = RecordingDomainAgent(
+        [{"status": "ok", "text": "czternasta zero pięć", "final_reply_mode": "verbatim"}]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="qwen3:4b-instruct",
+        domain_agents={"time": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="Która godzina?")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={}), endpoint))
+
+    assert ollama.requests == []
+    assert domain_agent.tasks == [
+        {
+            "id": "t1",
+            "domain": "time",
+            "command": {"query": "Która godzina?"},
+            "depends_on": [],
+            "status": "ready",
+            "clarification_question": None,
+        }
+    ]
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="czternasta zero pięć")))
 
 
 def test_orchestrator_retries_low_confidence_plan_with_clarification_model() -> None:
@@ -489,7 +518,7 @@ def test_orchestrator_logs_blocked_task_clarification_utterance(caplog) -> None:
     agent = OrchestratorAgent(orchestrator_model="small", ollama_client=ollama, owns_ollama_client=False)
     endpoint = FakeConversationEndpoint([TextMessage(text="włącz światło")])
 
-    with caplog.at_level(logging.WARNING, logger="ai_server.agent.orchestrator"):
+    with caplog.at_level(logging.WARNING, logger="ai_server.orchestrator"):
         asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={}), endpoint))
 
     assert "utterance caused clarification source=orchestrator conversation_id=c1 utterance='włącz światło'" in caplog.text
@@ -550,7 +579,7 @@ def test_orchestrator_stores_dsa_clarification_and_resumes_same_domain(caplog) -
     endpoint = FakeConversationEndpoint([TextMessage(text="włącz światło"), TextMessage(text="w salonie")])
     conversation = Conversation(conversation_id="c1", attributes={})
 
-    with caplog.at_level(logging.WARNING, logger="ai_server.agent.orchestrator"):
+    with caplog.at_level(logging.WARNING, logger="ai_server.orchestrator"):
         asyncio.run(agent.run_conversation(conversation, endpoint))
 
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Które światło mam włączyć?"))) + list(
@@ -560,6 +589,63 @@ def test_orchestrator_stores_dsa_clarification_and_resumes_same_domain(caplog) -
     assert [request["model"] for request in ollama.requests] == ["small", "small", "big", "small"]
     assert conversation.state["orchestrator"]["pending_clarification"] is None
     assert "utterance caused clarification source=dsa conversation_id=c1 utterance='włącz światło'" in caplog.text
+
+
+def test_orchestrator_pending_clarification_takes_priority_over_short_path() -> None:
+    resolved_task = {
+        "confidence": 0.92,
+        "task": {
+            "id": "t1",
+            "domain": "home_assistant",
+            "command": _ha_command("turn_on", "włącz światło w salonie"),
+            "depends_on": [],
+            "status": "ready",
+            "clarification_question": None,
+        },
+    }
+    ollama = FakeOllamaClient([json.dumps(resolved_task), "Włączyłem światło w salonie."])
+    domain_agent = RecordingDomainAgent([{"status": "ok", "text": "Włączyłem światło w salonie."}])
+    agent = OrchestratorAgent(
+        orchestrator_model="small",
+        clarification_model="big",
+        domain_agents={"home_assistant": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    conversation = Conversation(conversation_id="c1", attributes={})
+    conversation.state["orchestrator"] = {
+        "last_turns": [],
+        "salient_entities": [],
+        "active_domain": "home_assistant",
+        "pending_tasks": [],
+        "pending_clarification": {
+            "domain": "home_assistant",
+            "task": {
+                "id": "t1",
+                "domain": "home_assistant",
+                "command": _ha_command("turn_on", "włącz światło"),
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            },
+            "task_result": {
+                "task_id": "t1",
+                "domain": "home_assistant",
+                "status": "needs_clarification",
+                "text": "Które światło mam włączyć?",
+                "needs_clarification": True,
+                "clarification_question": "Które światło mam włączyć?",
+            },
+            "clarification_question": "Które światło mam włączyć?",
+        },
+    }
+    endpoint = FakeConversationEndpoint([TextMessage(text="Która godzina?")])
+
+    asyncio.run(agent.run_conversation(conversation, endpoint))
+
+    assert [request["model"] for request in ollama.requests] == ["big", "small"]
+    assert [task["domain"] for task in domain_agent.tasks] == ["home_assistant"]
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Włączyłem światło w salonie.")))
 
 
 def test_orchestrator_drops_unanswered_clarification_when_conversation_ends() -> None:

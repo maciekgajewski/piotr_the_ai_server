@@ -7,7 +7,7 @@ from ai_server.agent import create_agent
 from ai_server.agent.assistant import AssistantAgent, _build_user_prompt_template
 from ai_server.agent.echo import EchoAgent
 from ai_server.agent.interrogator import InterrogatorAgent
-from ai_server.agent.orchestrator import OrchestratorAgent
+from ai_server.orchestrator import OrchestratorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.ai_tools.calculator import CalculatorTool
 from ai_server.ai_tools.home_assistant import HomeAssistantTool

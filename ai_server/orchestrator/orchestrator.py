@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -14,6 +15,8 @@ from ai_server.domain_agents import DomainAgent, DomainTask
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import RequestFollowUp, TextMessage
 from ai_server.ollama import OLLAMA_BASE_URL, OllamaClient, OllamaError
+from ai_server.orchestrator.known_utterances import KNOWN_UTTERANCE_TASKS
+from ai_server.utils.text import normalize_text
 
 
 ORCHESTRATOR_STATE_KEY = "orchestrator"
@@ -227,11 +230,20 @@ class OrchestratorAgent:
             _append_last_turn(state, user_input=user_input, assistant_reply=reply)
             return reply
 
-        plan = await self._plan_message(
-            user_input=user_input,
-            active_context=active_context,
-            conversation=conversation,
-        )
+        plan = _short_path_plan(user_input)
+        if plan is None:
+            plan = await self._plan_message(
+                user_input=user_input,
+                active_context=active_context,
+                conversation=conversation,
+            )
+        else:
+            self._logger.info(
+                "short path matched conversation_id=%s normalized_utterance=%r tasks=%s",
+                conversation.conversation_id,
+                normalize_text(user_input),
+                _tasks_summary(plan["tasks"]),
+            )
         self._logger.info(
             "plan ready conversation_id=%s kind=%s confidence=%s tasks=%s",
             conversation.conversation_id,
@@ -612,6 +624,20 @@ class OrchestratorAgent:
 
 def _elapsed_ms(started_at: float) -> int:
     return round((time.perf_counter() - started_at) * 1000)
+
+
+def _short_path_plan(user_input: str) -> dict[str, Any] | None:
+    task = KNOWN_UTTERANCE_TASKS.get(normalize_text(user_input))
+    if task is None:
+        return None
+    return {
+        "kind": "single_task",
+        "confidence": 1.0,
+        "tasks": [copy.deepcopy(task)],
+        "context_updates": {"salient_entities": [], "active_domain": task["domain"]},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
 
 
 def _single_verbatim_reply(task_results: list[dict[str, Any]]) -> str | None:

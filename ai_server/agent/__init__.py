@@ -8,8 +8,8 @@ from ai_server.ai_tools import create_tools
 from ai_server.agent.assistant import AssistantAgent
 from ai_server.agent.echo import EchoAgent
 from ai_server.agent.interrogator import InterrogatorAgent
-from ai_server.agent.orchestrator import OrchestratorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
+from ai_server.orchestrator import OrchestratorAgent
 
 from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, ServerConfig
 from ai_server.domain_agents import create_domain_agents
