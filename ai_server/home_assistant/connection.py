@@ -19,6 +19,7 @@ from ai_server.home_assistant.interfaces import (
     HomeAssistantDevice,
     HomeAssistantEntity,
     HomeAssistantInventory,
+    HomeAssistantMediaPlayer,
     HomeAssistantOptions,
     HomeAssistantServiceCall,
     JsonScalar,
@@ -50,6 +51,8 @@ GLOBAL_SCOPE_TERMS = (
     "w całym domu",
     "w calym domu",
 )
+MEDIA_PLAYER_DOMAIN = "media_player"
+MUSIC_ASSISTANT_PLATFORM = "music_assistant"
 
 
 class HomeAssistantConnection:
@@ -206,6 +209,150 @@ class HomeAssistantConnection:
             "errors": errors,
         }
 
+    async def list_media_players(
+        self,
+        *,
+        area_name: str = "",
+        music_assistant_only: bool = True,
+        speakers_only: bool = True,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        inventory = self._inventory
+        if inventory is None:
+            return dict(INVENTORY_NOT_READY)
+
+        area: HomeAssistantArea | None = None
+        if area_name:
+            resolved_area = _resolve_area(inventory, area_name)
+            if isinstance(resolved_area, dict):
+                return resolved_area
+            area = resolved_area
+
+        players = inventory.media_players_by_entity_id.values()
+        if area is not None:
+            players = inventory.media_players_by_area.get(area.area_id, ())
+        return [
+            _media_player_to_mapping(player)
+            for player in sorted(players, key=lambda item: item.name.casefold())
+            if _media_player_matches_filter(
+                player,
+                music_assistant_only=music_assistant_only,
+                speakers_only=speakers_only,
+            )
+        ]
+
+    async def media_player_play(self, entity_ids: list[str]) -> dict[str, Any]:
+        return await self._call_media_player_service("media_play", entity_ids)
+
+    async def media_player_stop(self, entity_ids: list[str]) -> dict[str, Any]:
+        return await self._call_media_player_service("media_stop", entity_ids)
+
+    async def media_player_volume_set(self, entity_ids: list[str], volume_level: float) -> dict[str, Any]:
+        normalized_level = _clamp_volume(volume_level)
+        return await self._call_media_player_service(
+            "volume_set",
+            entity_ids,
+            {"volume_level": normalized_level},
+            result_extra={"volume_level": normalized_level},
+        )
+
+    async def media_player_volume_delta(self, entity_ids: list[str], delta: float) -> dict[str, Any]:
+        inventory = self._inventory
+        if inventory is None:
+            return dict(INVENTORY_NOT_READY)
+
+        results = []
+        for entity_id in entity_ids:
+            player = inventory.media_players_by_entity_id.get(entity_id)
+            if player is None:
+                results.append({"status": "failed", "entity_id": entity_id, "error": "unknown_media_player"})
+                continue
+            current_volume = player.volume_level if player.volume_level is not None else 0.5
+            new_volume = _clamp_volume(current_volume + delta)
+            result = await self.media_player_volume_set([entity_id], new_volume)
+            results.append({"entity_id": entity_id, "volume_level": new_volume, **result})
+
+        return {
+            "status": "ok" if results and all(result.get("status") == "ok" for result in results) else "partial",
+            "results": results,
+        }
+
+    async def music_assistant_play_media(
+        self,
+        entity_ids: list[str],
+        *,
+        media_id: str,
+        media_type: str = "",
+        artist: str = "",
+        album: str = "",
+    ) -> dict[str, Any]:
+        service_data: dict[str, Any] = {
+            "media_id": media_id,
+            "enqueue": "replace",
+        }
+        if media_type:
+            service_data["media_type"] = media_type
+        if artist:
+            service_data["artist"] = artist
+        if album:
+            service_data["album"] = album
+        return await self._call_service_result(
+            HomeAssistantServiceCall("music_assistant", "play_media", entity_ids, service_data)
+        )
+
+    async def music_assistant_search(
+        self,
+        *,
+        name: str,
+        media_type: str = "",
+        limit: int = 5,
+        library_only: bool = False,
+    ) -> dict[str, Any]:
+        config_entry_id = self._music_assistant_config_entry_id()
+        if config_entry_id is None:
+            return {"status": "failed", "error": "music_assistant_config_entry_not_found"}
+        service_data: dict[str, Any] = {
+            "config_entry_id": config_entry_id,
+            "name": name,
+            "limit": limit,
+            "library_only": library_only,
+        }
+        if media_type:
+            service_data["media_type"] = media_type
+        response = await self._call_service_response(
+            HomeAssistantServiceCall("music_assistant", "search", None, service_data, return_response=True)
+        )
+        return {"status": "ok", "response": response}
+
+    async def music_assistant_get_queue(self, entity_id: str) -> dict[str, Any]:
+        response = await self._call_service_response(
+            HomeAssistantServiceCall(
+                "music_assistant",
+                "get_queue",
+                None,
+                {"entity_id": entity_id},
+                return_response=True,
+            )
+        )
+        return {"status": "ok", "response": response}
+
+    async def media_player_now_playing(self, entity_id: str) -> dict[str, Any]:
+        inventory = self._inventory
+        if inventory is None:
+            return dict(INVENTORY_NOT_READY)
+        player = inventory.media_players_by_entity_id.get(entity_id)
+        if player is None:
+            return {"status": "failed", "error": "unknown_media_player", "entity_id": entity_id}
+        attributes = player.attributes
+        return {
+            "status": "ok",
+            "entity_id": entity_id,
+            "state": player.state,
+            "title": _first_optional_string(attributes.get("media_title"), attributes.get("media_track")),
+            "artist": _first_optional_string(attributes.get("media_artist"), attributes.get("media_album_artist")),
+            "album": _first_optional_string(attributes.get("media_album_name"), attributes.get("media_album")),
+            "content_type": _first_optional_string(attributes.get("media_content_type")),
+        }
+
     def system_prompt_context(self, *, user: str | None, area: str | None) -> str:
         inventory = self._inventory
         area_text = area or "unknown"
@@ -308,6 +455,65 @@ Scope rules:
             "entity_id": property_info.entity_id,
         }
 
+    async def _call_media_player_service(
+        self,
+        service: str,
+        entity_ids: list[str],
+        service_data: dict[str, Any] | None = None,
+        *,
+        result_extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return await self._call_service_result(
+            HomeAssistantServiceCall("media_player", service, entity_ids, service_data or {}),
+            result_extra=result_extra,
+        )
+
+    async def _call_service_result(
+        self,
+        service_call: HomeAssistantServiceCall,
+        *,
+        result_extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            await _call_home_assistant_service(self._options, service_call, self._logger)
+        except Exception as exc:
+            self._logger.exception(
+                "Home Assistant service call failed service=%s.%s entity_id=%s",
+                service_call.domain,
+                service_call.service,
+                service_call.entity_id,
+            )
+            return {
+                "status": "failed",
+                "error": "service_call_failed",
+                "service": f"{service_call.domain}.{service_call.service}",
+                "entity_id": service_call.entity_id,
+                "message": str(exc),
+            }
+        return {
+            "status": "ok",
+            "service": f"{service_call.domain}.{service_call.service}",
+            "entity_id": service_call.entity_id,
+            **(result_extra or {}),
+        }
+
+    async def _call_service_response(self, service_call: HomeAssistantServiceCall) -> Any:
+        result = await _call_home_assistant_service(self._options, service_call, self._logger)
+        if isinstance(result, dict) and "response" in result:
+            return result["response"]
+        return result
+
+    def _music_assistant_config_entry_id(self) -> str | None:
+        if self._options.music_assistant_config_entry_id:
+            return self._options.music_assistant_config_entry_id
+        inventory = self._inventory
+        if inventory is None:
+            return None
+        for player in inventory.media_players_by_entity_id.values():
+            if player.is_music_assistant and player.config_entry_id:
+                return player.config_entry_id
+        return None
+
     async def _registry_refresh_loop(self) -> None:
         while not self._closed:
             try:
@@ -330,7 +536,7 @@ Scope rules:
                 entity_id = entity.get("entity_id")
                 if not isinstance(entity_id, str):
                     continue
-                if entity_id.split(".", 1)[0] not in self._options.controllable_domains:
+                if entity_id.split(".", 1)[0] not in _inventory_domains(self._options.controllable_domains):
                     continue
                 if entity.get("disabled_by") is not None or entity.get("hidden_by") is not None:
                     continue
@@ -393,6 +599,7 @@ Scope rules:
             raw_entity_details=self._raw_entity_details,
             raw_states=list(self._states_by_entity_id.values()),
             controllable_domains=self._options.controllable_domains,
+            music_assistant_config_entry_id=self._options.music_assistant_config_entry_id,
         )
 
     def _log_inventory_summary_if_due(self, inventory: HomeAssistantInventory) -> None:
@@ -448,12 +655,19 @@ def parse_home_assistant_options(options: dict[str, Any]) -> HomeAssistantOption
     ):
         raise ValueError("agent.home_assistant.inventory_summary_seconds must be a positive number")
 
+    music_assistant_config_entry_id = raw_options.get("music_assistant_config_entry_id")
+    if music_assistant_config_entry_id is not None and (
+        not isinstance(music_assistant_config_entry_id, str) or not music_assistant_config_entry_id
+    ):
+        raise ValueError("agent.home_assistant.music_assistant_config_entry_id must be a non-empty string when provided")
+
     return HomeAssistantOptions(
         url=url.rstrip("/"),
         token=token,
         controllable_domains=tuple(dict.fromkeys(domains)),
         inventory_refresh_seconds=float(inventory_refresh_seconds),
         inventory_summary_seconds=float(inventory_summary_seconds),
+        music_assistant_config_entry_id=music_assistant_config_entry_id,
     )
 
 
@@ -461,15 +675,18 @@ async def _call_home_assistant_service(
     options: HomeAssistantOptions,
     service_call: HomeAssistantServiceCall,
     logger: logging.Logger,
-) -> None:
+) -> Any:
     payload: dict[str, Any] = {
         "type": "call_service",
         "domain": service_call.domain,
         "service": service_call.service,
-        "target": {"entity_id": service_call.entity_id},
     }
+    if service_call.entity_id:
+        payload["target"] = {"entity_id": service_call.entity_id}
     if service_call.service_data:
         payload["service_data"] = service_call.service_data
+    if service_call.return_response:
+        payload["return_response"] = True
 
     logger.debug(
         "calling Home Assistant service domain=%s service=%s entity_id=%s service_data=%s",
@@ -479,13 +696,14 @@ async def _call_home_assistant_service(
         service_call.service_data,
     )
     async with _HomeAssistantWebSocket(options, logger, log_traffic=True) as client:
-        await client.command(payload)
+        result = await client.command(payload)
     logger.debug(
         "Home Assistant service call completed domain=%s service=%s entity_id=%s",
         service_call.domain,
         service_call.service,
         service_call.entity_id,
     )
+    return result
 
 
 class _HomeAssistantWebSocket:
@@ -580,6 +798,7 @@ def _build_inventory(
     raw_entity_details: list[dict[str, Any]],
     raw_states: list[dict[str, Any]],
     controllable_domains: tuple[str, ...],
+    music_assistant_config_entry_id: str | None = None,
 ) -> HomeAssistantInventory:
     states_by_entity_id = {
         state["entity_id"]: state
@@ -609,7 +828,7 @@ def _build_inventory(
         if not isinstance(entity_id, str) or not isinstance(device_id, str):
             continue
         domain = entity_id.split(".", 1)[0]
-        if domain not in controllable_domains:
+        if domain not in _inventory_domains(controllable_domains):
             continue
 
         state = states_by_entity_id.get(entity_id)
@@ -629,8 +848,17 @@ def _build_inventory(
             aliases=_clean_aliases(detail.get("aliases")),
             state=_first_string(state.get("state"), ""),
             attributes=dict(state.get("attributes") if isinstance(state.get("attributes"), dict) else {}),
+            platform=_first_optional_string(detail.get("platform")) or "",
+            config_entry_id=_first_optional_string(detail.get("config_entry_id")) or "",
         )
         entities_by_device_id.setdefault(device_id, []).append(entity)
+
+    media_players = _build_media_players(
+        entities_by_device_id=entities_by_device_id,
+        raw_devices_by_id=raw_devices_by_id,
+        areas_by_id=areas_by_id,
+        music_assistant_config_entry_id=music_assistant_config_entry_id,
+    )
 
     devices_by_id = {}
     for device_id, entities in entities_by_device_id.items():
@@ -671,6 +899,8 @@ def _build_inventory(
         devices_by_area=devices_by_area,
         area_lookup=_build_area_lookup(areas_by_id),
         device_lookup=_build_device_lookup(devices_by_id),
+        media_players_by_entity_id={player.entity_id: player for player in media_players},
+        media_players_by_area=_build_media_players_by_area(areas_by_id, media_players),
     )
 
 
@@ -688,6 +918,52 @@ def _resolve_area(inventory: HomeAssistantInventory, area_name: str) -> HomeAssi
         "error": "ambiguous_area",
         "area": area_name,
         "candidates": [_area_to_mapping(inventory.areas_by_id[area_id]) for area_id in matches],
+    }
+
+
+def _build_media_players(
+    *,
+    entities_by_device_id: dict[str, list[HomeAssistantEntity]],
+    raw_devices_by_id: dict[str, dict[str, Any]],
+    areas_by_id: dict[str, HomeAssistantArea],
+    music_assistant_config_entry_id: str | None,
+) -> tuple[HomeAssistantMediaPlayer, ...]:
+    players = []
+    for device_id, entities in entities_by_device_id.items():
+        raw_device = raw_devices_by_id.get(device_id, {})
+        for entity in entities:
+            if entity.domain != MEDIA_PLAYER_DOMAIN:
+                continue
+            area = areas_by_id.get(entity.area_id)
+            if area is None:
+                continue
+            players.append(
+                HomeAssistantMediaPlayer(
+                    entity_id=entity.entity_id,
+                    device_id=device_id,
+                    area_id=entity.area_id,
+                    area_name=area.name,
+                    name=_device_name(raw_device, entity),
+                    aliases=entity.aliases,
+                    state=entity.state,
+                    attributes=entity.attributes,
+                    volume_level=_optional_float(entity.attributes.get("volume_level")),
+                    is_music_assistant=_is_music_assistant_entity(entity, music_assistant_config_entry_id),
+                    is_speaker=_is_speaker_media_player(entity),
+                    platform=entity.platform,
+                    config_entry_id=entity.config_entry_id,
+                )
+            )
+    return tuple(sorted(players, key=lambda item: item.name.casefold()))
+
+
+def _build_media_players_by_area(
+    areas_by_id: dict[str, HomeAssistantArea],
+    players: tuple[HomeAssistantMediaPlayer, ...],
+) -> dict[str, tuple[HomeAssistantMediaPlayer, ...]]:
+    return {
+        area_id: tuple(player for player in players if player.area_id == area_id)
+        for area_id in areas_by_id
     }
 
 
@@ -742,6 +1018,9 @@ def _inventory_debug_summary(inventory: HomeAssistantInventory) -> dict[str, Any
 
 
 def _properties_for_entity(entity: HomeAssistantEntity) -> tuple[ModifiableProperty, ...]:
+    if entity.domain == MEDIA_PLAYER_DOMAIN:
+        return ()
+
     properties = [
         ModifiableProperty(
             property_name="on",
@@ -1169,6 +1448,34 @@ def _device_to_mapping(device: HomeAssistantDevice, inventory: HomeAssistantInve
     }
 
 
+def _media_player_to_mapping(player: HomeAssistantMediaPlayer) -> dict[str, Any]:
+    return {
+        "entity_id": player.entity_id,
+        "device_id": player.device_id,
+        "name": player.name,
+        "aliases": list(player.aliases),
+        "area_id": player.area_id,
+        "area_name": player.area_name,
+        "state": player.state,
+        "volume_level": player.volume_level,
+        "is_music_assistant": player.is_music_assistant,
+        "is_speaker": player.is_speaker,
+    }
+
+
+def _media_player_matches_filter(
+    player: HomeAssistantMediaPlayer,
+    *,
+    music_assistant_only: bool,
+    speakers_only: bool,
+) -> bool:
+    if music_assistant_only and not player.is_music_assistant:
+        return False
+    if speakers_only and not player.is_speaker:
+        return False
+    return player.state != "unavailable"
+
+
 def _build_area_lookup(areas_by_id: dict[str, HomeAssistantArea]) -> dict[str, tuple[str, ...]]:
     lookup: dict[str, list[str]] = {}
     for area in areas_by_id.values():
@@ -1197,6 +1504,29 @@ def _add_lookup(lookup: dict[str, list[str]], value: str, identifier: str) -> No
         lookup[key].append(identifier)
 
 
+def _inventory_domains(controllable_domains: tuple[str, ...]) -> set[str]:
+    return {*controllable_domains, MEDIA_PLAYER_DOMAIN}
+
+
+def _is_music_assistant_entity(entity: HomeAssistantEntity, config_entry_id: str | None) -> bool:
+    if entity.platform == MUSIC_ASSISTANT_PLATFORM:
+        return True
+    if config_entry_id and entity.config_entry_id == config_entry_id:
+        return True
+    return False
+
+
+def _is_speaker_media_player(entity: HomeAssistantEntity) -> bool:
+    device_class = entity.attributes.get("device_class")
+    if not isinstance(device_class, str) or not device_class:
+        return True
+    return device_class in {"speaker", "receiver"}
+
+
+def _clamp_volume(value: float) -> float:
+    return min(1.0, max(0.0, round(float(value), 2)))
+
+
 def _normalize_lookup(value: str) -> str:
     return re.sub(r"\s+", " ", value.casefold().strip())
 
@@ -1223,6 +1553,13 @@ def _first_string(*values: object) -> str:
         if isinstance(value, str) and value:
             return value
     raise ValueError("expected at least one non-empty string")
+
+
+def _first_optional_string(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _clean_aliases(raw_aliases: Any) -> tuple[str, ...]:

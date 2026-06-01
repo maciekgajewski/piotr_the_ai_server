@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import locale
 
 import pytest
@@ -15,7 +16,7 @@ from ai_server.ai_tools.web_search import WebSearchTool
 from ai_server.ai_tools.wikipedia import WikipediaTool
 from ai_server.config import AgentConfig
 from ai_server.home_assistant import HomeAssistantConnection, HomeAssistantServiceCall, parse_home_assistant_options
-from ai_server.home_assistant.connection import _build_inventory
+from ai_server.home_assistant.connection import _build_inventory, _call_home_assistant_service
 from ai_server.interfaces import Conversation
 from ai_server.messages import TextMessage, text_message_to_events
 from conftest import FakeConversationEndpoint
@@ -257,6 +258,58 @@ def test_home_assistant_find_devices_can_filter_by_area_alias() -> None:
     assert [device["device_id"] for device in result] == ["device-living-ac"]
 
 
+def test_home_assistant_lists_music_assistant_media_players() -> None:
+    connection = _sample_connection(_sample_media_inventory())
+
+    result = asyncio.run(connection.list_media_players(area_name="office"))
+
+    assert result == [
+        {
+            "entity_id": "media_player.office_speaker",
+            "device_id": "device-office-speaker",
+            "name": "Office speaker",
+            "aliases": ["office music"],
+            "area_id": "office",
+            "area_name": "Office",
+            "state": "playing",
+            "volume_level": 0.25,
+            "is_music_assistant": True,
+            "is_speaker": True,
+        }
+    ]
+
+
+def test_home_assistant_call_service_supports_return_response(monkeypatch) -> None:
+    fake_socket = FakeHomeAssistantWebSocket({"response": {"items": [{"name": "Soft Jazz"}]}})
+    monkeypatch.setattr("ai_server.home_assistant.connection._HomeAssistantWebSocket", fake_socket.factory)
+    options = parse_home_assistant_options(_sample_config().options)
+
+    result = asyncio.run(
+        _call_home_assistant_service(
+            options,
+            HomeAssistantServiceCall(
+                "music_assistant",
+                "search",
+                None,
+                {"config_entry_id": "ma-1", "name": "soft jazz"},
+                return_response=True,
+            ),
+            logging.getLogger("test"),
+        )
+    )
+
+    assert result == {"response": {"items": [{"name": "Soft Jazz"}]}}
+    assert fake_socket.payloads == [
+        {
+            "type": "call_service",
+            "domain": "music_assistant",
+            "service": "search",
+            "service_data": {"config_entry_id": "ma-1", "name": "soft jazz"},
+            "return_response": True,
+        }
+    ]
+
+
 def test_home_assistant_connection_updates_cached_state_from_state_changed_event() -> None:
     connection = HomeAssistantConnection(parse_home_assistant_options(_sample_config().options))
     connection._raw_areas = [{"area_id": "office", "name": "Office", "aliases": ["Biuro"]}]
@@ -407,6 +460,26 @@ class FakeOllamaClient:
         return {"message": {"role": "assistant", "content": "Jest południe."}}
 
 
+class FakeHomeAssistantWebSocket:
+    def __init__(self, result):
+        self.result = result
+        self.payloads = []
+
+    def factory(self, options, logger, *, log_traffic: bool):
+        del options, logger, log_traffic
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        pass
+
+    async def command(self, payload: dict):
+        self.payloads.append(payload)
+        return self.result
+
+
 class FakeAgentLoop:
     def __init__(self) -> None:
         self.config = None
@@ -534,6 +607,61 @@ def _sample_inventory():
                 "attributes": {"friendly_name": "Living room lamp", "supported_color_modes": ["brightness"]},
             },
             {"entity_id": "light.unassigned", "state": "off", "attributes": {"friendly_name": "Unassigned light"}},
+        ],
+        controllable_domains=("climate", "light", "switch", "fan", "cover"),
+    )
+
+
+def _sample_media_inventory():
+    return _build_inventory(
+        raw_areas=[
+            {"area_id": "office", "name": "Office", "aliases": ["Biuro"]},
+            {"area_id": "living_room", "name": "Living room", "aliases": ["Salon"]},
+        ],
+        raw_devices=[
+            {"id": "device-office-speaker", "name": "Office speaker", "name_by_user": None, "area_id": "office"},
+            {"id": "device-tv", "name": "TV", "name_by_user": None, "area_id": "living_room"},
+        ],
+        raw_entity_details=[
+            {
+                "entity_id": "media_player.office_speaker",
+                "device_id": "device-office-speaker",
+                "area_id": None,
+                "name": None,
+                "original_name": "Office speaker",
+                "aliases": ["office music"],
+                "platform": "music_assistant",
+                "config_entry_id": "ma-1",
+            },
+            {
+                "entity_id": "media_player.tv",
+                "device_id": "device-tv",
+                "area_id": None,
+                "name": None,
+                "original_name": "TV",
+                "aliases": [],
+                "platform": "cast",
+                "config_entry_id": "cast-1",
+            },
+        ],
+        raw_states=[
+            {
+                "entity_id": "media_player.office_speaker",
+                "state": "playing",
+                "attributes": {
+                    "friendly_name": "Office speaker",
+                    "volume_level": 0.25,
+                    "device_class": "speaker",
+                },
+            },
+            {
+                "entity_id": "media_player.tv",
+                "state": "idle",
+                "attributes": {
+                    "friendly_name": "TV",
+                    "device_class": "tv",
+                },
+            },
         ],
         controllable_domains=("climate", "light", "switch", "fan", "cover"),
     )

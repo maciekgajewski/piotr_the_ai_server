@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
 
@@ -40,6 +40,7 @@ class HomeAssistantOptions:
     controllable_domains: tuple[str, ...]
     inventory_refresh_seconds: float
     inventory_summary_seconds: float
+    music_assistant_config_entry_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,8 @@ class HomeAssistantEntity:
     aliases: tuple[str, ...]
     state: str
     attributes: dict[str, Any]
+    platform: str = ""
+    config_entry_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -96,11 +99,31 @@ class HomeAssistantInventory:
     devices_by_area: dict[str, tuple[HomeAssistantDevice, ...]]
     area_lookup: dict[str, tuple[str, ...]]
     device_lookup: dict[str, tuple[str, ...]]
+    media_players_by_entity_id: dict[str, "HomeAssistantMediaPlayer"] = field(default_factory=dict)
+    media_players_by_area: dict[str, tuple["HomeAssistantMediaPlayer", ...]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class HomeAssistantMediaPlayer:
+    entity_id: str
+    device_id: str
+    area_id: str
+    area_name: str
+    name: str
+    aliases: tuple[str, ...]
+    state: str
+    attributes: dict[str, Any]
+    volume_level: float | None
+    is_music_assistant: bool
+    is_speaker: bool
+    platform: str = ""
+    config_entry_id: str = ""
 
 
 @dataclass(frozen=True)
 class HomeAssistantServiceCall:
     domain: str
     service: str
-    entity_id: str
+    entity_id: str | list[str] | None
     service_data: dict[str, Any]
+    return_response: bool = False

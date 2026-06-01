@@ -21,6 +21,7 @@ agent:
 #     time: {}
 #     wikipedia: {}
 #     weather: {}
+#     media_player: {}
 #     home_assistant:
 #       model: gpt-oss:20b-cloud
 #       fallback_model: qwen3:4b-instruct

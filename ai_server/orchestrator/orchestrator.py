@@ -59,7 +59,7 @@ Return schema:
   "tasks": [
     {
       "id": "t1",
-      "domain": "home_assistant|time|wikipedia|weather|spotify|general",
+      "domain": "home_assistant|media_player|time|wikipedia|weather|general",
       "command": {},
       "depends_on": [],
       "status": "ready|blocked",
@@ -104,6 +104,20 @@ For plain local weather questions, omit location; the weather agent already know
 For weather questions about later today, tonight, evening, rain, or whether something will happen, use get_weather_forecast, not get_weather_now.
 Use focus="temperature" only when the user asks about temperature or degrees.
 Never copy conversation.area into weather.location.
+
+For media_player tasks, command should be:
+{
+  "intent": "start_last|stop|volume_delta|set_volume|play_media|now_playing",
+  "query": "original user phrase or media search text",
+  "media_type": "track|album|playlist|radio|artist optional",
+  "areas": ["optional named rooms"],
+  "all_speakers": false,
+  "volume_level": 0.0,
+  "volume_delta": 0.0
+}
+For music commands without a named room, omit areas; the media player agent will use conversation.area.
+Use all_speakers=true only when the user explicitly asks for all speakers/everywhere/whole house/wszystkie głośniki.
+For "moje ulubione", use query="Liked Songs" and media_type="playlist".
 """
 
 FINAL_REPLY_SYSTEM_PROMPT = """
@@ -946,6 +960,8 @@ def _validate_task(raw_task: Any, index: int) -> DomainTask:
         raise ValueError(f"orchestrator task {task_id} command must be an object")
     if domain == "home_assistant":
         command = _validate_home_assistant_command(command, task_id)
+    elif domain == "media_player":
+        command = _validate_media_player_command(command, task_id)
     else:
         command = to_json_value(command)
 
@@ -1010,6 +1026,47 @@ def _validate_home_assistant_command(command: dict[str, Any], task_id: str) -> d
             "parameters": to_json_value(parameters),
         },
     }
+
+
+def _validate_media_player_command(command: dict[str, Any], task_id: str) -> dict[str, Any]:
+    intent = command.get("intent")
+    if not isinstance(intent, str) or not intent:
+        raise ValueError(f"orchestrator task {task_id} media_player intent must be a non-empty string")
+
+    validated: dict[str, Any] = {"intent": intent}
+    for key in ("query", "media_type"):
+        value = command.get(key, "")
+        if value is None:
+            value = ""
+        if not isinstance(value, str):
+            raise ValueError(f"orchestrator task {task_id} media_player {key} must be a string")
+        if value:
+            validated[key] = value
+
+    areas = command.get("areas", [])
+    if areas is None:
+        areas = []
+    if isinstance(areas, str):
+        areas = [areas]
+    if not isinstance(areas, list) or any(not isinstance(area, str) for area in areas):
+        raise ValueError(f"orchestrator task {task_id} media_player areas must be a list of strings")
+    if areas:
+        validated["areas"] = areas
+
+    all_speakers = command.get("all_speakers", False)
+    if not isinstance(all_speakers, bool):
+        raise ValueError(f"orchestrator task {task_id} media_player all_speakers must be a boolean")
+    if all_speakers:
+        validated["all_speakers"] = True
+
+    for key in ("volume_level", "volume_delta"):
+        value = command.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(f"orchestrator task {task_id} media_player {key} must be a number")
+        validated[key] = float(value)
+    return validated
 
 
 def _validate_selector_list(raw_selectors: Any, task_id: str, field: str) -> list[dict[str, Any]]:

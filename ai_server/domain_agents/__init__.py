@@ -5,6 +5,7 @@ from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, ServerConfig
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
 from ai_server.domain_agents.interfaces import DomainAgent, DomainTask
+from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
 from ai_server.domain_agents.weather import WeatherDomainAgent
 from ai_server.domain_agents.wikipedia import WikipediaDomainAgent
 from ai_server.home_assistant import HomeAssistantConnection
@@ -42,6 +43,18 @@ def create_domain_agents(
                 timezone=_optional_domain_string(raw_options, domain, "timezone", server_config.timezone),
                 location=_optional_domain_string(raw_options, domain, "location", server_config.location),
                 cache_dir=_domain_cache_dir(raw_options, domain, cache_dir),
+            )
+            continue
+        if domain == "media_player":
+            if home_assistant_connection is None:
+                raise ValueError("agent.domain_agents.media_player requires home_assistant config")
+            domain_agents[domain] = MediaPlayerDomainAgent(
+                model=_domain_agent_model(config.options, raw_options, domain),
+                fallback_model=_domain_agent_fallback_model(config.options, raw_options, domain),
+                fallback_backoff_seconds=_domain_agent_fallback_backoff_seconds(config.options, raw_options, domain),
+                ollama_url=ollama_url,
+                connection=home_assistant_connection,
+                liked_songs_media_id=_optional_domain_string(raw_options, domain, "liked_songs_media_id", "Liked Songs") or "Liked Songs",
             )
             continue
         if domain == "wikipedia":

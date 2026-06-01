@@ -45,6 +45,39 @@ def test_parse_plan_validates_home_assistant_command_envelope() -> None:
     assert plan["tasks"][0]["command"]["operation"]["intent"] == "turn_off"
 
 
+def test_parse_plan_validates_media_player_command() -> None:
+    plan = _parse_plan(
+        json.dumps(
+            {
+                "kind": "single_task",
+                "confidence": 0.9,
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "domain": "media_player",
+                        "command": {
+                            "intent": "play_media",
+                            "query": "Liked Songs",
+                            "media_type": "playlist",
+                            "all_speakers": True,
+                        },
+                    }
+                ],
+                "context_updates": {"salient_entities": [], "active_domain": "media_player"},
+                "needs_clarification": False,
+                "clarification_question": None,
+            }
+        )
+    )
+
+    assert plan["tasks"][0]["command"] == {
+        "intent": "play_media",
+        "query": "Liked Songs",
+        "media_type": "playlist",
+        "all_speakers": True,
+    }
+
+
 def test_parse_plan_ignores_embedded_string_fragments_in_tasks() -> None:
     plan = _parse_plan(
         json.dumps(
