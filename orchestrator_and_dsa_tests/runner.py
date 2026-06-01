@@ -22,6 +22,7 @@ import agent_tool_eval
 from ai_server.orchestrator import OrchestratorAgent
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
+from ai_server.domain_agents.weather import CurrentWeather, WeatherDomainAgent, WeatherNowRequest
 from ai_server.domain_agents.wikipedia import WikipediaArticle, WikipediaDomainAgent
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import ConversationInputEvent, ConversationOutputEvent, MessageBegin, MessageEnd
@@ -194,6 +195,33 @@ class FakeWikipediaClient:
         pass
 
 
+class FakeWeatherProvider:
+    name = "fake_weather"
+
+    def __init__(self, current: CurrentWeather) -> None:
+        self._current = current
+
+    async def get_weather_now(self, request: WeatherNowRequest) -> CurrentWeather | None:
+        del request
+        return self._current
+
+    async def get_weather_forecast(self, request):
+        del request
+        return None
+
+    async def close(self) -> None:
+        pass
+
+
+class FakeWeatherOllamaClient:
+    async def chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        del payload
+        raise AssertionError("unexpected weather LLM call")
+
+    async def close(self) -> None:
+        pass
+
+
 def main() -> int:
     args = _parse_args()
     config = _load_yaml(args.config)
@@ -325,6 +353,8 @@ async def _run_case(case: TestCase, settings: dict[str, Any]) -> CaseResult:
         return await _run_dsa_time_case(case, settings)
     if case.kind == "dsa_wikipedia":
         return await _run_dsa_wikipedia_case(case, settings)
+    if case.kind == "dsa_weather":
+        return await _run_dsa_weather_case(case, settings)
     if case.kind == "composite":
         return await _run_composite_case(case, settings)
     return CaseResult(case=case, failures=[f"unsupported case type: {case.kind}"])
@@ -461,6 +491,42 @@ async def _run_dsa_wikipedia_case(case: TestCase, settings: dict[str, Any]) -> C
         await agent.close()
     result.duration_seconds = time.perf_counter() - started_at
     result.task_results = [{"task": _task(raw), "result": dsa_result, "queries": list(client.queries)}]
+    result.replies = [_str_or_default(dsa_result.get("text"), "")]
+    _score_result_match(result, raw.get("expected_result"), dsa_result, "DSA result")
+    _score_reply_expectations(result)
+    return result
+
+
+async def _run_dsa_weather_case(case: TestCase, settings: dict[str, Any]) -> CaseResult:
+    started_at = time.perf_counter()
+    raw = case.raw
+    current = CurrentWeather(
+        location=settings["location"],
+        provider="fake_weather",
+        observed_at=settings["fixed_utc"].astimezone(ZoneInfo(settings["timezone"])),
+        station_name=settings["location"],
+        temperature_c=15.7,
+        humidity_percent=90.0,
+        pressure_hpa=1012.3,
+        wind_speed_kmh=10.8,
+        wind_direction_deg=270,
+        precipitation_mm=1.4,
+    )
+    agent = WeatherDomainAgent(
+        model=settings["dsa_model"],
+        ollama_url=settings["ollama_url"],
+        location=settings["location"],
+        cache_dir=Path(tempfile.gettempdir()),
+        providers=[FakeWeatherProvider(current)],
+        ollama_client=FakeWeatherOllamaClient(),
+    )
+    result = CaseResult(case=case)
+    try:
+        dsa_result = await agent.run_task(_conversation(raw, settings, f"dsa-weather-{case.name}"), _task(raw), {})
+    finally:
+        await agent.close()
+    result.duration_seconds = time.perf_counter() - started_at
+    result.task_results = [{"task": _task(raw), "result": dsa_result}]
     result.replies = [_str_or_default(dsa_result.get("text"), "")]
     _score_result_match(result, raw.get("expected_result"), dsa_result, "DSA result")
     _score_reply_expectations(result)

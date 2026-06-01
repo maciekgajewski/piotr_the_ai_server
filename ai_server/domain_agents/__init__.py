@@ -5,6 +5,7 @@ from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, ServerConfig
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
 from ai_server.domain_agents.interfaces import DomainAgent, DomainTask
+from ai_server.domain_agents.weather import WeatherDomainAgent
 from ai_server.domain_agents.wikipedia import WikipediaDomainAgent
 from ai_server.home_assistant import HomeAssistantConnection
 
@@ -46,6 +47,16 @@ def create_domain_agents(
         if domain == "wikipedia":
             domain_agents[domain] = WikipediaDomainAgent(
                 languages=_domain_languages(raw_options, domain),
+            )
+            continue
+        if domain == "weather":
+            domain_agents[domain] = WeatherDomainAgent(
+                model=_domain_agent_model(config.options, raw_options, domain),
+                fallback_model=_domain_agent_fallback_model(config.options, raw_options, domain),
+                fallback_backoff_seconds=_domain_agent_fallback_backoff_seconds(config.options, raw_options, domain),
+                ollama_url=ollama_url,
+                location=_optional_domain_string(raw_options, domain, "location", server_config.location),
+                cache_dir=_domain_cache_dir(raw_options, domain, cache_dir),
             )
             continue
         domain_agents[domain] = _UnsupportedConfiguredDomainAgent(domain)

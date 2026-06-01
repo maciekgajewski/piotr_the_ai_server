@@ -20,6 +20,7 @@ agent:
 #   domain_agents:
 #     time: {}
 #     wikipedia: {}
+#     weather: {}
 #     home_assistant:
 #       model: gpt-oss:20b-cloud
 #       fallback_model: qwen3:4b-instruct

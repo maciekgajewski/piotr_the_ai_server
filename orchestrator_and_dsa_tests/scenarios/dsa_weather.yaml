@@ -1,0 +1,17 @@
+group: dsa_weather
+type: dsa_weather
+
+cases:
+  - id: current_temperature
+    task:
+      id: t1
+      domain: weather
+      command:
+        tool: get_weather_now
+        query: Jaka jest temperatura?
+        focus: temperature
+    expected_result:
+      status: ok
+      final_reply_mode: verbatim
+    expected_replies:
+      - contains_all: [Wrocławiu, "16", stopni]

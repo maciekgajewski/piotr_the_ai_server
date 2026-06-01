@@ -243,6 +243,40 @@ def test_orchestrator_short_path_dispatches_known_time_utterance_without_ollama(
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="czternasta zero pięć")))
 
 
+def test_orchestrator_short_path_dispatches_weather_utterance_without_ollama() -> None:
+    ollama = FakeOllamaClient([])
+    domain_agent = RecordingDomainAgent(
+        [{"status": "ok", "text": "We Wrocławiu jest 16 stopni.", "final_reply_mode": "verbatim"}]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="qwen3:4b-instruct",
+        domain_agents={"weather": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="Jaka pogoda na weekend?")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={}), endpoint))
+
+    assert ollama.requests == []
+    assert domain_agent.tasks == [
+        {
+            "id": "t1",
+            "domain": "weather",
+            "command": {
+                "tool": "get_weather_forecast",
+                "query": "Jaka pogoda na weekend?",
+                "horizon": "weekend",
+                "granularity": "daily",
+            },
+            "depends_on": [],
+            "status": "ready",
+            "clarification_question": None,
+        }
+    ]
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="We Wrocławiu jest 16 stopni.")))
+
+
 def test_orchestrator_retries_low_confidence_plan_with_clarification_model() -> None:
     low_confidence_plan = {
         "kind": "chat",

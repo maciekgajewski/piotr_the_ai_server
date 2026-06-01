@@ -13,6 +13,7 @@ from ai_server.ai_tools.calculator import CalculatorTool
 from ai_server.ai_tools.home_assistant import HomeAssistantTool
 from ai_server.config import AgentConfig, ServerConfig
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
+from ai_server.domain_agents.weather import WeatherDomainAgent
 from ai_server.domain_agents.wikipedia import WikipediaDomainAgent
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 
@@ -108,6 +109,7 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
                     "home_assistant": {"model": "qwen3:8b", "fallback_model": "qwen3:4b"},
                     "time": {},
                     "wikipedia": {},
+                    "weather": {},
                 },
                 "home_assistant": {
                     "url": "http://ha.local:8123",
@@ -141,6 +143,10 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert agent._domain_agents["time"]._location == "Wrocław"
             assert isinstance(agent._domain_agents["wikipedia"], WikipediaDomainAgent)
             assert agent._domain_agents["wikipedia"]._languages == ("pl", "en")
+            assert isinstance(agent._domain_agents["weather"], WeatherDomainAgent)
+            assert agent._domain_agents["weather"]._model == "gpt-oss:20b-cloud"
+            assert agent._domain_agents["weather"]._fallback_model == "qwen3:4b-instruct-fallback"
+            assert agent._domain_agents["weather"]._location == "Wrocław"
         finally:
             await agent.close()
 

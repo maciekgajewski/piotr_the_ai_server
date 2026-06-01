@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import re
@@ -15,7 +14,7 @@ from ai_server.domain_agents import DomainAgent, DomainTask
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import RequestFollowUp, TextMessage
 from ai_server.ollama import OLLAMA_BASE_URL, OllamaClient, OllamaError
-from ai_server.orchestrator.known_utterances import KNOWN_UTTERANCE_TASKS
+from ai_server.orchestrator.known_utterances import known_utterance_task
 from ai_server.utils.text import normalize_text
 
 
@@ -97,6 +96,14 @@ Never copy conversation.area into time.geo_location.
 
 For wikipedia tasks, command should be:
 {"intent": "lookup_fact|summary|where_is|coordinates", "topic": "article/search topic", "fact": "birth_year|coordinates|location optional"}
+
+For weather tasks, command should be one of:
+{"tool": "get_weather_now", "query": "original weather question", "location": "optional geographic place", "focus": "temperature optional"}
+{"tool": "get_weather_forecast", "query": "original weather question", "location": "optional geographic place", "horizon": "today|tomorrow|weekend|next_weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday", "granularity": "daily|hourly", "focus": "temperature optional"}
+For plain local weather questions, omit location; the weather agent already knows server_location.
+For weather questions about later today, tonight, evening, rain, or whether something will happen, use get_weather_forecast, not get_weather_now.
+Use focus="temperature" only when the user asks about temperature or degrees.
+Never copy conversation.area into weather.location.
 """
 
 FINAL_REPLY_SYSTEM_PROMPT = """
@@ -627,13 +634,13 @@ def _elapsed_ms(started_at: float) -> int:
 
 
 def _short_path_plan(user_input: str) -> dict[str, Any] | None:
-    task = KNOWN_UTTERANCE_TASKS.get(normalize_text(user_input))
+    task = known_utterance_task(user_input)
     if task is None:
         return None
     return {
         "kind": "single_task",
         "confidence": 1.0,
-        "tasks": [copy.deepcopy(task)],
+        "tasks": [task],
         "context_updates": {"salient_entities": [], "active_domain": task["domain"]},
         "needs_clarification": False,
         "clarification_question": None,
