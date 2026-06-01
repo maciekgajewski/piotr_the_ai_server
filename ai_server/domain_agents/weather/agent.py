@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +18,9 @@ from ai_server.domain_agents.weather.interfaces import (
     WeatherNowRequest,
     WeatherProvider,
 )
-from ai_server.domain_agents.weather.messages import WEATHER_COMPLEX_SYSTEM_PROMPT
+from ai_server.domain_agents.weather.messages import WEATHER_COMPLEX_SYSTEM_PROMPT, WEATHER_LOCATION_CANONICALIZATION_SYSTEM_PROMPT
 from ai_server.domain_agents.weather.parser import ParsedWeatherCommand, parse_weather_command
+from ai_server.utils.text import normalize_text
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
 from ai_server.interfaces import Conversation
@@ -83,10 +85,18 @@ class WeatherDomainAgent:
         if parsed.tool == "get_weather_now":
             weather = await self._get_weather_now(parsed)
             if weather is None:
+                canonical = await self._with_canonical_location(parsed)
+                if canonical is not None:
+                    weather = await self._get_weather_now(canonical)
+            if weather is None:
                 return _not_found_result(parsed.location)
             return await self._result_for_current_weather(parsed, weather)
 
         forecast = await self._get_weather_forecast(parsed)
+        if forecast is None:
+            canonical = await self._with_canonical_location(parsed)
+            if canonical is not None:
+                forecast = await self._get_weather_forecast(canonical)
         if forecast is None:
             return _not_found_result(parsed.location)
         return await self._result_for_forecast(parsed, forecast)
@@ -186,6 +196,39 @@ class WeatherDomainAgent:
             return "Nie mogę teraz przygotować odpowiedzi pogodowej."
         return message["content"].strip() or "Nie mogę teraz przygotować odpowiedzi pogodowej."
 
+    async def _with_canonical_location(self, parsed: ParsedWeatherCommand) -> ParsedWeatherCommand | None:
+        canonical_location = await self._canonicalize_location(parsed)
+        if canonical_location is None or normalize_text(canonical_location) == normalize_text(parsed.location):
+            return None
+        self._logger.info("retrying weather task with canonical location original=%r canonical=%r", parsed.location, canonical_location)
+        return replace(parsed, location=canonical_location)
+
+    async def _canonicalize_location(self, parsed: ParsedWeatherCommand) -> str | None:
+        payload = {
+            "query": parsed.query,
+            "location": parsed.location,
+            "server_location": self._location,
+        }
+        try:
+            response = await self._chat_with_fallback(
+                {
+                    "raw": False,
+                    "think": False,
+                    "format": "json",
+                    "stream": False,
+                    "keep_alive": "1h",
+                    "options": {"num_predict": 64, "temperature": 0, "num_ctx": 2048},
+                    "messages": [
+                        {"role": "system", "content": WEATHER_LOCATION_CANONICALIZATION_SYSTEM_PROMPT},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                }
+            )
+        except Exception:
+            self._logger.debug("weather location canonicalization failed location=%r", parsed.location, exc_info=True)
+            return None
+        return _parse_canonical_location(response)
+
     async def _chat_with_fallback(self, payload: dict[str, Any]) -> dict[str, Any]:
         model = self._fallback_model if self._fallback_model and time.monotonic() < self._fallback_until else self._model
         try:
@@ -234,3 +277,23 @@ def _not_found_result(location: str) -> dict[str, Any]:
         "clarification_question": None,
         "entities": [],
     }
+
+
+def _parse_canonical_location(response: dict[str, Any]) -> str | None:
+    message = response.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    try:
+        raw = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    confidence = raw.get("confidence")
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or confidence < 0.55:
+        return None
+    location = raw.get("location")
+    return location.strip() if isinstance(location, str) and location.strip() else None

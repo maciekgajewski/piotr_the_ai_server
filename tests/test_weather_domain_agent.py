@@ -287,6 +287,54 @@ def test_weather_domain_agent_uses_forecast_for_evening_rain_even_when_planner_a
     assert provider.forecast_requests == [WeatherForecastRequest(location="Wrocław", horizon="today", granularity="hourly")]
 
 
+def test_weather_domain_agent_canonicalizes_location_with_llm_after_provider_miss() -> None:
+    forecast = WeatherForecast(
+        location="Szklarska Poręba",
+        provider="fake",
+        timezone="Europe/Warsaw",
+        horizon="weekend",
+        granularity="daily",
+    )
+    provider = LocationSensitiveWeatherProvider(
+        forecast=forecast,
+        forecast_location="Szklarska Poręba",
+    )
+    ollama = ReplyingOllamaClient('{"location":"Szklarska Poręba","confidence":0.88}')
+    agent = WeatherDomainAgent(
+        model="qwen3:4b-instruct",
+        location="Wrocław",
+        cache_dir=Path("/tmp/piotr-test-cache"),
+        providers=[provider],
+        ollama_client=ollama,
+    )
+
+    result = asyncio.run(
+        agent.run_task(
+            Conversation(conversation_id="c1", attributes={}),
+            {
+                "id": "t1",
+                "domain": "weather",
+                "command": {
+                    "tool": "get_weather_forecast",
+                    "query": "Jaka pogoda na weekend w Szkarskiej Porębie?",
+                    "location": "Szkarskiej Porębie",
+                    "horizon": "weekend",
+                    "granularity": "daily",
+                },
+            },
+            {},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert provider.forecast_requests == [
+        WeatherForecastRequest(location="Szkarskiej Porębie", horizon="weekend", granularity="daily"),
+        WeatherForecastRequest(location="Szklarska Poręba", horizon="weekend", granularity="daily"),
+    ]
+    payload = ollama.requests[0]["messages"][-1]["content"]
+    assert "Szkarskiej Porębie" in payload
+
+
 def test_format_current_weather_temperature_focus() -> None:
     weather = CurrentWeather(
         location="Wrocław",
@@ -346,6 +394,27 @@ class FakeWeatherProvider:
     async def get_weather_forecast(self, request):
         self.forecast_requests.append(request)
         return self.forecast
+
+    async def close(self) -> None:
+        pass
+
+
+class LocationSensitiveWeatherProvider:
+    name = "location_sensitive"
+
+    def __init__(self, *, forecast: WeatherForecast, forecast_location: str) -> None:
+        self._forecast = forecast
+        self._forecast_location = forecast_location
+        self.forecast_requests = []
+
+    async def get_weather_now(self, request):
+        return None
+
+    async def get_weather_forecast(self, request):
+        self.forecast_requests.append(request)
+        if request.location == self._forecast_location:
+            return self._forecast
+        return None
 
     async def close(self) -> None:
         pass
