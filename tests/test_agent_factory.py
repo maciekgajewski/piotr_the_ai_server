@@ -152,6 +152,8 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert isinstance(agent._domain_agents["media_player"], MediaPlayerDomainAgent)
             assert agent._domain_agents["media_player"]._model == "gpt-oss:20b-cloud"
             assert agent._domain_agents["media_player"]._fallback_model == "qwen3:4b-instruct-fallback"
+            assert agent._domain_agents["media_player"]._default_music_media_id == "Liked Songs"
+            assert agent._domain_agents["media_player"]._default_music_media_type == "playlist"
         finally:
             await agent.close()
 

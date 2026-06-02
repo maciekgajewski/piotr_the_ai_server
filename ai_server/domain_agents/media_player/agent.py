@@ -32,6 +32,9 @@ class MediaPlayerDomainAgent:
         fallback_backoff_seconds: float = 300.0,
         ollama_client: OllamaClient | None = None,
         liked_songs_media_id: str = "Liked Songs",
+        default_music_media_id: str = "Liked Songs",
+        default_music_media_type: str = "playlist",
+        default_music_name: str = "muzykę ze Spotify",
     ) -> None:
         self._model = model
         self._connection = connection
@@ -42,6 +45,9 @@ class MediaPlayerDomainAgent:
         self._owns_ollama = ollama_client is None
         self._fallback_until = 0.0
         self._liked_songs_media_id = liked_songs_media_id
+        self._default_music_media_id = default_music_media_id
+        self._default_music_media_type = default_music_media_type
+        self._default_music_name = default_music_name
         self._logger = logging.getLogger(f"{__name__}.MediaPlayerDomainAgent[{model}]")
 
     async def run_task(
@@ -101,10 +107,14 @@ class MediaPlayerDomainAgent:
         targets = await self._targets(conversation, parsed)
         if isinstance(targets, dict):
             return targets
-        result = await self._connection.media_player_play([target.entity_id for target in targets])
+        result = await self._connection.music_assistant_play_media(
+            [target.entity_id for target in targets],
+            media_id=self._default_music_media_id,
+            media_type=self._default_music_media_type,
+        )
         if result.get("status") != "ok":
-            return _failed_result("Nie udało się włączyć muzyki.")
-        return _ok_result(format_started(len(targets)), targets)
+            return _failed_result("Nie udało się włączyć muzyki ze Spotify.")
+        return _ok_result(format_started(len(targets), self._default_music_name), targets)
 
     async def _stop(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
         targets = await self._targets(conversation, parsed)
@@ -116,7 +126,7 @@ class MediaPlayerDomainAgent:
         return _ok_result(format_stopped(len(targets)), targets)
 
     async def _volume_delta(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
-        targets = await self._targets(conversation, parsed)
+        targets = await self._targets(conversation, parsed, allow_playing_fallback=True)
         if isinstance(targets, dict):
             return targets
         delta = parsed.volume_delta if parsed.volume_delta is not None else DEFAULT_VOLUME_DELTA
@@ -129,7 +139,7 @@ class MediaPlayerDomainAgent:
     async def _set_volume(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
         if parsed.volume_level is None:
             return _clarification_result("Na jaką głośność mam ustawić muzykę?")
-        targets = await self._targets(conversation, parsed)
+        targets = await self._targets(conversation, parsed, allow_playing_fallback=True)
         if isinstance(targets, dict):
             return targets
         result = await self._connection.media_player_volume_set([target.entity_id for target in targets], parsed.volume_level)
@@ -175,33 +185,42 @@ class MediaPlayerDomainAgent:
         allow_playing_fallback: bool = False,
     ) -> list[MediaTarget] | dict[str, Any]:
         if parsed.all_speakers:
-            result = await self._connection.list_media_players()
+            result = await self._list_speaker_players()
             return _targets_from_result(result)
 
         if parsed.areas:
             targets: list[MediaTarget] = []
             for area in parsed.areas:
-                result = await self._connection.list_media_players(area_name=area)
+                result = await self._list_speaker_players(area_name=area)
                 if isinstance(result, dict):
-                    return _clarification_result(f"Nie znam pokoju: {area}.")
+                    return _failed_result(f"Nie znam pokoju: {area}.")
                 targets.extend(_targets_from_player_mappings(result))
             if targets:
                 return _dedupe_targets(targets)
-            return _clarification_result("Nie znalazłem głośnika w tym pokoju.")
+            return _failed_result("Nie znalazłem głośnika w tym pokoju.")
 
         if conversation.area:
-            result = await self._connection.list_media_players(area_name=conversation.area)
+            result = await self._list_speaker_players(area_name=conversation.area)
             targets = _targets_from_result(result)
             if not isinstance(targets, dict) and targets:
                 return targets
 
         if allow_playing_fallback:
-            result = await self._connection.list_media_players()
+            result = await self._list_speaker_players()
             if isinstance(result, list):
                 playing = [target for target in _targets_from_player_mappings(result) if _player_state(result, target.entity_id) == "playing"]
                 if len(playing) == 1:
                     return playing
+        if conversation.area:
+            return _failed_result("Nie znalazłem głośnika w tym pokoju.")
         return _clarification_result("W którym pokoju mam użyć głośnika?")
+
+    async def _list_speaker_players(self, *, area_name: str = "") -> list[dict[str, Any]] | dict[str, Any]:
+        return await self._connection.list_media_players(
+            area_name=area_name,
+            music_assistant_only=False,
+            speakers_only=True,
+        )
 
     async def _search_media(self, parsed: ParsedMediaCommand) -> MediaSearchItem | None:
         query = self._liked_songs_media_id if parsed.query == "Liked Songs" else parsed.query
@@ -212,6 +231,9 @@ class MediaPlayerDomainAgent:
                 return item
         if query == self._liked_songs_media_id:
             return MediaSearchItem(media_id=query, name=query, media_type="playlist")
+        if result.get("error") == "music_assistant_config_entry_not_found":
+            self._logger.info("Music Assistant search unavailable; using raw play_media media_id=%r", query)
+            return MediaSearchItem(media_id=query, name=query, media_type=parsed.media_type)
         return None
 
     async def _complex_command(

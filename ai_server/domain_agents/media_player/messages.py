@@ -19,5 +19,6 @@ Rules:
 - volume_level is a float from 0.0 to 1.0.
 - volume_delta is positive or negative float, normally 0.10 or -0.10.
 - For "moje ulubione", "my favourites", or "liked songs", set query to "Liked Songs" and media_type to "playlist".
+- For "TOK FM", set query to "TOK FM" and media_type to "radio".
 - Preserve user-provided music search text without translating names.
 """

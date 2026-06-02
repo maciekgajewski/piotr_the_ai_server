@@ -25,7 +25,14 @@ TRANSCRIPT_REPLACEMENTS = (
         pattern=re.compile(r"\bwędylacji\b"),
         replacement="wentylacji",
     ),
-
+    TranscriptReplacementRule(
+        pattern=re.compile(r"\bprzekłaśnij\b"),
+        replacement="przygłośnij",
+    ),
+    TranscriptReplacementRule(
+        pattern=re.compile(r"\bpo kłodach\b"),
+        replacement="pogoda",
+    ),
 )
 
 class TranscriptPreprocessor:

@@ -22,10 +22,10 @@ def format_now_playing(now_playing: dict[str, Any]) -> str:
     return f"Teraz gra {artist}."
 
 
-def format_started(target_count: int) -> str:
+def format_started(target_count: int, media_name: str = "muzykę") -> str:
     if target_count > 1:
-        return "Włączam muzykę na wybranych głośnikach."
-    return "Włączam muzykę."
+        return f"Włączam {media_name} na wybranych głośnikach."
+    return f"Włączam {media_name}."
 
 
 def format_stopped(target_count: int) -> str:

@@ -310,6 +310,50 @@ def test_orchestrator_short_path_dispatches_weather_utterance_without_ollama() -
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="We Wrocławiu jest 16 stopni.")))
 
 
+def test_orchestrator_short_path_dispatches_media_stop_with_wake_word_tail_without_ollama() -> None:
+    ollama = FakeOllamaClient([])
+    domain_agent = RecordingDomainAgent(
+        [{"status": "ok", "text": "Zatrzymałem muzykę.", "final_reply_mode": "verbatim"}]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="qwen3:4b-instruct",
+        domain_agents={"media_player": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="Zatrzymaj muzykę. Ok, na pół.")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"area": "bedroom"}), endpoint))
+
+    assert ollama.requests == []
+    assert domain_agent.tasks[0]["domain"] == "media_player"
+    assert domain_agent.tasks[0]["command"]["intent"] == "stop"
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Zatrzymałem muzykę.")))
+
+
+def test_orchestrator_short_path_dispatches_tok_fm_without_ollama() -> None:
+    ollama = FakeOllamaClient([])
+    domain_agent = RecordingDomainAgent(
+        [{"status": "ok", "text": "Włączam TOK FM.", "final_reply_mode": "verbatim"}]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="qwen3:4b-instruct",
+        domain_agents={"media_player": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="Włącz TOK FM w całym domu")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"area": "bedroom"}), endpoint))
+
+    assert ollama.requests == []
+    assert domain_agent.tasks[0]["domain"] == "media_player"
+    assert domain_agent.tasks[0]["command"]["intent"] == "play_media"
+    assert domain_agent.tasks[0]["command"]["media_type"] == "radio"
+    assert domain_agent.tasks[0]["command"]["all_speakers"] is True
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Włączam TOK FM.")))
+
+
 def test_orchestrator_retries_low_confidence_plan_with_clarification_model() -> None:
     low_confidence_plan = {
         "kind": "chat",
@@ -713,6 +757,54 @@ def test_orchestrator_pending_clarification_takes_priority_over_short_path() -> 
     assert [request["model"] for request in ollama.requests] == ["big", "small"]
     assert [task["domain"] for task in domain_agent.tasks] == ["home_assistant"]
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Włączyłem światło w salonie.")))
+
+
+def test_orchestrator_clears_pending_clarification_on_thanks() -> None:
+    ollama = FakeOllamaClient([])
+    domain_agent = RecordingDomainAgent()
+    agent = OrchestratorAgent(
+        orchestrator_model="small",
+        clarification_model="big",
+        domain_agents={"media_player": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    conversation = Conversation(conversation_id="c1", attributes={"area": "bedroom"})
+    conversation.state["orchestrator"] = {
+        "last_turns": [{"user": "Przygłośnij muzykę.", "assistant": "W którym pokoju mam użyć głośnika?"}],
+        "salient_entities": [],
+        "active_domain": "media_player",
+        "pending_tasks": [],
+        "pending_clarification": {
+            "domain": "media_player",
+            "task": {
+                "id": "t1",
+                "domain": "media_player",
+                "command": {"intent": "volume_delta", "query": "Przygłośnij muzykę.", "volume_delta": 0.1},
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            },
+            "task_result": {
+                "task_id": "t1",
+                "domain": "media_player",
+                "status": "needs_clarification",
+                "text": "W którym pokoju mam użyć głośnika?",
+                "needs_clarification": True,
+                "clarification_question": "W którym pokoju mam użyć głośnika?",
+            },
+            "clarification_question": "W którym pokoju mam użyć głośnika?",
+        },
+    }
+    endpoint = FakeConversationEndpoint([TextMessage(text="Dziękuję.")])
+
+    asyncio.run(agent.run_conversation(conversation, endpoint))
+
+    assert ollama.requests == []
+    assert domain_agent.tasks == []
+    assert conversation.state["orchestrator"]["pending_clarification"] is None
+    assert endpoint.control_events == []
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="")))
 
 
 def test_orchestrator_drops_unanswered_clarification_when_conversation_ends() -> None:

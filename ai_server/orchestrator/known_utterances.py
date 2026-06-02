@@ -136,6 +136,14 @@ KNOWN_UTTERANCE_TASKS: dict[str, DomainTask] = {
         "status": "ready",
         "clarification_question": None,
     },
+    normalize_text("Wyłącz muzykę"): {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "stop", "query": "Wyłącz muzykę"},
+        "depends_on": [],
+        "status": "ready",
+        "clarification_question": None,
+    },
     normalize_text("Co to teraz gra?"): {
         "id": "t1",
         "domain": "media_player",

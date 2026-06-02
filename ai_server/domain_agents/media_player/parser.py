@@ -10,6 +10,7 @@ from ai_server.utils.text import normalize_text
 
 
 DEFAULT_VOLUME_DELTA = 0.10
+TRIM_CHARACTERS = " \t\r\n?.!,;:'\"“”‘’"
 VALID_INTENTS = {"start_last", "stop", "volume_delta", "set_volume", "play_media", "now_playing"}
 PLAY_VERBS = ("graj", "zagraj", "wlacz", "włącz", "odtworz", "odtwórz", "pusc", "puść")
 ALL_SPEAKERS_MARKERS = (
@@ -22,7 +23,14 @@ ALL_SPEAKERS_MARKERS = (
     "wszedzie",
     "caly dom",
     "cały dom",
+    "calym domu",
+    "całym domu",
+    "w calym domu",
+    "w całym domu",
 )
+RADIO_ALIASES = {
+    "tok fm": "TOK FM",
+}
 START_LAST_QUERIES = {
     "spotify",
     "graj muzyke",
@@ -37,6 +45,8 @@ STOP_QUERIES = {
     "cicho",
     "zatrzymaj muzyke",
     "zatrzymaj muzykę",
+    "wylacz muzyke",
+    "wyłącz muzykę",
 }
 NOW_PLAYING_QUERIES = {
     "co to teraz gra",
@@ -75,9 +85,12 @@ def parse_media_command(command: dict[str, Any], *, force_simple: bool = False) 
         volume_delta = -DEFAULT_VOLUME_DELTA if _is_volume_down(ascii_query) else DEFAULT_VOLUME_DELTA
     if intent == "play_media":
         query = _media_query_from_command(command) or _media_query_from_query(original_query, ascii_query)
+        query = _canonical_radio_query(query)
         if _is_liked_songs_query(query):
             query = "Liked Songs"
             media_type = "playlist"
+        if _is_known_radio_query(query):
+            media_type = "radio"
 
     simple = force_simple or _is_simple_command(
         intent=intent,
@@ -154,9 +167,9 @@ def _command_from_parsed(parsed: ParsedMediaCommand, query: str) -> dict[str, An
 def _intent_from_query(ascii_query: str) -> str:
     if ascii_query in {ascii_fold(normalize_text(value)) for value in START_LAST_QUERIES}:
         return "start_last"
-    if ascii_query in {ascii_fold(normalize_text(value)) for value in STOP_QUERIES}:
+    if _starts_with_known_query(ascii_query, STOP_QUERIES):
         return "stop"
-    if ascii_query in {ascii_fold(normalize_text(value)) for value in NOW_PLAYING_QUERIES}:
+    if _starts_with_known_query(ascii_query, NOW_PLAYING_QUERIES):
         return "now_playing"
     if _volume_level_from_query(ascii_query) is not None:
         return "set_volume"
@@ -175,11 +188,13 @@ def _looks_like_media_query(ascii_query: str) -> bool:
         return False
     if ascii_query in {ascii_fold(normalize_text(value)) for value in START_LAST_QUERIES | STOP_QUERIES | NOW_PLAYING_QUERIES}:
         return True
+    if _starts_with_known_query(ascii_query, STOP_QUERIES | NOW_PLAYING_QUERIES):
+        return True
     if _is_volume_up(ascii_query) or _is_volume_down(ascii_query) or _volume_level_from_query(ascii_query) is not None:
         return True
     if _starts_with_music_play_verb(ascii_query):
         return True
-    return "muzyka" in ascii_query or "spotify" in ascii_query
+    return "muzyka" in ascii_query or "spotify" in ascii_query or _contains_known_radio(ascii_query)
 
 
 def _is_simple_command(
@@ -209,7 +224,7 @@ def _media_query_from_command(command: dict[str, Any]) -> str:
 
 
 def _media_query_from_query(query: str, ascii_query: str) -> str:
-    text = query.strip(" ?.!")
+    text = query.strip(TRIM_CHARACTERS)
     normalized_text = ascii_fold(normalize_text(text))
     for verb in PLAY_VERBS:
         normalized_verb = ascii_fold(normalize_text(verb))
@@ -217,8 +232,9 @@ def _media_query_from_query(query: str, ascii_query: str) -> str:
             text = text[len(verb) :].strip()
             break
     text = _strip_media_type_words(text)
+    text = _strip_provider_phrases(text)
     text = _strip_target_phrases(text)
-    return text.strip(" ?.!")
+    return text.strip(TRIM_CHARACTERS)
 
 
 def _strip_media_type_words(text: str) -> str:
@@ -228,6 +244,11 @@ def _strip_media_type_words(text: str) -> str:
         text,
         flags=re.IGNORECASE,
     )
+
+
+def _strip_provider_phrases(text: str) -> str:
+    text = re.sub(r"\s+(?:na|z|ze|on)\s+spotify\s*$", "", text, flags=re.IGNORECASE)
+    return text
 
 
 def _strip_target_phrases(text: str) -> str:
@@ -288,6 +309,8 @@ def _volume_delta_from_command(command: dict[str, Any]) -> float | None:
 
 
 def _media_type_from_query(ascii_query: str) -> str:
+    if _contains_known_radio(ascii_query):
+        return "radio"
     if "album" in ascii_query:
         return "album"
     if "playlista" in ascii_query or "playliste" in ascii_query or "playlist" in ascii_query:
@@ -317,6 +340,13 @@ def _normalize_intent(value: str) -> str:
     return normalized if normalized in VALID_INTENTS else ""
 
 
+def _starts_with_known_query(ascii_query: str, known_queries: set[str]) -> bool:
+    return any(
+        ascii_query == normalized_known or ascii_query.startswith(f"{normalized_known} ")
+        for normalized_known in {ascii_fold(normalize_text(value)) for value in known_queries}
+    )
+
+
 def _is_volume_up(ascii_query: str) -> bool:
     return any(marker in ascii_query for marker in ("glosniej", "przyglosnij", "daj glosniej", "podglosnij"))
 
@@ -335,12 +365,25 @@ def _starts_with_music_play_verb(ascii_query: str) -> bool:
             return True
     if not any(ascii_query.startswith(ascii_fold(normalize_text(verb))) for verb in ("wlacz", "włącz")):
         return False
-    return any(marker in ascii_query for marker in ("muzyk", "spotify", "album", "playlist", "piosen", "utwor", "radio"))
+    return any(marker in ascii_query for marker in ("muzyk", "spotify", "album", "playlist", "piosen", "utwor", "radio")) or _contains_known_radio(ascii_query)
 
 
 def _is_liked_songs_query(query: str) -> bool:
     normalized = ascii_fold(normalize_text(query))
     return any(marker in normalized for marker in ("moje ulubione", "my favourites", "my favorites", "liked songs"))
+
+
+def _canonical_radio_query(query: str) -> str:
+    normalized = ascii_fold(normalize_text(query))
+    return RADIO_ALIASES.get(normalized, query)
+
+
+def _is_known_radio_query(query: str) -> bool:
+    return ascii_fold(normalize_text(query)) in RADIO_ALIASES
+
+
+def _contains_known_radio(ascii_query: str) -> bool:
+    return any(alias in ascii_query for alias in RADIO_ALIASES)
 
 
 def _clamp_volume(value: float) -> float:

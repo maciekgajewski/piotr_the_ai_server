@@ -21,7 +21,10 @@ agent:
 #     time: {}
 #     wikipedia: {}
 #     weather: {}
-#     media_player: {}
+#     media_player:
+#       default_music_media_id: Liked Songs
+#       default_music_media_type: playlist
+#       default_music_name: muzykę ze Spotify
 #     home_assistant:
 #       model: gpt-oss:20b-cloud
 #       fallback_model: qwen3:4b-instruct

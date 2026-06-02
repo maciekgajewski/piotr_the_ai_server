@@ -118,6 +118,7 @@ For media_player tasks, command should be:
 For music commands without a named room, omit areas; the media player agent will use conversation.area.
 Use all_speakers=true only when the user explicitly asks for all speakers/everywhere/whole house/wszystkie głośniki.
 For "moje ulubione", use query="Liked Songs" and media_type="playlist".
+For "TOK FM", use domain="media_player", query="TOK FM", and media_type="radio".
 """
 
 FINAL_REPLY_SYSTEM_PROMPT = """
@@ -236,6 +237,18 @@ class OrchestratorAgent:
         state = _orchestrator_state(conversation)
         active_context = _active_context(state)
         if state.get("pending_clarification") is not None:
+            if _cancels_pending_clarification(user_input):
+                self._logger.info(
+                    "clearing pending clarification conversation_id=%s user_input=%r pending=%s",
+                    conversation.conversation_id,
+                    user_input,
+                    _compact_json(state.get("pending_clarification")),
+                )
+                state["pending_clarification"] = None
+                state["pending_tasks"] = []
+                reply = ""
+                _append_last_turn(state, user_input=user_input, assistant_reply=reply)
+                return reply
             self._logger.info(
                 "resuming pending clarification conversation_id=%s user_input=%r pending=%s",
                 conversation.conversation_id,
@@ -1150,6 +1163,23 @@ def _contains_reference_pronoun(text: str) -> bool:
         f" {pronoun} " in normalized_text
         for pronoun in ("ją", "ja", "je", "go", "jego", "jej", "it", "them", "this", "that")
     )
+
+
+def _cancels_pending_clarification(user_input: str) -> bool:
+    normalized = normalize_text(user_input)
+    return normalized in {
+        "dziękuję",
+        "dziekuje",
+        "dzięki",
+        "dzieki",
+        "ok",
+        "okej",
+        "nieważne",
+        "niewazne",
+        "anuluj",
+        "stop",
+        "nie",
+    }
 
 
 def _orchestrator_state(conversation: Conversation) -> dict[str, Any]:
