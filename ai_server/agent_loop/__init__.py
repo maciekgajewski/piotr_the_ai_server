@@ -27,7 +27,7 @@ from ai_server.agent_loop.agent_loop import AgentLoop, MODEL_FAILURE_REPLY
 from ai_server.agent_loop.agent_callable_set import AgentCallableSet
 from ai_server.agent_loop.config import AgentLoopConfig
 from ai_server.agent_loop.messages import AgentReply
-from ai_server.agent_loop.ollama_connection import AgentLoopOllamaConnection
+from ai_server.agent_loop.agent_loop_ollama_connection import AgentLoopOllamaConnection
 
 
 __all__ = [

@@ -15,7 +15,7 @@ from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, ServerConfig
 from ai_server.domain_agents import create_domain_agents
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.ollama import OllamaClient
+from ai_server.ollama_client import OllamaClient
 
 
 class Agent(Protocol):

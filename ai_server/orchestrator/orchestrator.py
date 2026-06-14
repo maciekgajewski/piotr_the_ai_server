@@ -13,7 +13,7 @@ from ai_server.config import ServerConfig
 from ai_server.domain_agents import DomainAgent, DomainTask
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import RequestFollowUp, TextMessage
-from ai_server.ollama import OLLAMA_BASE_URL, OllamaClient, OllamaError
+from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
 from ai_server.orchestrator.known_utterances import known_utterance_task
 from ai_server.utils.text import normalize_text
 

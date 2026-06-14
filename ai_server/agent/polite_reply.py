@@ -7,7 +7,7 @@ from aiohttp import ClientSession
 
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import TextMessage
-from ai_server.ollama import OLLAMA_BASE_URL, OllamaClient, OllamaError
+from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
 
 
 POLITE_REPLY_PROMPT = (

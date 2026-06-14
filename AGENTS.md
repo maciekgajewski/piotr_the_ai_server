@@ -24,7 +24,7 @@ Rules:
 - For AI server logging, include a stable per-instance context in log messages when concurrent sessions or connections can interleave. Prefer readable prefixes such as `Session[<id>]` or `WebsocketCommunicationEndpoint[<peer>]`.
 - For AI server options that can be supplied by both config and command line, the command-line value always takes precedence over the config value.
 - DSA stands for Domain Specific Agent
-- A config file is required ot start the server. The config file always has to be provided by user in the command-line parameters, regardless if launched directly or trough a wrapper script. Test tools are the only exception.
+- A config file is required ot start the server. The config file always has to be provided by user in the command-line parameters, regardless if launched directly or trough a wrapper script. Do not hardcode config values in the code. Test tools are the only exception.
 
 
 # Python coding guidelines

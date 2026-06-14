@@ -27,7 +27,7 @@ from ai_server.domain_agents.wikipedia import WikipediaArticle, WikipediaDomainA
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import ConversationInputEvent, ConversationOutputEvent, MessageBegin, MessageEnd
 from ai_server.messages import MessageFragment, TextMessage, text_message_to_events
-from ai_server.ollama import OllamaClient
+from ai_server.ollama_client import OllamaClient
 
 
 ROOT = Path(__file__).resolve().parent

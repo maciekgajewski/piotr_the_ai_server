@@ -24,7 +24,7 @@ from ai_server.utils.text import normalize_text
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
 from ai_server.interfaces import Conversation
-from ai_server.ollama import OLLAMA_BASE_URL, OllamaClient
+from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient
 
 
 class WeatherDomainAgent:

@@ -18,7 +18,7 @@ from ai_server.domain_agents.media_player.messages import MEDIA_COMPLEX_COMMAND_
 from ai_server.domain_agents.media_player.parser import DEFAULT_VOLUME_DELTA, ParsedMediaCommand, parse_media_command
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation
-from ai_server.ollama import OLLAMA_BASE_URL, OllamaClient
+from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient
 
 
 class MediaPlayerDomainAgent:

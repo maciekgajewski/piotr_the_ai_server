@@ -8,7 +8,7 @@ from ai_server.orchestrator import GENERATION_FAILURE_MESSAGE, OrchestratorAgent
 from ai_server.config import ServerConfig
 from ai_server.interfaces import Conversation
 from ai_server.messages import TextMessage, text_message_to_events
-from ai_server.ollama import OllamaError
+from ai_server.ollama_client import OllamaError
 from conftest import FakeConversationEndpoint
 
 

@@ -7,7 +7,7 @@ from typing import Annotated, Any
 import pytest
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, MODEL_FAILURE_REPLY
-from ai_server.agent_loop.ollama_connection import AgentLoopOllamaConnection
+from ai_server.agent_loop.agent_loop_ollama_connection import AgentLoopOllamaConnection
 
 
 class FakeResponse:

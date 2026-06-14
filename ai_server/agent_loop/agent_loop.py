@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from ai_server.agent_loop.config import AgentLoopConfig
 from ai_server.agent_loop.interfaces import HttpSession
-from ai_server.agent_loop.ollama_connection import AgentLoopOllamaConnection
+from ai_server.agent_loop.agent_loop_ollama_connection import AgentLoopOllamaConnection
 from ai_server.agent_loop.messages import AgentReply
 from ai_server.agent_loop.agent_callable_set import AgentCallableSet
 

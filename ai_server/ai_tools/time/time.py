@@ -6,7 +6,7 @@ import locale
 from ai_server.ai_tools.interfaces import BaseTool
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import TextMessage
-from ai_server.ollama import OllamaClient
+from ai_server.ollama_client import OllamaClient
 
 GENERATION_OPTIONS = {
     "num_predict": 32,
