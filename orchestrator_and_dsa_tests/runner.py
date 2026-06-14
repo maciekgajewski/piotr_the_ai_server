@@ -24,7 +24,7 @@ from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
 from ai_server.domain_agents.weather import CurrentWeather, WeatherDomainAgent, WeatherNowRequest
-from ai_server.domain_agents.wikipedia import WikipediaArticle, WikipediaDomainAgent
+from ai_server.domain_agents.wikipedia import WikipediaArticle, WikipediaDomainAgent, WikipediaSearchResult
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import ConversationInputEvent, ConversationOutputEvent, MessageBegin, MessageEnd
 from ai_server.messages import MessageFragment, TextMessage, text_message_to_events
@@ -184,6 +184,66 @@ class FakeWikipediaClient:
     def __init__(self, articles: dict[str, WikipediaArticle]) -> None:
         self._articles = {_normalized(key): article for key, article in articles.items()}
         self.queries: list[str] = []
+
+    async def search(self, query: str, *, language: str | None = None, limit: int = 5) -> list[WikipediaSearchResult]:
+        self.queries.append(query)
+        normalized_query = _normalized(query)
+        results = []
+        preferred_languages = tuple(dict.fromkeys((language, "pl", "en"))) if language is not None else ("pl", "en")
+        for key, article in self._articles.items():
+            if article.language not in preferred_languages:
+                continue
+            normalized_title = _normalized(article.title)
+            if key in normalized_query or normalized_query in key or normalized_title in normalized_query:
+                results.append(
+                    WikipediaSearchResult(
+                        language=article.language,
+                        title=article.title,
+                        description=article.description,
+                        page_url=article.page_url,
+                    )
+                )
+        if not results and self._articles:
+            for preferred_language in preferred_languages:
+                for article in self._articles.values():
+                    if article.language != preferred_language:
+                        continue
+                    results.append(
+                        WikipediaSearchResult(
+                            language=article.language,
+                            title=article.title,
+                            description=article.description,
+                            page_url=article.page_url,
+                        )
+                    )
+                    break
+                if results:
+                    break
+        return results[:limit]
+
+    async def summary(self, *, language: str, title: str) -> WikipediaArticle | None:
+        for article in self._articles.values():
+            if article.language == language and article.title == title:
+                return article
+        return None
+
+    async def wikidata_facts(
+        self,
+        wikibase_item: str,
+        *,
+        property_ids: list[str] | None = None,
+        limit: int = 24,
+    ) -> dict[str, Any]:
+        del property_ids, limit
+        for article in self._articles.values():
+            if article.wikibase_item == wikibase_item:
+                return {
+                    "id": wikibase_item,
+                    "birth_year": article.birth_year,
+                    "coordinates": article.coordinates,
+                    "claims": [],
+                }
+        return {}
 
     async def summary_for_query(self, query: str) -> WikipediaArticle:
         self.queries.append(query)
@@ -523,7 +583,11 @@ async def _run_dsa_wikipedia_case(case: TestCase, settings: dict[str, Any]) -> C
     started_at = time.perf_counter()
     raw = case.raw
     client = FakeWikipediaClient(_wikipedia_articles(raw))
-    agent = WikipediaDomainAgent(client=client)
+    agent = WikipediaDomainAgent(
+        model=settings["dsa_model"],
+        ollama_url=settings["ollama_url"],
+        client=client,
+    )
     result = CaseResult(case=case)
     try:
         dsa_result = await agent.run_task(_conversation(raw, settings, f"dsa-wikipedia-{case.name}"), _task(raw), {})
@@ -606,7 +670,11 @@ def _composite_domain_agents(
             now_factory=lambda zone: fixed_utc.astimezone(zone),
             timezone_resolver=FakeTimezoneResolver(_dict_or_empty(raw.get("timezone_map")) or _default_timezone_map()),
         ),
-        "wikipedia": WikipediaDomainAgent(client=FakeWikipediaClient(_wikipedia_articles(raw))),
+        "wikipedia": WikipediaDomainAgent(
+            model=settings["dsa_model"],
+            ollama_url=settings["ollama_url"],
+            client=FakeWikipediaClient(_wikipedia_articles(raw)),
+        ),
     }
     return {domain: TracingDomainAgent(domain, agent, traces) for domain, agent in agents.items()}
 
@@ -798,12 +866,14 @@ def _default_wikipedia_articles() -> dict[str, dict[str, Any]]:
             "language": "pl",
             "title": "Albert Einstein",
             "extract": "Albert Einstein (ur. 14 marca 1879, zm. 18 kwietnia 1955) był fizykiem teoretykiem.",
+            "wikibase_item": "Q937",
             "birth_year": 1879,
         },
         "Jacksonville": {
             "language": "en",
             "title": "Jacksonville, Florida",
             "extract": "Jacksonville is the most populous city proper in the U.S. state of Florida.",
+            "wikibase_item": "Q16568",
             "coordinates": {"lat": 30.3322, "lon": -81.6557},
         },
         "John Henry": {

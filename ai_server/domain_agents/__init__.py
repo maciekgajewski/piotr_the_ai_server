@@ -63,6 +63,10 @@ def create_domain_agents(
             continue
         if domain == "wikipedia":
             domain_agents[domain] = WikipediaDomainAgent(
+                model=_domain_agent_model(config.options, raw_options, domain),
+                fallback_model=_domain_agent_fallback_model(config.options, raw_options, domain),
+                fallback_backoff_seconds=_domain_agent_fallback_backoff_seconds(config.options, raw_options, domain),
+                ollama_url=ollama_url,
                 languages=_domain_languages(raw_options, domain),
             )
             continue

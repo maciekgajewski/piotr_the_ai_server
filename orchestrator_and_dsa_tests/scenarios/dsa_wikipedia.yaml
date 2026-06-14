@@ -12,7 +12,7 @@ cases:
     expected_result:
       status: ok
       language: pl
-      value: 1879
+      title: Albert Einstein
     expected_replies:
       - contains_all: [Albert Einstein, "1879"]
 
@@ -25,8 +25,8 @@ cases:
         topic: Jacksonville
     expected_result:
       status: ok
-      fact: location
       language: en
+      title: Jacksonville, Florida
     expected_replies:
       - contains_all: [Jacksonville, Florida]
 
@@ -38,10 +38,8 @@ cases:
         query: jakie są współrzędne Jacksonville
     expected_result:
       status: ok
-      fact: coordinates
-      value:
-        lat: 30.3322
-        lon: -81.6557
+      language: en
+      title: Jacksonville, Florida
     expected_replies:
       - contains_all: ["30.3322", "-81.6557"]
 

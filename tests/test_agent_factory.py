@@ -145,6 +145,8 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert agent._domain_agents["time"]._location == "Wrocław"
             assert isinstance(agent._domain_agents["wikipedia"], WikipediaDomainAgent)
             assert agent._domain_agents["wikipedia"]._languages == ("pl", "en")
+            assert agent._domain_agents["wikipedia"]._model == "gpt-oss:20b-cloud"
+            assert agent._domain_agents["wikipedia"]._fallback_model == "qwen3:4b-instruct-fallback"
             assert isinstance(agent._domain_agents["weather"], WeatherDomainAgent)
             assert agent._domain_agents["weather"]._model == "gpt-oss:20b-cloud"
             assert agent._domain_agents["weather"]._fallback_model == "qwen3:4b-instruct-fallback"
