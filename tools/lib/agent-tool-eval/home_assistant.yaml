@@ -15,7 +15,7 @@ home_assistant:
     areas:
       - area_id: office
         name: Office
-        aliases: [biuro, gabinet]
+        aliases: [biuro, gabinet, pracownia]
       - area_id: living_room
         name: Living room
         aliases: [salon, pokój dzienny]

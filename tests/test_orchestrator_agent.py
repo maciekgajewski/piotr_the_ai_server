@@ -6,6 +6,7 @@ import pytest
 
 from ai_server.orchestrator import GENERATION_FAILURE_MESSAGE, OrchestratorAgent, _parse_plan
 from ai_server.config import ServerConfig
+from ai_server.home_assistant.interfaces import HomeAssistantArea, HomeAssistantInventory
 from ai_server.interfaces import Conversation
 from ai_server.messages import TextMessage, text_message_to_events
 from ai_server.ollama_client import OllamaError
@@ -329,6 +330,137 @@ def test_orchestrator_short_path_dispatches_media_stop_with_wake_word_tail_witho
     assert domain_agent.tasks[0]["domain"] == "media_player"
     assert domain_agent.tasks[0]["command"]["intent"] == "stop"
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Zatrzymałem muzykę.")))
+
+
+def test_orchestrator_uses_area_inventory_for_named_media_room_instead_of_short_path() -> None:
+    plan = {
+        "kind": "single_task",
+        "confidence": 0.95,
+        "tasks": [
+            {
+                "id": "t1",
+                "domain": "media_player",
+                "command": {"intent": "stop", "query": "zatrzymaj muzykę w pracowni", "areas": ["office"]},
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            }
+        ],
+        "context_updates": {"salient_entities": [], "active_domain": "media_player"},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    ollama = FakeOllamaClient([json.dumps(plan)])
+    domain_agent = RecordingDomainAgent(
+        [{"status": "ok", "text": "Zatrzymałem muzykę.", "final_reply_mode": "verbatim"}]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="big",
+        domain_agents={"media_player": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+        home_assistant_inventory_provider=FakeAreaInventoryProvider(),
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="zatrzymaj muzykę w pracowni")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"area": "bedroom"}), endpoint))
+
+    planning_payload = json.loads(ollama.requests[0]["messages"][1]["content"])
+    assert planning_payload["conversation"]["home_assistant_areas"] == [
+        {"area_id": "living_room", "name": "Living room", "aliases": ["Salon"]},
+        {"area_id": "office", "name": "Office", "aliases": ["Biuro", "Pracownia"]},
+    ]
+    assert domain_agent.tasks[0]["command"]["areas"] == ["office"]
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Zatrzymałem muzykę.")))
+
+
+def test_orchestrator_canonicalizes_home_assistant_room_alias_from_inventory() -> None:
+    plan = {
+        "kind": "single_task",
+        "confidence": 0.95,
+        "tasks": [
+            {
+                "id": "t1",
+                "domain": "home_assistant",
+                "command": {
+                    "selection": {
+                        "include": [{"domain": "climate", "scope": "single", "area": "Pracownia"}],
+                        "exclude": [],
+                    },
+                    "operation": {
+                        "intent": "turn_off",
+                        "description": "wyłącz klimatyzację w pracowni",
+                        "parameters": {},
+                    },
+                },
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            }
+        ],
+        "context_updates": {"salient_entities": ["climate.office"], "active_domain": "home_assistant"},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    ollama = FakeOllamaClient([json.dumps(plan)])
+    domain_agent = RecordingDomainAgent(
+        [{"status": "ok", "text": "Wyłączyłem klimatyzację.", "final_reply_mode": "verbatim"}]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="big",
+        domain_agents={"home_assistant": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+        home_assistant_inventory_provider=FakeAreaInventoryProvider(),
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="wyłącz klimatyzację w pracowni")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"area": "bedroom"}), endpoint))
+
+    planning_payload = json.loads(ollama.requests[0]["messages"][1]["content"])
+    assert planning_payload["conversation"]["home_assistant_areas"] == [
+        {"area_id": "living_room", "name": "Living room", "aliases": ["Salon"]},
+        {"area_id": "office", "name": "Office", "aliases": ["Biuro", "Pracownia"]},
+    ]
+    assert domain_agent.tasks[0]["command"]["selection"]["include"][0]["area"] == "office"
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Wyłączyłem klimatyzację.")))
+
+
+def test_orchestrator_blocks_unknown_planned_area_before_dispatch() -> None:
+    plan = {
+        "kind": "single_task",
+        "confidence": 0.95,
+        "tasks": [
+            {
+                "id": "t1",
+                "domain": "media_player",
+                "command": {"intent": "stop", "query": "zatrzymaj muzykę w pracowni", "areas": ["pracowni"]},
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            }
+        ],
+        "context_updates": {"salient_entities": [], "active_domain": "media_player"},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    ollama = FakeOllamaClient([json.dumps(plan), "O który pokój chodzi?"])
+    domain_agent = RecordingDomainAgent()
+    agent = OrchestratorAgent(
+        orchestrator_model="big",
+        domain_agents={"media_player": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+        home_assistant_inventory_provider=FakeAreaInventoryProvider(),
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="zatrzymaj muzykę w pracowni")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"area": "bedroom"}), endpoint))
+
+    assert domain_agent.tasks == []
+    assert "Nie znam pokoju" in json.loads(ollama.requests[1]["messages"][1]["content"])["task_results"][0]["clarification_question"]
+    assert endpoint.control_events
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="O który pokój chodzi?")))
 
 
 def test_orchestrator_short_path_dispatches_tok_fm_without_ollama() -> None:
@@ -906,3 +1038,23 @@ class RecordingDomainAgent:
 
     async def close(self) -> None:
         pass
+
+
+class FakeAreaInventoryProvider:
+    @property
+    def inventory(self) -> HomeAssistantInventory:
+        office = HomeAssistantArea(area_id="office", name="Office", aliases=("Biuro", "Pracownia"))
+        living_room = HomeAssistantArea(area_id="living_room", name="Living room", aliases=("Salon",))
+        return HomeAssistantInventory(
+            areas_by_id={
+                office.area_id: office,
+                living_room.area_id: living_room,
+            },
+            devices_by_id={},
+            devices_by_area={
+                office.area_id: (),
+                living_room.area_id: (),
+            },
+            area_lookup={},
+            device_lookup={},
+        )

@@ -47,6 +47,27 @@ cases:
     expected_replies:
       - contains_all: [klimatyz, Jacksonville]
 
+  - id: ha_turn_off_office_pracownia_alias
+    messages:
+      - wyłącz klimatyzację w pracowni
+    domain_results:
+      home_assistant:
+        t1:
+          status: ok
+          text: Wyłączono klimatyzację w pracowni.
+    expected_tasks:
+      - domain: home_assistant
+        command:
+          selection:
+            include:
+              - domain: climate
+                scope: single
+                area: office
+          operation:
+            intent: turn_off
+    expected_replies:
+      - contains_all: [klimatyz]
+
   - id: ha_wikipedia_combo
     messages:
       - włącz klimę w salonie i sprawdź w Wikipedii rok urodzenia Einsteina
@@ -108,4 +129,4 @@ cases:
     expected_planning_context:
       - message_index: 1
         salient_entities:
-          - climate.salon
+          - climate.living_room

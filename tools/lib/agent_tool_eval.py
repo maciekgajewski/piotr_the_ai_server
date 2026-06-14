@@ -1226,7 +1226,7 @@ def _device_type_alias_terms() -> set[str]:
 
 def _default_areas() -> list[dict[str, Any]]:
     return [
-        {"area_id": "office", "name": "Office", "aliases": ["biuro", "gabinet"]},
+        {"area_id": "office", "name": "Office", "aliases": ["biuro", "gabinet", "pracownia"]},
         {"area_id": "living_room", "name": "Living room", "aliases": ["salon", "pokój dzienny"]},
         {"area_id": "bedroom", "name": "Bedroom", "aliases": ["sypialnia"]},
     ]

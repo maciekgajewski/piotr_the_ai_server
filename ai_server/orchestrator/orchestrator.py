@@ -4,13 +4,14 @@ import json
 import logging
 import re
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from aiohttp import ClientSession
 
 from ai_server.agent_loop.agent_callable_set import to_json_value
 from ai_server.config import ServerConfig
 from ai_server.domain_agents import DomainAgent, DomainTask
+from ai_server.home_assistant.interfaces import HomeAssistantInventory
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import RequestFollowUp, TextMessage
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
@@ -47,6 +48,9 @@ For singular or local Home Assistant requests with no named area, prefer convers
 When using conversation.area for Home Assistant selection, put it in selector.area, never selector.name.
 If the user names an area/room in the utterance, that named area always overrides conversation.area.
 Polish area aliases: salon means living room; biuro means office; sypialnia means bedroom.
+When conversation.home_assistant_areas is present, use it as the source of truth for Home Assistant areas.
+For named rooms in home_assistant selectors and media_player areas, output canonical area_id values from conversation.home_assistant_areas, not the user's inflected phrase.
+If the user names a room but it is not present in conversation.home_assistant_areas, block the task and ask which room they mean.
 Use scope="all" only when the user explicitly asks for all/every/wszystkie/każde/everywhere/whole house.
 For Home Assistant pronouns such as ją/je/it/them, resolve selection from active_context.salient_entities.
 For Home Assistant context_updates.salient_entities, store stable target references like climate.salon or light.bedroom_lamp, not numbers, temperatures, or generic words.
@@ -159,6 +163,12 @@ If the answer still does not resolve the question, keep the same domain and retu
 """
 
 
+class HomeAssistantInventoryProvider(Protocol):
+    @property
+    def inventory(self) -> HomeAssistantInventory | None:
+        raise NotImplementedError
+
+
 class OrchestratorAgent:
     def __init__(
         self,
@@ -170,6 +180,7 @@ class OrchestratorAgent:
         ollama_client: OllamaClient | None = None,
         owns_ollama_client: bool = True,
         server_config: ServerConfig = ServerConfig(),
+        home_assistant_inventory_provider: HomeAssistantInventoryProvider | None = None,
     ) -> None:
         self._orchestrator_model = orchestrator_model
         self._clarification_model = clarification_model
@@ -177,6 +188,7 @@ class OrchestratorAgent:
         self._ollama = ollama_client or OllamaClient(base_url=base_url, session=session)
         self._owns_ollama = owns_ollama_client
         self._server_config = server_config
+        self._home_assistant_inventory_provider = home_assistant_inventory_provider
         self._logger = logging.getLogger(f"{__name__}.OrchestratorAgent[{orchestrator_model}]")
 
     async def preload(self) -> None:
@@ -264,12 +276,14 @@ class OrchestratorAgent:
             _append_last_turn(state, user_input=user_input, assistant_reply=reply)
             return reply
 
-        plan = _short_path_plan(user_input)
+        area_context = _home_assistant_area_context(self._home_assistant_inventory_provider)
+        plan = _short_path_plan(user_input, area_context=area_context)
         if plan is None:
             plan = await self._plan_message(
                 user_input=user_input,
                 active_context=active_context,
                 conversation=conversation,
+                area_context=area_context,
             )
         else:
             self._logger.info(
@@ -286,6 +300,7 @@ class OrchestratorAgent:
             _tasks_summary(plan["tasks"]),
         )
         _resolve_context_references(plan, active_context)
+        _canonicalize_plan_areas(plan, area_context)
 
         task_results = await self._dispatch_ready_tasks(conversation, plan, active_context)
         self._log_clarification_causing_utterance(conversation, user_input, plan, task_results)
@@ -357,16 +372,20 @@ class OrchestratorAgent:
         user_input: str,
         active_context: dict[str, Any],
         conversation: Conversation,
+        area_context: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        conversation_payload = {
+            "conversation_id": conversation.conversation_id,
+            "user": conversation.user,
+            "area": conversation.area,
+            "server_location": self._server_config.location,
+            "server_timezone": self._server_config.timezone,
+        }
+        if area_context is not None:
+            conversation_payload["home_assistant_areas"] = area_context["areas"]
         prompt = {
             "utterance": user_input,
-            "conversation": {
-                "conversation_id": conversation.conversation_id,
-                "user": conversation.user,
-                "area": conversation.area,
-                "server_location": self._server_config.location,
-                "server_timezone": self._server_config.timezone,
-            },
+            "conversation": conversation_payload,
             "active_context": active_context,
         }
         self._logger.info(
@@ -660,9 +679,11 @@ def _elapsed_ms(started_at: float) -> int:
     return round((time.perf_counter() - started_at) * 1000)
 
 
-def _short_path_plan(user_input: str) -> dict[str, Any] | None:
+def _short_path_plan(user_input: str, *, area_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
     task = known_utterance_task(user_input)
     if task is None:
+        return None
+    if area_context is not None and _task_has_explicit_area(task):
         return None
     return {
         "kind": "single_task",
@@ -672,6 +693,125 @@ def _short_path_plan(user_input: str) -> dict[str, Any] | None:
         "needs_clarification": False,
         "clarification_question": None,
     }
+
+
+def _task_has_explicit_area(task: dict[str, Any]) -> bool:
+    command = task.get("command")
+    if not isinstance(command, dict):
+        return False
+    if task.get("domain") == "media_player":
+        areas = command.get("areas")
+        return isinstance(areas, list) and any(isinstance(area, str) and area for area in areas)
+    if task.get("domain") != "home_assistant":
+        return False
+    selection = command.get("selection")
+    if not isinstance(selection, dict):
+        return False
+    for selectors_key in ("include", "exclude"):
+        selectors = selection.get(selectors_key, [])
+        if not isinstance(selectors, list):
+            continue
+        for selector in selectors:
+            if isinstance(selector, dict) and isinstance(selector.get("area"), str) and selector["area"]:
+                return True
+    return False
+
+
+def _home_assistant_area_context(provider: HomeAssistantInventoryProvider | None) -> dict[str, Any] | None:
+    if provider is None:
+        return None
+    inventory = provider.inventory
+    if inventory is None:
+        return None
+
+    areas = [
+        {
+            "area_id": area.area_id,
+            "name": area.name,
+            "aliases": list(area.aliases),
+        }
+        for area in sorted(inventory.areas_by_id.values(), key=lambda item: item.name.casefold())
+    ]
+    lookup = {}
+    for area in inventory.areas_by_id.values():
+        for value in (area.area_id, area.name, *area.aliases):
+            normalized = normalize_text(value)
+            if normalized:
+                lookup[normalized] = area.area_id
+    return {"areas": areas, "lookup": lookup, "ids": set(inventory.areas_by_id)}
+
+
+def _canonicalize_plan_areas(plan: dict[str, Any], area_context: dict[str, Any] | None) -> None:
+    if area_context is None:
+        return
+
+    for task in plan["tasks"]:
+        if task["domain"] == "home_assistant":
+            _canonicalize_home_assistant_task_areas(task, area_context)
+        elif task["domain"] == "media_player":
+            _canonicalize_media_player_task_areas(task, area_context)
+
+
+def _canonicalize_home_assistant_task_areas(task: dict[str, Any], area_context: dict[str, Any]) -> None:
+    command = task.get("command")
+    if not isinstance(command, dict):
+        return
+    selection = command.get("selection")
+    if not isinstance(selection, dict):
+        return
+
+    for selectors_key in ("include", "exclude"):
+        selectors = selection.get(selectors_key, [])
+        if not isinstance(selectors, list):
+            continue
+        for selector in selectors:
+            if not isinstance(selector, dict):
+                continue
+            area = selector.get("area")
+            if not isinstance(area, str) or not area:
+                continue
+            canonical_area = _canonical_area_id(area, area_context)
+            if canonical_area is None:
+                _block_unknown_area_task(task, area)
+                return
+            selector["area"] = canonical_area
+
+
+def _canonicalize_media_player_task_areas(task: dict[str, Any], area_context: dict[str, Any]) -> None:
+    command = task.get("command")
+    if not isinstance(command, dict):
+        return
+    areas = command.get("areas")
+    if areas is None:
+        return
+    if not isinstance(areas, list):
+        return
+
+    canonical_areas = []
+    for area in areas:
+        if not isinstance(area, str) or not area:
+            continue
+        canonical_area = _canonical_area_id(area, area_context)
+        if canonical_area is None:
+            _block_unknown_area_task(task, area)
+            return
+        if canonical_area not in canonical_areas:
+            canonical_areas.append(canonical_area)
+    if canonical_areas:
+        command["areas"] = canonical_areas
+    else:
+        command.pop("areas", None)
+
+
+def _canonical_area_id(area: str, area_context: dict[str, Any]) -> str | None:
+    if area in area_context["ids"]:
+        return area
+    return area_context["lookup"].get(normalize_text(area))
+
+
+def _block_unknown_area_task(task: dict[str, Any], area: str) -> None:
+    task["status"] = "blocked"
+    task["clarification_question"] = f"Nie znam pokoju „{area}”. O który pokój chodzi?"
 
 
 def _single_verbatim_reply(task_results: list[dict[str, Any]]) -> str | None:

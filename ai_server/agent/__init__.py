@@ -98,6 +98,7 @@ async def create_agent(
             domain_agents=domain_agents,
             ollama_client=ollama_client,
             server_config=server_config,
+            home_assistant_inventory_provider=home_assistant_connection,
         )
         try:
             logger.info("Preloading orchestrator agent orchestrator_model=%s", orchestrator_model)

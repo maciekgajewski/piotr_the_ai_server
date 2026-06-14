@@ -222,6 +222,11 @@ class FakeWeatherOllamaClient:
         pass
 
 
+@dataclass(frozen=True)
+class StaticHomeAssistantInventoryProvider:
+    inventory: Any
+
+
 def main() -> int:
     args = _parse_args()
     config = _load_yaml(args.config)
@@ -376,6 +381,7 @@ async def _run_orchestrator_case(case: TestCase, settings: dict[str, Any]) -> Ca
         domain_agents=domain_agents,
         ollama_client=ollama,
         owns_ollama_client=True,
+        home_assistant_inventory_provider=StaticHomeAssistantInventoryProvider(_home_assistant_inventory()),
     )
     result = CaseResult(case=case)
     try:
@@ -407,6 +413,7 @@ async def _run_composite_case(case: TestCase, settings: dict[str, Any]) -> CaseR
         domain_agents=agents,
         ollama_client=ollama,
         owns_ollama_client=True,
+        home_assistant_inventory_provider=fake_ha,
     )
     result = CaseResult(case=case)
     try:

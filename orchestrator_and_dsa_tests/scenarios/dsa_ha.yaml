@@ -72,6 +72,37 @@ cases:
     confirmation:
       contains_all: [wszystkie, klimatyz]
 
+  - id: turn_off_office_pracownia_canonical_area
+    task:
+      id: t1
+      domain: home_assistant
+      command:
+        selection:
+          include:
+            - domain: climate
+              scope: single
+              area: office
+          exclude: []
+        operation:
+          intent: turn_off
+          description: wyłącz klimatyzację w pracowni
+          parameters: {}
+      depends_on: []
+      status: ready
+      clarification_question: null
+    expected_calls:
+      - tool: modify_device
+        arguments:
+          device: Study air conditioner
+          property_name: hvac_mode
+          value: "off"
+    expected_effects:
+      - device: Study air conditioner
+        property_name: hvac_mode
+        value: "off"
+    confirmation:
+      contains_all: [klimatyz, wyłącz]
+
   - id: living_room_fan_only
     task:
       id: t1
