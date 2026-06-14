@@ -458,7 +458,7 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    default_config = Path(os.environ.get("AI_SERVER_CONFIG", "ai_server/config.compose.yaml"))
+    default_config = Path(os.environ.get("AI_SERVER_CONFIG", "ai_server/test-config.yaml"))
     parser = argparse.ArgumentParser(description="Interactively test a configured microphone protocol driver.")
     parser.add_argument("--config", type=Path, default=default_config, help="AI server YAML config path.")
     parser.add_argument("--mic", default=None, help="Configured microphone name. Required when multiple mics exist.")

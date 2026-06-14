@@ -22,7 +22,7 @@ services:
     entrypoint:
       - wyoming-piper
       - --voice
-      - ${AI_SERVER_TTS_VOICE:-pl_PL-bass-high}
+      - "${AI_SERVER_TTS_VOICE:?AI_SERVER_TTS_VOICE must be set in the services config}"
       - --uri
       - tcp://0.0.0.0:10200
       - --data-dir
@@ -51,15 +51,15 @@ services:
       - -m
       - wyoming_faster_whisper
       - --model
-      - ${AI_SERVER_STT_MODEL:-base}
+      - "${AI_SERVER_STT_MODEL:?AI_SERVER_STT_MODEL must be set in the services config}"
       - --language
-      - ${AI_SERVER_STT_LANGUAGE:-pl}
+      - "${AI_SERVER_STT_LANGUAGE:?AI_SERVER_STT_LANGUAGE must be set in the services config}"
       - --device
-      - ${AI_SERVER_STT_DEVICE:-cuda}
+      - "${AI_SERVER_STT_DEVICE:?AI_SERVER_STT_DEVICE must be set in the services config}"
       - --compute-type
-      - ${AI_SERVER_STT_COMPUTE_TYPE:-float16}
+      - "${AI_SERVER_STT_COMPUTE_TYPE:?AI_SERVER_STT_COMPUTE_TYPE must be set in the services config}"
       - --beam-size
-      - ${AI_SERVER_STT_BEAM_SIZE:-5}
+      - "${AI_SERVER_STT_BEAM_SIZE:?AI_SERVER_STT_BEAM_SIZE must be set in the services config}"
       - --uri
       - tcp://0.0.0.0:10300
       - --data-dir
@@ -80,7 +80,7 @@ services:
     gpus: all
     volumes:
       - ./ai_server:/app/ai_server:ro
-      - ${AI_SERVER_CONFIG:-./ai_server/config.compose.yaml}:/config/ai_server.yaml:ro
+      - "${AI_SERVER_CONFIG:?AI_SERVER_CONFIG must be set to the AI server config file path}:/config/ai_server.yaml:ro"
       - ./.hf-cache:/app/.hf-cache
       - ./.piper-cache:/app/.piper-cache
       - ./.whisper-cache:/app/.whisper-cache

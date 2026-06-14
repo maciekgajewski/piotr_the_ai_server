@@ -4,7 +4,7 @@ set -euo pipefail
 CALLER_CWD="$PWD"
 cd "$(dirname "$0")/.."
 
-AI_SERVER_CONFIG="${AI_SERVER_CONFIG:-$PWD/ai_server/config.compose.yaml}"
+AI_SERVER_CONFIG="${AI_SERVER_CONFIG:-$PWD/ai_server/test-config.yaml}"
 ARGS=()
 
 resolve_config_path() {
