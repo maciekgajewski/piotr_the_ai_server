@@ -277,7 +277,7 @@ class OrchestratorAgent:
             return reply
 
         area_context = _home_assistant_area_context(self._home_assistant_inventory_provider)
-        plan = _short_path_plan(user_input, area_context=area_context)
+        plan = _short_path_plan(user_input, area_context=area_context, active_context=active_context)
         if plan is None:
             plan = await self._plan_message(
                 user_input=user_input,
@@ -679,7 +679,14 @@ def _elapsed_ms(started_at: float) -> int:
     return round((time.perf_counter() - started_at) * 1000)
 
 
-def _short_path_plan(user_input: str, *, area_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
+def _short_path_plan(
+    user_input: str,
+    *,
+    area_context: dict[str, Any] | None = None,
+    active_context: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if _should_plan_contextual_utterance(user_input, active_context):
+        return None
     task = known_utterance_task(user_input)
     if task is None:
         return None
@@ -693,6 +700,13 @@ def _short_path_plan(user_input: str, *, area_context: dict[str, Any] | None = N
         "needs_clarification": False,
         "clarification_question": None,
     }
+
+
+def _should_plan_contextual_utterance(user_input: str, active_context: dict[str, Any] | None) -> bool:
+    if active_context is None or not _contains_reference_pronoun(user_input):
+        return False
+    salient_entities = active_context.get("salient_entities")
+    return isinstance(salient_entities, list) and any(isinstance(entity, str) and entity for entity in salient_entities)
 
 
 def _task_has_explicit_area(task: dict[str, Any]) -> bool:

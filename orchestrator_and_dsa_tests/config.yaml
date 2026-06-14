@@ -1,7 +1,7 @@
 ollama_url: http://127.0.0.1:11434
 models:
-  orchestrator: qwen3:4b-instruct
-  dsa: qwen3:4b-instruct
+  orchestrator: qwen3:14b
+  dsa: qwen3:14b
 defaults:
   area: office
   user: Maciek

@@ -311,6 +311,93 @@ def test_orchestrator_short_path_dispatches_weather_utterance_without_ollama() -
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="We Wrocławiu jest 16 stopni.")))
 
 
+def test_orchestrator_plans_pronoun_temperature_followup_instead_of_weather_short_path() -> None:
+    initial_plan = {
+        "kind": "single_task",
+        "confidence": 0.95,
+        "tasks": [
+            {
+                "id": "t1",
+                "domain": "home_assistant",
+                "command": {
+                    "selection": {
+                        "include": [{"domain": "climate", "scope": "single", "area": "living_room"}],
+                        "exclude": [],
+                    },
+                    "operation": {
+                        "intent": "turn_on",
+                        "description": "Włącz klimatyzację w salonie",
+                        "parameters": {},
+                    },
+                },
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            }
+        ],
+        "context_updates": {"salient_entities": ["climate.living_room"], "active_domain": "home_assistant"},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    followup_plan = {
+        "kind": "followup",
+        "confidence": 0.95,
+        "tasks": [
+            {
+                "id": "t2",
+                "domain": "home_assistant",
+                "command": {
+                    "selection": {"include": [], "exclude": []},
+                    "operation": {
+                        "intent": "set_temperature",
+                        "description": "ustaw ją na 22 stopnie",
+                        "parameters": {"temperature": 22},
+                    },
+                },
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            }
+        ],
+        "context_updates": {"salient_entities": [], "active_domain": "home_assistant"},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    ollama = FakeOllamaClient([json.dumps(initial_plan), json.dumps(followup_plan)])
+    domain_agent = RecordingDomainAgent(
+        [
+            {"status": "ok", "text": "Włączono klimatyzację w salonie.", "final_reply_mode": "verbatim"},
+            {"status": "ok", "text": "Ustawiono klimatyzację w salonie na 22 stopnie.", "final_reply_mode": "verbatim"},
+        ]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="big",
+        domain_agents={"home_assistant": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+        home_assistant_inventory_provider=FakeAreaInventoryProvider(),
+    )
+    conversation = Conversation(conversation_id="c1", attributes={"area": "office"})
+    first_endpoint = FakeConversationEndpoint([TextMessage(text="Włącz klimatyzację w salonie")])
+    second_endpoint = FakeConversationEndpoint([TextMessage(text="Super! I ustaw ją na 22 stopnie")])
+
+    asyncio.run(agent.run_conversation(conversation, first_endpoint))
+    asyncio.run(agent.run_conversation(conversation, second_endpoint))
+
+    assert len(ollama.requests) == 2
+    followup_payload = json.loads(ollama.requests[1]["messages"][1]["content"])
+    assert followup_payload["active_context"]["salient_entities"] == ["climate.living_room"]
+    assert [task["domain"] for task in domain_agent.tasks] == ["home_assistant", "home_assistant"]
+    assert domain_agent.tasks[1]["command"]["operation"]["intent"] == "set_temperature"
+    assert domain_agent.tasks[1]["command"]["selection"]["include"] == [
+        {"domain": "climate", "scope": "single", "area": "living_room"}
+    ]
+    assert first_endpoint.sent == list(text_message_to_events(TextMessage(text="Włączono klimatyzację w salonie.")))
+    assert second_endpoint.sent == list(
+        text_message_to_events(TextMessage(text="Ustawiono klimatyzację w salonie na 22 stopnie."))
+    )
+
+
 def test_orchestrator_short_path_dispatches_media_stop_with_wake_word_tail_without_ollama() -> None:
     ollama = FakeOllamaClient([])
     domain_agent = RecordingDomainAgent(
