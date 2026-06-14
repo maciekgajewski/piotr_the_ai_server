@@ -32,6 +32,7 @@ class MediaPlayerDomainAgent:
         fallback_backoff_seconds: float = 300.0,
         ollama_client: OllamaClient | None = None,
         liked_songs_media_id: str = "Liked Songs",
+        liked_songs_media_type: str = "playlist",
         default_music_media_id: str = "Liked Songs",
         default_music_media_type: str = "playlist",
         default_music_name: str = "muzykę ze Spotify",
@@ -45,6 +46,7 @@ class MediaPlayerDomainAgent:
         self._owns_ollama = ollama_client is None
         self._fallback_until = 0.0
         self._liked_songs_media_id = liked_songs_media_id
+        self._liked_songs_media_type = liked_songs_media_type
         self._default_music_media_id = default_music_media_id
         self._default_music_media_type = default_music_media_type
         self._default_music_name = default_music_name
@@ -107,19 +109,24 @@ class MediaPlayerDomainAgent:
         targets = await self._targets(conversation, parsed)
         if isinstance(targets, dict):
             return targets
+        targets = _prefer_music_assistant_targets(targets)
+        media_id = _conversation_media_setting(conversation, "default_music_media_id", self._default_music_media_id)
+        media_type = _conversation_media_setting(conversation, "default_music_media_type", self._default_music_media_type)
+        media_name = _conversation_media_setting(conversation, "default_music_name", self._default_music_name)
         result = await self._connection.music_assistant_play_media(
             [target.entity_id for target in targets],
-            media_id=self._default_music_media_id,
-            media_type=self._default_music_media_type,
+            media_id=media_id,
+            media_type=media_type,
         )
         if result.get("status") != "ok":
             return _failed_result("Nie udało się włączyć muzyki ze Spotify.")
-        return _ok_result(format_started(len(targets), self._default_music_name), targets)
+        return _ok_result(format_started(len(targets), media_name), targets)
 
     async def _stop(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
         targets = await self._targets(conversation, parsed)
         if isinstance(targets, dict):
             return targets
+        targets = _prefer_direct_media_targets(targets)
         result = await self._connection.media_player_stop([target.entity_id for target in targets])
         if result.get("status") != "ok":
             return _failed_result("Nie udało się zatrzymać muzyki.")
@@ -129,6 +136,7 @@ class MediaPlayerDomainAgent:
         targets = await self._targets(conversation, parsed, allow_playing_fallback=True)
         if isinstance(targets, dict):
             return targets
+        targets = _prefer_direct_media_targets(targets)
         delta = parsed.volume_delta if parsed.volume_delta is not None else DEFAULT_VOLUME_DELTA
         result = await self._connection.media_player_volume_delta([target.entity_id for target in targets], delta)
         if result.get("status") not in {"ok", "partial"}:
@@ -142,6 +150,7 @@ class MediaPlayerDomainAgent:
         targets = await self._targets(conversation, parsed, allow_playing_fallback=True)
         if isinstance(targets, dict):
             return targets
+        targets = _prefer_direct_media_targets(targets)
         result = await self._connection.media_player_volume_set([target.entity_id for target in targets], parsed.volume_level)
         if result.get("status") != "ok":
             return _failed_result("Nie udało się ustawić głośności.")
@@ -153,8 +162,9 @@ class MediaPlayerDomainAgent:
         targets = await self._targets(conversation, parsed)
         if isinstance(targets, dict):
             return targets
+        targets = _prefer_music_assistant_targets(targets)
 
-        search_item = await self._search_media(parsed)
+        search_item = await self._search_media(conversation, parsed)
         if search_item is None:
             return _failed_result(f"Nie znalazłem muzyki: {parsed.query}.")
         result = await self._connection.music_assistant_play_media(
@@ -172,6 +182,7 @@ class MediaPlayerDomainAgent:
         targets = await self._targets(conversation, parsed, allow_playing_fallback=True)
         if isinstance(targets, dict):
             return targets
+        targets = _prefer_direct_media_targets(targets)
         result = await self._connection.media_player_now_playing(targets[0].entity_id)
         if result.get("status") != "ok":
             return _failed_result("Nie mogę teraz sprawdzić, co gra.")
@@ -222,15 +233,19 @@ class MediaPlayerDomainAgent:
             speakers_only=True,
         )
 
-    async def _search_media(self, parsed: ParsedMediaCommand) -> MediaSearchItem | None:
-        query = self._liked_songs_media_id if parsed.query == "Liked Songs" else parsed.query
+    async def _search_media(self, conversation: Conversation, parsed: ParsedMediaCommand) -> MediaSearchItem | None:
+        if parsed.query == "Liked Songs":
+            return MediaSearchItem(
+                media_id=_conversation_media_setting(conversation, "liked_songs_media_id", self._liked_songs_media_id),
+                name=_conversation_media_setting(conversation, "liked_songs_name", "Liked Songs"),
+                media_type=_conversation_media_setting(conversation, "liked_songs_media_type", self._liked_songs_media_type),
+            )
+        query = parsed.query
         result = await self._connection.music_assistant_search(name=query, media_type=parsed.media_type, limit=5)
         if result.get("status") == "ok":
             item = _best_search_item(result.get("response"))
             if item is not None:
                 return item
-        if query == self._liked_songs_media_id:
-            return MediaSearchItem(media_id=query, name=query, media_type="playlist")
         if result.get("error") == "music_assistant_config_entry_not_found":
             self._logger.info("Music Assistant search unavailable; using raw play_media media_id=%r", query)
             return MediaSearchItem(media_id=query, name=query, media_type=parsed.media_type)
@@ -248,6 +263,7 @@ class MediaPlayerDomainAgent:
             "conversation": {
                 "area": conversation.area,
                 "user": conversation.user,
+                "user_settings": conversation.user_settings,
             },
             "active_context": active_context,
         }
@@ -315,6 +331,7 @@ def _targets_from_player_mappings(players: list[dict[str, Any]]) -> list[MediaTa
                 area_id=area_id,
                 area_name=area_name,
                 volume_level=volume_level if isinstance(volume_level, (int, float)) else None,
+                is_music_assistant=player.get("is_music_assistant") is True,
             )
         )
     return targets
@@ -329,6 +346,37 @@ def _dedupe_targets(targets: list[MediaTarget]) -> list[MediaTarget]:
         seen.add(target.entity_id)
         deduped.append(target)
     return deduped
+
+
+def _prefer_music_assistant_targets(targets: list[MediaTarget]) -> list[MediaTarget]:
+    return _prefer_targets_by_area(targets, prefer_music_assistant=True)
+
+
+def _prefer_direct_media_targets(targets: list[MediaTarget]) -> list[MediaTarget]:
+    return _prefer_targets_by_area(targets, prefer_music_assistant=False)
+
+
+def _prefer_targets_by_area(targets: list[MediaTarget], *, prefer_music_assistant: bool) -> list[MediaTarget]:
+    preferred: list[MediaTarget] = []
+    seen_area_ids = set()
+    for target in targets:
+        if target.area_id in seen_area_ids:
+            continue
+        seen_area_ids.add(target.area_id)
+        area_targets = [candidate for candidate in targets if candidate.area_id == target.area_id]
+        preferred_targets = [
+            candidate for candidate in area_targets if candidate.is_music_assistant is prefer_music_assistant
+        ]
+        preferred.extend(preferred_targets or area_targets)
+    return _dedupe_targets(preferred)
+
+
+def _conversation_media_setting(conversation: Conversation, key: str, default: str) -> str:
+    media_settings = conversation.user_settings.get("media")
+    if not isinstance(media_settings, dict):
+        return default
+    value = media_settings.get(key)
+    return value if isinstance(value, str) and value else default
 
 
 def _player_state(players: list[dict[str, Any]], entity_id: str) -> str:

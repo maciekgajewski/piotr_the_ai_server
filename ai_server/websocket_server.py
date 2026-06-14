@@ -86,7 +86,12 @@ def create_app(
                 peer,
                 follow_up_timeout_seconds=config.websocket.follow_up_timeout_seconds,
             )
-            await manager.run_session(endpoint, require_session_attributes=True)
+            await manager.run_session(
+                endpoint,
+                require_session_attributes=True,
+                default_user=config.default_user,
+                user_settings=config.users,
+            )
             return websocket
         except AssertionError as exc:
             connection_logger.warning("websocket protocol violation: %s", exc)

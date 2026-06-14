@@ -116,6 +116,7 @@ class HomeAssistantDomainAgent:
             "conversation": {
                 "user": conversation.user,
                 "area": conversation.area,
+                "user_settings": conversation.user_settings,
             },
         }
         logger.debug("running Home Assistant DSA task=%s active_context=%s", task, active_context)

@@ -51,6 +51,11 @@ class Conversation:
     def area(self) -> str | None:
         return self.attributes.get("area")
 
+    @property
+    def user_settings(self) -> dict[str, Any]:
+        settings = self.state.get("user_settings")
+        return settings if isinstance(settings, dict) else {}
+
 
 class EndpointClosed(Exception):
     """Raised when a communication endpoint cannot receive more messages."""

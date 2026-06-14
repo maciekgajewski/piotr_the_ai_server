@@ -22,6 +22,7 @@ import agent_tool_eval
 from ai_server.orchestrator import OrchestratorAgent
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
+from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
 from ai_server.domain_agents.weather import CurrentWeather, WeatherDomainAgent, WeatherNowRequest
 from ai_server.domain_agents.wikipedia import WikipediaArticle, WikipediaDomainAgent
 from ai_server.interfaces import Conversation, ConversationEndpoint
@@ -278,6 +279,7 @@ def _settings(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any
         "dsa_model": args.dsa_model or _str_or_default(models.get("dsa"), DEFAULT_MODEL),
         "area": _str_or_default(defaults.get("area"), "office"),
         "user": _str_or_default(defaults.get("user"), "Maciek"),
+        "users": _dict_or_empty(config.get("users")),
         "timezone": _str_or_default(defaults.get("timezone"), "Europe/Warsaw"),
         "location": _str_or_default(defaults.get("location"), "Wrocław"),
         "fixed_utc": _parse_datetime(_str_or_default(defaults.get("fixed_utc"), "2026-05-30T08:46:00+00:00")),
@@ -354,6 +356,8 @@ async def _run_case(case: TestCase, settings: dict[str, Any]) -> CaseResult:
         return await _run_orchestrator_case(case, settings)
     if case.kind == "dsa_ha":
         return await _run_dsa_ha_case(case, settings)
+    if case.kind == "dsa_media":
+        return await _run_dsa_media_case(case, settings)
     if case.kind == "dsa_time":
         return await _run_dsa_time_case(case, settings)
     if case.kind == "dsa_wikipedia":
@@ -447,6 +451,35 @@ async def _run_dsa_ha_case(case: TestCase, settings: dict[str, Any]) -> CaseResu
     result = CaseResult(case=case)
     try:
         dsa_result = await dsa.run_task(_conversation(raw, settings, f"dsa-ha-{case.name}"), _task(raw), _dict_or_empty(raw.get("active_context")))
+    finally:
+        await dsa.close()
+    result.duration_seconds = time.perf_counter() - started_at
+    result.task_results = [{"task": _task(raw), "result": dsa_result}]
+    result.replies = [_str_or_default(dsa_result.get("text"), "")]
+    result.actual_calls = list(fake_ha.calls)
+    _score_result_match(result, raw.get("expected_result"), dsa_result, "DSA result")
+    _score_reply_expectations(result)
+    _score_ha_expectations(result, inventory)
+    return result
+
+
+async def _run_dsa_media_case(case: TestCase, settings: dict[str, Any]) -> CaseResult:
+    started_at = time.perf_counter()
+    raw = case.raw
+    inventory = _home_assistant_inventory()
+    fake_ha = agent_tool_eval.FakeHomeAssistantConnection(
+        inventory,
+        _parse_expected_calls(raw),
+        transcript=False,
+    )
+    dsa = MediaPlayerDomainAgent(
+        model=settings["dsa_model"],
+        connection=fake_ha,
+        ollama_client=FakeWeatherOllamaClient(),
+    )
+    result = CaseResult(case=case)
+    try:
+        dsa_result = await dsa.run_task(_conversation(raw, settings, f"dsa-media-{case.name}"), _task(raw), _dict_or_empty(raw.get("active_context")))
     finally:
         await dsa.close()
     result.duration_seconds = time.perf_counter() - started_at
@@ -560,6 +593,11 @@ def _composite_domain_agents(
             model=settings["dsa_model"],
             ollama_url=settings["ollama_url"],
             connection=fake_ha,
+        ),
+        "media_player": MediaPlayerDomainAgent(
+            model=settings["dsa_model"],
+            connection=fake_ha,
+            ollama_client=FakeWeatherOllamaClient(),
         ),
         "time": CurrentTimeDomainAgent(
             timezone=settings["timezone"],
@@ -697,7 +735,11 @@ def _partial_match(expected: Any, actual: Any) -> bool:
 def _conversation(raw: dict[str, Any], settings: dict[str, Any], conversation_id: str) -> Conversation:
     area = _str_or_default(raw.get("area"), settings["area"])
     user = _str_or_default(raw.get("user"), settings["user"])
-    return Conversation(conversation_id=conversation_id, attributes={"area": area, "user": user})
+    return Conversation(
+        conversation_id=conversation_id,
+        attributes={"area": area, "user": user},
+        state={"user_settings": _user_settings_for(user, _dict_or_empty(settings.get("users")))},
+    )
 
 
 def _task(raw: dict[str, Any]) -> dict[str, Any]:
@@ -705,6 +747,17 @@ def _task(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(task, dict):
         raise ValueError("case.task must be a mapping")
     return copy.deepcopy(task)
+
+
+def _user_settings_for(user: str, users: dict[str, Any]) -> dict[str, Any]:
+    settings = users.get(user)
+    if settings is None:
+        normalized_user = user.casefold()
+        for candidate_user, candidate_settings in users.items():
+            if isinstance(candidate_user, str) and candidate_user.casefold() == normalized_user:
+                settings = candidate_settings
+                break
+    return copy.deepcopy(settings) if isinstance(settings, dict) else {}
 
 
 def _home_assistant_inventory() -> Any:

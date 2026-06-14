@@ -4,6 +4,7 @@ import asyncio
 import logging
 import uuid
 from contextlib import suppress
+from typing import Any
 
 from ai_server.agent import Agent
 from ai_server.config import ConversationConfig, MicrophoneConfig, SttConfig, TtsConfig
@@ -28,6 +29,8 @@ class MicrophoneManager:
         agent: Agent,
         follow_up_timeout_seconds: float,
         microphone_follow_up_timeouts: dict[str, float] | None = None,
+        default_user: str | None = None,
+        user_settings: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._microphones = microphones
         self._stt = stt
@@ -35,6 +38,8 @@ class MicrophoneManager:
         self._agent = agent
         self._follow_up_timeout_seconds = follow_up_timeout_seconds
         self._microphone_follow_up_timeouts = dict(microphone_follow_up_timeouts or {})
+        self._default_user = default_user
+        self._user_settings = dict(user_settings or {})
         self._tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
@@ -69,7 +74,13 @@ class MicrophoneManager:
         attributes = {}
         if microphone.context.area:
             attributes["area"] = microphone.context.area
-        session = Session(session_id=session_id, endpoint=endpoint, attributes=attributes)
+        session = Session(
+            session_id=session_id,
+            endpoint=endpoint,
+            attributes=attributes,
+            default_user=self._default_user,
+            user_settings=self._user_settings,
+        )
         session_task = asyncio.create_task(session.run(self._agent))
         availability_logger = _MicrophoneAvailabilityLogger(logger)
         pending_event = None
@@ -365,6 +376,9 @@ async def init_mics(
     tts_config: TtsConfig,
     conversation_config: ConversationConfig,
     agent: Agent,
+    *,
+    default_user: str | None = None,
+    user_settings: dict[str, dict[str, Any]] | None = None,
 ) -> MicrophoneManager | None:
     if not mic_configs:
         return None
@@ -381,6 +395,8 @@ async def init_mics(
             mic_config.name: mic_config.follow_up_timeout_seconds
             for mic_config in mic_configs
         },
+        default_user=default_user,
+        user_settings=user_settings,
     )
     await manager.start()
     return manager

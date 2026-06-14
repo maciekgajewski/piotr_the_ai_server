@@ -42,6 +42,19 @@ class SingleReplyAgent:
         pass
 
 
+class CapturingAgent:
+    def __init__(self) -> None:
+        self.conversations: list[Conversation] = []
+
+    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
+        self.conversations.append(conversation)
+        async for message in endpoint.messages():
+            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
+
+    async def close(self) -> None:
+        pass
+
+
 class FollowUpAgent:
     async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
         async for message in endpoint.messages():
@@ -136,6 +149,49 @@ def test_websocket_returns_to_new_conversation_without_requested_follow_up() -> 
                     assert await _receive_session_event(websocket) == WaitForNewConversation()
         finally:
             await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_websocket_applies_default_user_and_user_settings_to_conversation() -> None:
+    async def run() -> None:
+        port = _unused_port()
+        agent = CapturingAgent()
+        config = Config(
+            agent=AgentConfig(type="capturing", options={}),
+            websocket=WebsocketConfig(host="127.0.0.1", port=port),
+            default_user="Maciek",
+            users={"Maciek": {"media": {"liked_songs_media_id": "library://playlist/7"}}},
+        )
+        app = create_app(config, agent)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
+        await site.start()
+
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={})))
+
+                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+
+                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
+                    for event in text_message_to_events(TextMessage(text="hello")):
+                        await websocket.send_str(endpoint_event_to_json(event))
+
+                    assert await _receive_session_event(websocket) == MessageBegin()
+                    assert await _receive_session_event(websocket) == MessageFragment(text="reply:hello")
+                    assert await _receive_session_event(websocket) == MessageEnd()
+                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+        finally:
+            await runner.cleanup()
+
+        assert len(agent.conversations) == 1
+        assert agent.conversations[0].user == "Maciek"
+        assert agent.conversations[0].user_settings == {
+            "media": {"liked_songs_media_id": "library://playlist/7"}
+        }
 
     asyncio.run(run())
 
@@ -242,10 +298,22 @@ def test_chat_client_accepts_area_option() -> None:
     assert args.area == "office"
 
 
+def test_chat_client_accepts_user_option() -> None:
+    args = chat_client.parse_args(["--user", "Maciek", "ws://127.0.0.1:2137/chat"])
+
+    assert args.user == "Maciek"
+
+
 def test_batch_ws_client_accepts_area_option() -> None:
     args = batch_ws_client.parse_args(["--area", "office", "--message", "cześć"])
 
     assert args.area == "office"
+
+
+def test_batch_ws_client_accepts_user_option() -> None:
+    args = batch_ws_client.parse_args(["--user", "Maciek", "--message", "cześć"])
+
+    assert args.user == "Maciek"
 
 
 def test_ws_clients_reject_location_option() -> None:

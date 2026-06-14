@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +103,8 @@ class Config:
     conversation: ConversationConfig = ConversationConfig()
     microphone_defaults: MicrophoneDefaultsConfig = MicrophoneDefaultsConfig()
     microphones: tuple[MicrophoneConfig, ...] = ()
+    default_user: str | None = None
+    users: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def load_config_from_yaml(path: str | Path) -> Config:
@@ -140,6 +142,8 @@ def load_config_from_yaml(path: str | Path) -> Config:
         conversation=conversation,
         microphone_defaults=microphone_defaults,
         microphones=microphones,
+        default_user=_parse_optional_string(raw_config.get("default_user"), "default_user"),
+        users=_parse_users_config(raw_config.get("users", {})),
     )
 
 
@@ -180,6 +184,29 @@ def _parse_agent_config(raw_config: dict[str, Any], home_assistant_config: Any =
         type=agent_type,
         options=options,
     )
+
+
+def _parse_users_config(raw_config: Any) -> dict[str, dict[str, Any]]:
+    if raw_config is None:
+        return {}
+    if not isinstance(raw_config, dict):
+        raise ValueError("users must be a mapping")
+    users: dict[str, dict[str, Any]] = {}
+    for user, settings in raw_config.items():
+        if not isinstance(user, str) or not user:
+            raise ValueError("users keys must be non-empty strings")
+        if not isinstance(settings, dict):
+            raise ValueError(f"users.{user} must be a mapping")
+        users[user] = settings
+    return users
+
+
+def _parse_optional_string(value: Any, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} must be a non-empty string when provided")
+    return value
 
 
 def _validate_optional_non_empty_string(options: dict[str, Any], key: str, field: str) -> None:

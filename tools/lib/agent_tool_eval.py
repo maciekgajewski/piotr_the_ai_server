@@ -23,6 +23,7 @@ from ai_server.home_assistant import (
     HomeAssistantDevice,
     HomeAssistantEntity,
     HomeAssistantInventory,
+    HomeAssistantMediaPlayer,
     JsonScalar,
     ModifiableProperty,
 )
@@ -228,6 +229,101 @@ class FakeHomeAssistantConnection:
             self._default_modify_devices(devices, property_name, value, user_message=user_message, current_area=current_area),
         )
 
+    async def list_media_players(
+        self,
+        *,
+        area_name: str = "",
+        music_assistant_only: bool = True,
+        speakers_only: bool = True,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        return await self._record_and_reply(
+            "list_media_players",
+            {
+                "area_name": area_name,
+                "music_assistant_only": music_assistant_only,
+                "speakers_only": speakers_only,
+            },
+            self._default_list_media_players(
+                area_name=area_name,
+                music_assistant_only=music_assistant_only,
+                speakers_only=speakers_only,
+            ),
+        )
+
+    async def media_player_stop(self, entity_ids: list[str]) -> dict[str, Any]:
+        return await self._record_and_reply(
+            "media_player_stop",
+            {"entity_ids": entity_ids},
+            {"status": "ok", "entity_ids": entity_ids},
+        )
+
+    async def media_player_volume_set(self, entity_ids: list[str], volume_level: float) -> dict[str, Any]:
+        return await self._record_and_reply(
+            "media_player_volume_set",
+            {"entity_ids": entity_ids, "volume_level": volume_level},
+            {"status": "ok", "entity_ids": entity_ids, "volume_level": volume_level},
+        )
+
+    async def media_player_volume_delta(self, entity_ids: list[str], delta: float) -> dict[str, Any]:
+        results = []
+        for entity_id in entity_ids:
+            player = self._inventory.media_players_by_entity_id.get(entity_id)
+            current_volume = player.volume_level if player and player.volume_level is not None else 0.5
+            results.append({"entity_id": entity_id, "volume_level": min(1.0, max(0.0, current_volume + delta))})
+        return await self._record_and_reply(
+            "media_player_volume_delta",
+            {"entity_ids": entity_ids, "delta": delta},
+            {"status": "ok", "results": results},
+        )
+
+    async def media_player_now_playing(self, entity_id: str) -> dict[str, Any]:
+        player = self._inventory.media_players_by_entity_id.get(entity_id)
+        return await self._record_and_reply(
+            "media_player_now_playing",
+            {"entity_id": entity_id},
+            {
+                "status": "ok",
+                "entity_id": entity_id,
+                "title": player.attributes.get("media_title") if player else "",
+                "artist": player.attributes.get("media_artist") if player else "",
+            },
+        )
+
+    async def music_assistant_search(
+        self,
+        *,
+        name: str,
+        media_type: str = "",
+        limit: int = 5,
+        library_only: bool = False,
+    ) -> dict[str, Any]:
+        return await self._record_and_reply(
+            "music_assistant_search",
+            {"name": name, "media_type": media_type, "limit": limit, "library_only": library_only},
+            self._default_music_assistant_search(name=name, media_type=media_type),
+        )
+
+    async def music_assistant_play_media(
+        self,
+        entity_ids: list[str],
+        *,
+        media_id: str,
+        media_type: str = "",
+        artist: str = "",
+        album: str = "",
+    ) -> dict[str, Any]:
+        return await self._record_and_reply(
+            "music_assistant_play_media",
+            {
+                "entity_ids": entity_ids,
+                "media_id": media_id,
+                "media_type": media_type,
+                "artist": artist,
+                "album": album,
+            },
+            {"status": "ok", "entity_ids": entity_ids, "media_id": media_id, "media_type": media_type},
+        )
+
     async def _record_and_reply(self, tool: str, arguments: dict[str, Any], default_result: Any) -> Any:
         result = default_result
         for index, expected in enumerate(self._expected_calls):
@@ -342,6 +438,36 @@ class FakeHomeAssistantConnection:
                 }
             )
         return {"status": "ok", "results": results}
+
+    def _default_list_media_players(
+        self,
+        *,
+        area_name: str,
+        music_assistant_only: bool,
+        speakers_only: bool,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        area_id = self._resolve_area_id(area_name) if area_name else None
+        if area_name and area_id is None:
+            return {"error": "unknown_area", "area_name": area_name}
+        players = self._inventory.media_players_by_area.get(area_id, ()) if area_id else self._inventory.media_players_by_entity_id.values()
+        return [
+            _media_player_to_mapping(player)
+            for player in players
+            if (not music_assistant_only or player.is_music_assistant)
+            and (not speakers_only or player.is_speaker)
+        ]
+
+    def _default_music_assistant_search(self, *, name: str, media_type: str) -> dict[str, Any]:
+        normalized = _normalize_text(name)
+        if "tok" in normalized:
+            return {
+                "status": "ok",
+                "response": {"radio": [{"uri": "tunein://station/tok-fm", "name": "TOK FM", "media_type": "radio"}]},
+            }
+        return {
+            "status": "ok",
+            "response": {"items": [{"uri": f"spotify:search:{normalized.replace(' ', '-')}", "name": name, "media_type": media_type or "playlist"}]},
+        }
 
     def _resolve_area_id(self, area_name: str) -> str | None:
         normalized = _normalize_text(area_name)
@@ -925,12 +1051,15 @@ def _build_inventory(raw_home_assistant: Any) -> HomeAssistantInventory:
         for lookup_value in lookup_values:
             device_lookup.setdefault(lookup_value, []).append(device.device_id)
 
+    media_players = _build_media_players(devices_by_id, areas_by_id)
     return HomeAssistantInventory(
         areas_by_id=areas_by_id,
         devices_by_id=devices_by_id,
         devices_by_area={area_id: tuple(devices) for area_id, devices in devices_by_area.items()},
         area_lookup={key: tuple(value) for key, value in area_lookup.items()},
         device_lookup={key: tuple(value) for key, value in device_lookup.items()},
+        media_players_by_entity_id={player.entity_id: player for player in media_players},
+        media_players_by_area=_build_media_players_by_area(media_players, areas_by_id),
     )
 
 
@@ -973,6 +1102,8 @@ def _build_entity(
         aliases=tuple(_str_list(raw_entity.get("aliases", []))),
         state=_str_or_default(raw_entity.get("state"), "unknown"),
         attributes=_dict_or_empty(raw_entity.get("attributes")),
+        platform=_str_or_default(raw_entity.get("platform"), ""),
+        config_entry_id=_str_or_default(raw_entity.get("config_entry_id"), ""),
     )
 
 
@@ -999,6 +1130,48 @@ def _build_property(
         step=_float_or_none(raw_property.get("step")),
         allowed_values=tuple(raw_property.get("allowed_values", ())),
     )
+
+
+def _build_media_players(
+    devices_by_id: dict[str, HomeAssistantDevice],
+    areas_by_id: dict[str, HomeAssistantArea],
+) -> tuple[HomeAssistantMediaPlayer, ...]:
+    players = []
+    for device in devices_by_id.values():
+        area = areas_by_id.get(device.area_id)
+        if area is None:
+            continue
+        for entity in device.entities:
+            if entity.domain != "media_player":
+                continue
+            players.append(
+                HomeAssistantMediaPlayer(
+                    entity_id=entity.entity_id,
+                    device_id=device.device_id,
+                    area_id=device.area_id,
+                    area_name=area.name,
+                    name=device.name,
+                    aliases=device.aliases,
+                    state=entity.state,
+                    attributes=entity.attributes,
+                    volume_level=_float_or_none(entity.attributes.get("volume_level")),
+                    is_music_assistant=entity.platform == "music_assistant",
+                    is_speaker=bool(entity.attributes.get("is_volume_muted") is not None or entity.attributes.get("supported_features")),
+                    platform=entity.platform,
+                    config_entry_id=entity.config_entry_id,
+                )
+            )
+    return tuple(sorted(players, key=lambda player: player.name.casefold()))
+
+
+def _build_media_players_by_area(
+    media_players: tuple[HomeAssistantMediaPlayer, ...],
+    areas_by_id: dict[str, HomeAssistantArea],
+) -> dict[str, tuple[HomeAssistantMediaPlayer, ...]]:
+    return {
+        area_id: tuple(player for player in media_players if player.area_id == area_id)
+        for area_id in areas_by_id
+    }
 
 
 def _print_results(results: list[ScenarioResult], *, verbose: bool) -> None:
@@ -1117,6 +1290,23 @@ def _device_to_mapping(device: HomeAssistantDevice, inventory: HomeAssistantInve
     }
 
 
+def _media_player_to_mapping(player: HomeAssistantMediaPlayer) -> dict[str, Any]:
+    return {
+        "entity_id": player.entity_id,
+        "device_id": player.device_id,
+        "name": player.name,
+        "area_id": player.area_id,
+        "area_name": player.area_name,
+        "aliases": list(player.aliases),
+        "state": player.state,
+        "volume_level": player.volume_level,
+        "is_music_assistant": player.is_music_assistant,
+        "is_speaker": player.is_speaker,
+        "platform": player.platform,
+        "config_entry_id": player.config_entry_id,
+    }
+
+
 def _area_to_mapping(area: HomeAssistantArea) -> dict[str, Any]:
     return {"area_id": area.area_id, "name": area.name, "aliases": list(area.aliases)}
 
@@ -1229,6 +1419,7 @@ def _default_areas() -> list[dict[str, Any]]:
         {"area_id": "office", "name": "Office", "aliases": ["biuro", "gabinet", "pracownia"]},
         {"area_id": "living_room", "name": "Living room", "aliases": ["salon", "pokój dzienny"]},
         {"area_id": "bedroom", "name": "Bedroom", "aliases": ["sypialnia"]},
+        {"area_id": "bathroom", "name": "Bathroom", "aliases": ["łazienka", "kibel"]},
     ]
 
 
@@ -1237,6 +1428,14 @@ def _default_devices() -> list[dict[str, Any]]:
         _default_climate_device("office_ac", "office", "Study air conditioner", "climate.study_air_conditioner", ["klima w biurze", "klimatyzacja w biurze", "office air conditioner"]),
         _default_climate_device("living_room_ac", "living_room", "Living room air conditioner", "climate.living_room_air_conditioner", ["klima w salonie", "klimatyzacja w salonie", "salon air conditioner"]),
         _default_climate_device("bedroom_ac", "bedroom", "Bedroom air conditioner", "climate.bedroom_air_conditioner", ["klima w sypialni", "klimatyzacja w sypialni", "bedroom air conditioner"]),
+        _default_media_player_device("office_sonos", "office", "Office", "media_player.office", is_music_assistant=False),
+        _default_media_player_device("office_ma", "office", "Office", "media_player.office_2", is_music_assistant=True),
+        _default_media_player_device("bedroom_sonos", "bedroom", "Bedroom", "media_player.bedroom", is_music_assistant=False),
+        _default_media_player_device("bedroom_ma", "bedroom", "Bedroom", "media_player.bedroom_2", is_music_assistant=True),
+        _default_media_player_device("living_room_sonos", "living_room", "Living Room", "media_player.living_room", is_music_assistant=False),
+        _default_media_player_device("living_room_ma", "living_room", "Living Room", "media_player.living_room_2", is_music_assistant=True),
+        _default_media_player_device("bathroom_sonos", "bathroom", "Bathroom", "media_player.bathroom", is_music_assistant=False),
+        _default_media_player_device("bathroom_ma", "bathroom", "Bathroom", "media_player.bathroom_2", is_music_assistant=True),
     ]
 
 
@@ -1282,6 +1481,42 @@ def _default_climate_device(
                 "step": 0.5,
             },
         ],
+    }
+
+
+def _default_media_player_device(
+    device_id: str,
+    area_id: str,
+    name: str,
+    entity_id: str,
+    *,
+    is_music_assistant: bool,
+) -> dict[str, Any]:
+    platform = "music_assistant" if is_music_assistant else "sonos"
+    return {
+        "device_id": device_id,
+        "area_id": area_id,
+        "name": name,
+        "type": "media_player",
+        "aliases": [f"{name} speaker", f"{name} music"],
+        "entities": [
+            {
+                "entity_id": entity_id,
+                "domain": "media_player",
+                "name": name,
+                "aliases": [f"{name} speaker", f"{name} music"],
+                "state": "idle",
+                "platform": platform,
+                "config_entry_id": "ma-1" if is_music_assistant else "sonos-1",
+                "attributes": {
+                    "friendly_name": name,
+                    "supported_features": 4127295,
+                    "volume_level": 0.3,
+                    "is_volume_muted": False,
+                },
+            }
+        ],
+        "properties": [],
     }
 
 

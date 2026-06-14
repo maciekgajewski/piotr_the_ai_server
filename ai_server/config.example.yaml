@@ -5,6 +5,17 @@ server:
   timezone: Europe/Warsaw
   location: Wrocław
 
+default_user: Maciek
+users:
+  Maciek:
+    media:
+      liked_songs_media_id: library://playlist/7
+      liked_songs_media_type: playlist
+      liked_songs_name: Liked Songs macson_g
+      default_music_media_id: library://playlist/7
+      default_music_media_type: playlist
+      default_music_name: moje ulubione
+
 agent:
   type: polite_reply
   model: gpt-oss:20b-cloud

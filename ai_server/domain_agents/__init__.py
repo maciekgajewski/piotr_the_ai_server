@@ -55,6 +55,7 @@ def create_domain_agents(
                 ollama_url=ollama_url,
                 connection=home_assistant_connection,
                 liked_songs_media_id=_optional_domain_string(raw_options, domain, "liked_songs_media_id", "Liked Songs") or "Liked Songs",
+                liked_songs_media_type=_optional_domain_string(raw_options, domain, "liked_songs_media_type", "playlist") or "playlist",
                 default_music_media_id=_optional_domain_string(raw_options, domain, "default_music_media_id", "Liked Songs") or "Liked Songs",
                 default_music_media_type=_optional_domain_string(raw_options, domain, "default_music_media_type", "playlist") or "playlist",
                 default_music_name=_optional_domain_string(raw_options, domain, "default_music_name", "muzykę ze Spotify") or "muzykę ze Spotify",

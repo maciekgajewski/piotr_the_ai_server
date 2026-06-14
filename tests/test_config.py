@@ -71,6 +71,46 @@ agent:
     )
 
 
+def test_load_config_with_default_user_and_user_settings(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+default_user: Maciek
+users:
+  Maciek:
+    media:
+      liked_songs_media_id: library://playlist/7
+      liked_songs_media_type: playlist
+      liked_songs_name: Liked Songs macson_g
+websocket:
+  port: 2137
+agent:
+  type: echo
+""",
+    )
+
+    assert load_config_from_yaml(config_path) == Config(
+        agent=AgentConfig(type="echo", options={}),
+        log_level=DEFAULT_LOG_LEVEL,
+        websocket=WebsocketConfig(
+            host=DEFAULT_WEBSOCKET_HOST,
+            port=2137,
+            path=DEFAULT_WEBSOCKET_PATH,
+            follow_up_timeout_seconds=DEFAULT_WEBSOCKET_FOLLOW_UP_TIMEOUT_SECONDS,
+        ),
+        default_user="Maciek",
+        users={
+            "Maciek": {
+                "media": {
+                    "liked_songs_media_id": "library://playlist/7",
+                    "liked_songs_media_type": "playlist",
+                    "liked_songs_name": "Liked Songs macson_g",
+                }
+            }
+        },
+    )
+
+
 def test_load_config_with_explicit_log_level(tmp_path: Path) -> None:
     config_path = write_config(
         tmp_path,
@@ -448,6 +488,9 @@ agent:
         ),
         ("log_level: noisy\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "log_level must be one of"),
         ("log_level: 1\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "log_level must be a string"),
+        ("default_user: ''\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "default_user must be a non-empty string"),
+        ("users: []\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "users must be a mapping"),
+        ("users:\n  Maciek: []\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "users.Maciek must be a mapping"),
         ("websocket:\n  port: 2137\nagent:\n  type: echo\nstt: []", "stt must be a mapping"),
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  device: nope",

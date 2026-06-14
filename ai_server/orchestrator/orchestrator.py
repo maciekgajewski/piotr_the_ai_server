@@ -378,6 +378,7 @@ class OrchestratorAgent:
             "conversation_id": conversation.conversation_id,
             "user": conversation.user,
             "area": conversation.area,
+            "user_settings": conversation.user_settings,
             "server_location": self._server_config.location,
             "server_timezone": self._server_config.timezone,
         }
@@ -466,6 +467,7 @@ class OrchestratorAgent:
                 "conversation_id": conversation.conversation_id,
                 "user": conversation.user,
                 "area": conversation.area,
+                "user_settings": conversation.user_settings,
                 "server_location": self._server_config.location,
                 "server_timezone": self._server_config.timezone,
             },

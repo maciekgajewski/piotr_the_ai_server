@@ -50,6 +50,79 @@ cases:
     expected_replies:
       - contains_all: [Einstein, "1879"]
 
+  - id: media_spotify_prefers_ma_duplicate
+    messages:
+      - Spotify!
+    expected_tasks:
+      - domain: media_player
+        command:
+          intent: start_last
+          query: Spotify!
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: office
+          music_assistant_only: false
+          speakers_only: true
+      - tool: music_assistant_play_media
+        arguments:
+          entity_ids: [media_player.office_2]
+          media_id: library://playlist/7
+          media_type: playlist
+    expected_replies:
+      - contains_all: [ulubione]
+
+  - id: media_rock_genre_selection
+    messages:
+      - Graj muzykę rockową
+    expected_tasks:
+      - domain: media_player
+        command:
+          intent: play_media
+          query:
+            $any: [Graj muzykę rockową, muzykę rockową, rockową, rock]
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: office
+          music_assistant_only: false
+          speakers_only: true
+      - tool: music_assistant_search
+        arguments:
+          name: muzykę rockową
+          media_type: ""
+          limit: 5
+      - tool: music_assistant_play_media
+        arguments:
+          entity_ids: [media_player.office_2]
+          media_id: spotify:search:muzyke-rockowa
+          media_type: playlist
+    expected_replies:
+      - contains_all: [rock]
+
+  - id: media_my_favourites_uses_user_playlist
+    messages:
+      - Graj moje ulubione
+    expected_tasks:
+      - domain: media_player
+        command:
+          intent: play_media
+          query:
+            $any: [Graj moje ulubione, Liked Songs]
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: office
+          music_assistant_only: false
+          speakers_only: true
+      - tool: music_assistant_play_media
+        arguments:
+          entity_ids: [media_player.office_2]
+          media_id: library://playlist/7
+          media_type: playlist
+    expected_replies:
+      - contains_all: [Liked Songs macson_g]
+
   - id: ha_time_combo
     messages:
       - wyłącz klimę w biurze i powiedz która godzina jest teraz w Jacksonville

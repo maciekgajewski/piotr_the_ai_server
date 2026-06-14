@@ -10,6 +10,7 @@ class MediaTarget:
     area_id: str
     area_name: str
     volume_level: float | None = None
+    is_music_assistant: bool = False
 
 
 @dataclass(frozen=True)

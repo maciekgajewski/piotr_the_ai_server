@@ -89,6 +89,37 @@ def test_media_domain_agent_start_last_uses_default_spotify_music_not_resume() -
     ]
 
 
+def test_media_domain_agent_start_last_uses_conversation_user_media_settings() -> None:
+    connection = FakeMediaConnection(include_ma_duplicate=True)
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "start_last", "query": "Spotify!"},
+    }
+    conversation = Conversation(
+        "c1",
+        {"area": "office", "user": "Maciek"},
+        state={"user_settings": _user_media_settings()},
+    )
+
+    result = asyncio.run(agent.run_task(conversation, task, {}))
+
+    assert result["status"] == "ok"
+    assert result["text"] == "Włączam moje ulubione."
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
+        (
+            "music_assistant_play_media",
+            {"entity_ids": ["media_player.office_2"], "media_id": "library://playlist/7", "media_type": "playlist"},
+        ),
+    ]
+
+
 def test_media_domain_agent_executes_simple_volume_without_llm() -> None:
     connection = FakeMediaConnection()
     ollama = FakeOllamaClient([])
@@ -108,6 +139,28 @@ def test_media_domain_agent_executes_simple_volume_without_llm() -> None:
     assert result["status"] == "ok"
     assert result["text"] == "Głośność: 40 procent."
     assert ollama.requests == []
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
+        ("media_player_volume_delta", {"entity_ids": ["media_player.office"], "delta": 0.1}),
+    ]
+
+
+def test_media_domain_agent_keeps_volume_on_direct_entity_when_ma_duplicate_exists() -> None:
+    connection = FakeMediaConnection(include_ma_duplicate=True)
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "volume_delta", "query": "Daj głośniej", "volume_delta": 0.10},
+    }
+
+    result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
+
+    assert result["status"] == "ok"
     assert connection.calls == [
         ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
         ("media_player_volume_delta", {"entity_ids": ["media_player.office"], "delta": 0.1}),
@@ -202,6 +255,60 @@ def test_media_domain_agent_falls_back_to_raw_play_media_when_search_config_entr
     ]
 
 
+def test_media_domain_agent_prefers_ma_duplicate_for_play_media() -> None:
+    connection = FakeMediaConnection(include_ma_duplicate=True)
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "play_media", "query": "Włącz hip-hop na Spotify."},
+    }
+
+    result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
+
+    assert result["status"] == "ok"
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_search", {"name": "hip-hop", "media_type": "", "limit": 5}),
+        ("music_assistant_play_media", {"entity_ids": ["media_player.office_2"], "media_id": "spotify:playlist:soft-jazz", "media_type": "playlist"}),
+    ]
+
+
+def test_media_domain_agent_uses_conversation_user_liked_songs_without_searching() -> None:
+    connection = FakeMediaConnection(include_ma_duplicate=True)
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "play_media", "query": "Graj moje ulubione"},
+    }
+    conversation = Conversation(
+        "c1",
+        {"area": "office", "user": "Maciek"},
+        state={"user_settings": _user_media_settings()},
+    )
+
+    result = asyncio.run(agent.run_task(conversation, task, {}))
+
+    assert result["status"] == "ok"
+    assert result["text"] == "Włączam Liked Songs macson_g."
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
+        (
+            "music_assistant_play_media",
+            {"entity_ids": ["media_player.office_2"], "media_id": "library://playlist/7", "media_type": "playlist"},
+        ),
+    ]
+
+
 def test_media_domain_agent_plays_tok_fm_radio_from_music_assistant_search() -> None:
     connection = FakeMediaConnection(
         search_result={
@@ -232,10 +339,16 @@ def test_media_domain_agent_plays_tok_fm_radio_from_music_assistant_search() -> 
 
 
 class FakeMediaConnection:
-    def __init__(self, player_state: str = "playing", search_result: dict | None = None) -> None:
+    def __init__(
+        self,
+        player_state: str = "playing",
+        search_result: dict | None = None,
+        include_ma_duplicate: bool = False,
+    ) -> None:
         self.calls = []
         self.player_state = player_state
         self.search_result = search_result
+        self.include_ma_duplicate = include_ma_duplicate
 
     async def list_media_players(self, *, area_name: str = "", music_assistant_only: bool = True, speakers_only: bool = True):
         self.calls.append(
@@ -248,7 +361,7 @@ class FakeMediaConnection:
             return []
         entity_id = "media_player.living_room" if area_name == "living room" else "media_player.office"
         area_id = "living_room" if area_name == "living room" else "office"
-        return [
+        players = [
             {
                 "entity_id": entity_id,
                 "device_id": f"device-{area_id}",
@@ -257,10 +370,25 @@ class FakeMediaConnection:
                 "area_name": area_name or "Office",
                 "state": self.player_state,
                 "volume_level": 0.3,
-                "is_music_assistant": True,
+                "is_music_assistant": False,
                 "is_speaker": True,
             }
         ]
+        if self.include_ma_duplicate:
+            players.append(
+                {
+                    "entity_id": f"{entity_id}_2",
+                    "device_id": f"device-{area_id}-ma",
+                    "name": area_name or "Office speaker",
+                    "area_id": area_id,
+                    "area_name": area_name or "Office",
+                    "state": self.player_state,
+                    "volume_level": 0.3,
+                    "is_music_assistant": True,
+                    "is_speaker": True,
+                }
+            )
+        return players
 
     async def media_player_volume_delta(self, entity_ids: list[str], delta: float):
         self.calls.append(("media_player_volume_delta", {"entity_ids": entity_ids, "delta": delta}))
@@ -293,6 +421,19 @@ class FakeMediaConnection:
             )
         )
         return {"status": "ok"}
+
+
+def _user_media_settings() -> dict:
+    return {
+        "media": {
+            "liked_songs_media_id": "library://playlist/7",
+            "liked_songs_media_type": "playlist",
+            "liked_songs_name": "Liked Songs macson_g",
+            "default_music_media_id": "library://playlist/7",
+            "default_music_media_type": "playlist",
+            "default_music_name": "moje ulubione",
+        }
+    }
 
 
 class FakeOllamaClient:

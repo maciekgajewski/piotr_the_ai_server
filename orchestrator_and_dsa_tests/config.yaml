@@ -8,3 +8,12 @@ defaults:
   timezone: Europe/Warsaw
   location: Wrocław
   fixed_utc: "2026-05-30T08:46:00+00:00"
+users:
+  Maciek:
+    media:
+      liked_songs_media_id: library://playlist/7
+      liked_songs_media_type: playlist
+      liked_songs_name: Liked Songs macson_g
+      default_music_media_id: library://playlist/7
+      default_music_media_type: playlist
+      default_music_name: twoje ulubione

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import copy
 import logging
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Any
 
 from ai_server.agent import Agent
 from ai_server.interfaces import CommunicationEndpoint, Conversation, ConversationEndpoint, EndpointClosed
@@ -18,10 +20,13 @@ class Session:
     endpoint: CommunicationEndpoint
     attributes: dict[str, str] | None = None
     require_session_attributes: bool = False
+    default_user: str | None = None
+    user_settings: dict[str, dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         self._logger = logging.getLogger(f"{__name__}.Session[{self.session_id}]")
         self.attributes = dict(self.attributes or {})
+        self.user_settings = dict(self.user_settings or {})
 
     async def run(self, agent: Agent) -> None:
         try:
@@ -66,9 +71,13 @@ class Session:
         event = await self.endpoint.receive()
         assert isinstance(event, NewConversation), f"expected NewConversation, got {type(event).__name__}"
         attributes = _merge_attributes(self.attributes or {}, event.attributes)
+        if not attributes.get("user") and self.default_user:
+            attributes["user"] = self.default_user
+        settings = _user_settings_for(attributes.get("user"), self.user_settings or {})
         return Conversation(
             conversation_id=str(uuid.uuid4()),
             attributes=attributes,
+            state={"user_settings": settings},
         )
 
     async def receive_conversation_event(self) -> ConversationInputEvent:
@@ -93,12 +102,16 @@ class SessionManager:
         attributes: dict[str, str] | None = None,
         require_session_attributes: bool = False,
         session_id: str | None = None,
+        default_user: str | None = None,
+        user_settings: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         session = Session(
             session_id=session_id or str(uuid.uuid4()),
             endpoint=endpoint,
             attributes=attributes,
             require_session_attributes=require_session_attributes,
+            default_user=default_user,
+            user_settings=user_settings,
         )
         self._sessions[session.session_id] = session
         session._logger.info("new session")
@@ -218,3 +231,16 @@ def _merge_attributes(base: dict[str, str], overrides: dict[str, str]) -> dict[s
     merged = dict(base)
     merged.update(overrides)
     return merged
+
+
+def _user_settings_for(user: str | None, user_settings: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    if not user:
+        return {}
+    settings = user_settings.get(user)
+    if settings is None:
+        normalized_user = user.casefold()
+        for candidate_user, candidate_settings in user_settings.items():
+            if candidate_user.casefold() == normalized_user:
+                settings = candidate_settings
+                break
+    return copy.deepcopy(settings) if isinstance(settings, dict) else {}

@@ -1,0 +1,77 @@
+group: dsa_media
+type: dsa_media
+
+cases:
+  - id: start_last_prefers_ma_duplicate
+    task:
+      id: t1
+      domain: media_player
+      command:
+        intent: start_last
+        query: Spotify!
+    expected_result:
+      status: ok
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: office
+          music_assistant_only: false
+          speakers_only: true
+      - tool: music_assistant_play_media
+        arguments:
+          entity_ids: [media_player.office_2]
+          media_id: library://playlist/7
+          media_type: playlist
+    expected_replies:
+      - contains_all: [ulubione]
+
+  - id: play_media_prefers_ma_duplicate
+    task:
+      id: t1
+      domain: media_player
+      command:
+        intent: play_media
+        query: Włącz hip-hop na Spotify.
+    expected_result:
+      status: ok
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: office
+          music_assistant_only: false
+          speakers_only: true
+      - tool: music_assistant_search
+        arguments:
+          name: hip-hop
+          media_type: ""
+          limit: 5
+      - tool: music_assistant_play_media
+        arguments:
+          entity_ids: [media_player.office_2]
+          media_id: spotify:search:hip-hop
+          media_type: playlist
+    expected_replies:
+      - contains_all: [hip-hop]
+
+  - id: volume_prefers_direct_entity
+    task:
+      id: t1
+      domain: media_player
+      command:
+        intent: volume_delta
+        query: Daj głośniej
+        volume_delta: 0.1
+    expected_result:
+      status: ok
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: office
+          music_assistant_only: false
+          speakers_only: true
+      - tool: media_player_volume_delta
+        arguments:
+          entity_ids: [media_player.office]
+          delta: 0.1
+    expected_replies:
+      - contains_all: [Głośność]
