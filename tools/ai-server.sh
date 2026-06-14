@@ -84,9 +84,9 @@ fi
 export AI_SERVER_CONFIG
 
 if docker compose version >/dev/null 2>&1; then
-  docker compose --env-file "$SERVICES_CONFIG" run --rm ai-server "${SERVER_ARGS[@]}"
+  docker compose --env-file "$SERVICES_CONFIG" -f docker-compose.yml -f docker-compose.ai-server.yml run --rm ai-server "${SERVER_ARGS[@]}"
 elif command -v docker-compose >/dev/null 2>&1; then
-  docker-compose --env-file "$SERVICES_CONFIG" run --rm ai-server "${SERVER_ARGS[@]}"
+  docker-compose --env-file "$SERVICES_CONFIG" -f docker-compose.yml -f docker-compose.ai-server.yml run --rm ai-server "${SERVER_ARGS[@]}"
 else
   echo "Docker Compose is required. Install the Docker Compose plugin or docker-compose." >&2
   exit 1

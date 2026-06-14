@@ -18,7 +18,7 @@ agent:
 Run the helper from the repository root:
 
 ```bash
-tools/ollama-cloud-setup-test.sh
+tools/ollama-cloud-setup-test.sh --services-config config/services.env
 ```
 
 By default it:
@@ -31,13 +31,13 @@ By default it:
 Use a different cloud model:
 
 ```bash
-tools/ollama-cloud-setup-test.sh --model MODEL-NAME-CLOUD
+tools/ollama-cloud-setup-test.sh --services-config config/services.env --model MODEL-NAME-CLOUD
 ```
 
 Skip sign-in after the container is already authenticated:
 
 ```bash
-tools/ollama-cloud-setup-test.sh --no-signin
+tools/ollama-cloud-setup-test.sh --services-config config/services.env --no-signin
 ```
 
 ## Manual Commands
@@ -45,19 +45,19 @@ tools/ollama-cloud-setup-test.sh --no-signin
 Start the local Ollama service:
 
 ```bash
-docker compose up -d ollama
+docker compose --env-file config/services.env up -d ollama
 ```
 
 Sign in inside the container:
 
 ```bash
-docker compose exec ollama ollama signin
+docker compose --env-file config/services.env exec ollama ollama signin
 ```
 
 Pull a cloud model:
 
 ```bash
-docker compose exec ollama ollama pull gpt-oss:20b-cloud
+docker compose --env-file config/services.env exec ollama ollama pull gpt-oss:20b-cloud
 ```
 
 Test the local Ollama API:

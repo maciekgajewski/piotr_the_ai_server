@@ -1,0 +1,29 @@
+services:
+  ai-server:
+    build:
+      context: .
+      dockerfile: docker/ai-server.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - ollama
+      - wyoming-piper
+      - wyoming-whisper
+    network_mode: host
+    gpus: all
+    volumes:
+      - ./ai_server:/app/ai_server:ro
+      - "${AI_SERVER_CONFIG:?AI_SERVER_CONFIG must be set to the AI server config file path}:/config/ai_server.yaml:ro"
+      - ./.hf-cache:/app/.hf-cache
+      - ./.piper-cache:/app/.piper-cache
+      - ./.whisper-cache:/app/.whisper-cache
+      - ./audio:/app/audio
+    entrypoint:
+      - /usr/local/bin/ai-server-entrypoint.sh
+    command:
+      - python3
+      - -m
+      - ai_server.server
+      - --config
+      - /config/ai_server.yaml
+      - --ollama-url
+      - http://127.0.0.1:11434

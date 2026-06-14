@@ -18,13 +18,13 @@ Signs in the Docker Compose `ollama` service, pulls an Ollama cloud model, and
 smoke-tests the local API endpoint used by the AI server.
 
 ```bash
-tools/ollama-cloud-setup-test.sh
+tools/ollama-cloud-setup-test.sh --services-config config/services.env
 ```
 
 The default model is `gpt-oss:20b-cloud`. Override it with:
 
 ```bash
-tools/ollama-cloud-setup-test.sh --model MODEL-NAME-CLOUD
+tools/ollama-cloud-setup-test.sh --services-config config/services.env --model MODEL-NAME-CLOUD
 ```
 
 See [../docs/ollama-cloud-models.md](../docs/ollama-cloud-models.md).
