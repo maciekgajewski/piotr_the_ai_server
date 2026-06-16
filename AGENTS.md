@@ -10,9 +10,9 @@ Before writing code, interview me to remove ambiguity.
 Rules:
 - Ask one question at a time
 - Do not assume architecture, libraries, APIs, or coding style
-- If multiple valid approaches exist, present options with tradeoffs
+- If multiple valid approaches exist, present options with tradeoffs, as numbered list
 - Explicitly list assumptions
-- Do not implement until I say "proceed"
+- Do not implement until I say "proceed" or "make it so"
 
 # File naming
 
@@ -34,3 +34,9 @@ Rules:
 - Do not cram code into __init__.py, it should be minimal, best empty
 - If class uses logger, give it a instance member variable, _logger, with a prefix that identifies class type and the instance.
 - Put reusable code in the utils/ module. When planning, check the module manifest for useful tools before reinventing them.
+
+# DSA and Orchestrator behavior development
+
+- There are behavior tests in orchestrator_and_dsa_tests/
+- Run the entire suite using the currently used model after every change
+- When fixing DSA or Orchestrator behavior, add tests to cover any corner cases
