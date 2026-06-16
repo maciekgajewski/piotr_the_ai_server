@@ -15,7 +15,7 @@ from ai_server.domain_agents.media_player.formatting import (
 )
 from ai_server.domain_agents.media_player.interfaces import MediaSearchItem, MediaTarget
 from ai_server.domain_agents.media_player.messages import MEDIA_COMPLEX_COMMAND_SYSTEM_PROMPT
-from ai_server.domain_agents.media_player.parser import DEFAULT_VOLUME_DELTA, ParsedMediaCommand, parse_media_command
+from ai_server.domain_agents.media_player.parser import DEFAULT_VOLUME_DELTA, ParsedMediaCommand, ascii_fold, parse_media_command
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient
@@ -50,6 +50,7 @@ class MediaPlayerDomainAgent:
         self._default_music_media_id = default_music_media_id
         self._default_music_media_type = default_music_media_type
         self._default_music_name = default_music_name
+        self._recent_media_by_user: dict[str, MediaSearchItem] = {}
         self._logger = logging.getLogger(f"{__name__}.MediaPlayerDomainAgent[{model}]")
 
     async def run_task(
@@ -99,6 +100,8 @@ class MediaPlayerDomainAgent:
             return await self._play_media(conversation, parsed)
         if parsed.intent == "now_playing":
             return await self._now_playing(conversation, parsed)
+        if parsed.intent == "transfer_playback":
+            return await self._transfer_playback(conversation, parsed)
         return _clarification_result("Jaką muzykę albo który głośnik mam obsłużyć?")
 
     async def close(self) -> None:
@@ -110,17 +113,40 @@ class MediaPlayerDomainAgent:
         if isinstance(targets, dict):
             return targets
         targets = _prefer_music_assistant_targets(targets)
-        media_id = _conversation_media_setting(conversation, "default_music_media_id", self._default_music_media_id)
-        media_type = _conversation_media_setting(conversation, "default_music_media_type", self._default_music_media_type)
-        media_name = _conversation_media_setting(conversation, "default_music_name", self._default_music_name)
+
+        if _all_targets_playing(targets):
+            media = await self._current_music_assistant_media(targets)
+            if media is not None:
+                self._remember_recent_media(conversation, media)
+            return _ok_result("Muzyka już gra.", targets)
+
+        if parsed.replace_outputs:
+            relocated = await self._relocate_current_queue(conversation, targets)
+            if relocated is not None:
+                return relocated
+
+        media = await self._current_music_assistant_media()
+        if media is None:
+            media = self._recent_media(conversation)
+        if media is None:
+            media = MediaSearchItem(
+                media_id=_conversation_media_setting(conversation, "default_music_media_id", self._default_music_media_id),
+                name=_conversation_media_setting(conversation, "default_music_name", self._default_music_name),
+                media_type=_conversation_media_setting(conversation, "default_music_media_type", self._default_music_media_type),
+            )
         result = await self._connection.music_assistant_play_media(
             [target.entity_id for target in targets],
-            media_id=media_id,
-            media_type=media_type,
+            media_id=media.media_id,
+            media_type=media.media_type,
+            artist=media.artist,
+            album=media.album,
         )
         if result.get("status") != "ok":
             return _failed_result("Nie udało się włączyć muzyki ze Spotify.")
-        return _ok_result(format_started(len(targets), media_name), targets)
+        self._remember_recent_media(conversation, media)
+        if _should_shuffle_media(media.media_type, ""):
+            await self._shuffle_targets(targets)
+        return _ok_result(format_started(len(targets), media.name), targets)
 
     async def _stop(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
         targets = await self._targets(conversation, parsed)
@@ -176,6 +202,9 @@ class MediaPlayerDomainAgent:
         )
         if result.get("status") != "ok":
             return _failed_result("Nie udało się włączyć muzyki.")
+        self._remember_recent_media(conversation, search_item)
+        if _should_shuffle_media(search_item.media_type, parsed.media_type):
+            await self._shuffle_targets(targets)
         return _ok_result(format_playing_media(search_item.name or parsed.query, len(targets)), targets)
 
     async def _now_playing(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
@@ -187,6 +216,16 @@ class MediaPlayerDomainAgent:
         if result.get("status") != "ok":
             return _failed_result("Nie mogę teraz sprawdzić, co gra.")
         return _ok_result(format_now_playing(result), targets)
+
+    async def _transfer_playback(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
+        targets = await self._targets(conversation, parsed)
+        if isinstance(targets, dict):
+            return targets
+        targets = _prefer_music_assistant_targets(targets)
+        relocated = await self._relocate_current_queue(conversation, targets)
+        if relocated is None:
+            return _failed_result("Nie znalazłem grającej muzyki do przeniesienia.")
+        return relocated
 
     async def _targets(
         self,
@@ -240,16 +279,73 @@ class MediaPlayerDomainAgent:
                 name=_conversation_media_setting(conversation, "liked_songs_name", "Liked Songs"),
                 media_type=_conversation_media_setting(conversation, "liked_songs_media_type", self._liked_songs_media_type),
             )
-        query = parsed.query
-        result = await self._connection.music_assistant_search(name=query, media_type=parsed.media_type, limit=5)
+        alias = _conversation_playlist_alias(conversation, parsed.query)
+        query = alias or parsed.query
+        media_type = "playlist" if alias else parsed.media_type
+        result = await self._connection.music_assistant_search(name=query, media_type=media_type, limit=5)
         if result.get("status") == "ok":
             item = _best_search_item(result.get("response"))
             if item is not None:
                 return item
         if result.get("error") == "music_assistant_config_entry_not_found":
             self._logger.info("Music Assistant search unavailable; using raw play_media media_id=%r", query)
-            return MediaSearchItem(media_id=query, name=query, media_type=parsed.media_type)
+            return MediaSearchItem(media_id=query, name=query, media_type=media_type)
         return None
+
+    async def _relocate_current_queue(self, conversation: Conversation, targets: list[MediaTarget]) -> dict[str, Any] | None:
+        playing_targets = await self._playing_music_assistant_targets()
+        if not playing_targets:
+            return None
+        source = playing_targets[0]
+        if {target.entity_id for target in targets} == {source.entity_id}:
+            return _ok_result("Muzyka już gra.", targets)
+        media = await self._current_music_assistant_media([source])
+        if media is not None:
+            self._remember_recent_media(conversation, media)
+        result = await self._connection.music_assistant_transfer_queue(
+            [target.entity_id for target in targets],
+            source_player=source.entity_id,
+            auto_play=True,
+        )
+        if result.get("status") != "ok":
+            return _failed_result("Nie udało się przenieść muzyki.")
+        return _ok_result(format_started(len(targets), "muzykę"), targets)
+
+    async def _playing_music_assistant_targets(self) -> list[MediaTarget]:
+        result = await self._list_speaker_players()
+        if not isinstance(result, list):
+            return []
+        targets = _prefer_music_assistant_targets(_targets_from_player_mappings(result))
+        return [target for target in targets if target.is_music_assistant and target.state == "playing"]
+
+    async def _current_music_assistant_media(self, targets: list[MediaTarget] | None = None) -> MediaSearchItem | None:
+        if targets is None:
+            targets = await self._playing_music_assistant_targets()
+        for target in targets:
+            if not target.is_music_assistant:
+                continue
+            try:
+                result = await self._connection.music_assistant_get_queue(target.entity_id)
+            except Exception:
+                self._logger.info("Music Assistant get_queue unavailable for entity_id=%s", target.entity_id, exc_info=True)
+                continue
+            if result.get("status") != "ok":
+                continue
+            media = _media_from_queue_response(result.get("response"), target.entity_id)
+            if media is not None:
+                return media
+        return None
+
+    async def _shuffle_targets(self, targets: list[MediaTarget]) -> None:
+        result = await self._connection.media_player_shuffle_set([target.entity_id for target in targets], True)
+        if result.get("status") != "ok":
+            self._logger.warning("failed to enable shuffle for media targets result=%r", result)
+
+    def _remember_recent_media(self, conversation: Conversation, media: MediaSearchItem) -> None:
+        self._recent_media_by_user[_conversation_user_key(conversation)] = media
+
+    def _recent_media(self, conversation: Conversation) -> MediaSearchItem | None:
+        return self._recent_media_by_user.get(_conversation_user_key(conversation))
 
     async def _complex_command(
         self,
@@ -332,6 +428,7 @@ def _targets_from_player_mappings(players: list[dict[str, Any]]) -> list[MediaTa
                 area_name=area_name,
                 volume_level=volume_level if isinstance(volume_level, (int, float)) else None,
                 is_music_assistant=player.get("is_music_assistant") is True,
+                state=player.get("state") if isinstance(player.get("state"), str) else "",
             )
         )
     return targets
@@ -377,6 +474,66 @@ def _conversation_media_setting(conversation: Conversation, key: str, default: s
         return default
     value = media_settings.get(key)
     return value if isinstance(value, str) and value else default
+
+
+def _conversation_playlist_alias(conversation: Conversation, query: str) -> str:
+    media_settings = conversation.user_settings.get("media")
+    if not isinstance(media_settings, dict):
+        return ""
+    aliases = media_settings.get("playlist_aliases")
+    if not isinstance(aliases, dict):
+        return ""
+    normalized_query = _normalize_media_lookup(query)
+    for raw_alias, raw_playlist in aliases.items():
+        if not isinstance(raw_alias, str) or not isinstance(raw_playlist, str):
+            continue
+        if _normalize_media_lookup(raw_alias) == normalized_query and raw_playlist:
+            return raw_playlist
+    return ""
+
+
+def _conversation_user_key(conversation: Conversation) -> str:
+    return conversation.user or "__default__"
+
+
+def _all_targets_playing(targets: list[MediaTarget]) -> bool:
+    return bool(targets) and all(target.state == "playing" for target in targets)
+
+
+def _should_shuffle_media(*media_types: str) -> bool:
+    return any(media_type == "playlist" for media_type in media_types)
+
+
+def _media_from_queue_response(response: Any, entity_id: str) -> MediaSearchItem | None:
+    queue = _queue_mapping(response, entity_id)
+    if queue is None:
+        return None
+    item = queue.get("current_item")
+    if not isinstance(item, dict):
+        return None
+    media_id = _first_string(item.get("uri"), item.get("media_id"), item.get("item_id"), item.get("id"), item.get("name"))
+    name = _first_string(item.get("name"), item.get("title"), media_id)
+    if not media_id or not name:
+        return None
+    media_type = _first_string(item.get("media_type"), item.get("type"))
+    artist = _first_string(item.get("artist"), item.get("artists"), item.get("album_artist"))
+    album = _first_string(item.get("album"), item.get("album_name"))
+    return MediaSearchItem(media_id=media_id, name=name, media_type=media_type, artist=artist, album=album)
+
+
+def _queue_mapping(response: Any, entity_id: str) -> dict[str, Any] | None:
+    if not isinstance(response, dict):
+        return None
+    queue = response.get(entity_id)
+    if isinstance(queue, dict):
+        return queue
+    if isinstance(response.get("current_item"), dict):
+        return response
+    return None
+
+
+def _normalize_media_lookup(value: str) -> str:
+    return ascii_fold(value).casefold().strip()
 
 
 def _player_state(players: list[dict[str, Any]], entity_id: str) -> str:

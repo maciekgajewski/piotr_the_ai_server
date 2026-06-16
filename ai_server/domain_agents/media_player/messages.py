@@ -4,17 +4,20 @@ Return only compact valid JSON. No markdown. No explanations.
 
 Return schema:
 {
-  "intent": "start_last|stop|volume_delta|set_volume|play_media|now_playing",
+  "intent": "start_last|stop|volume_delta|set_volume|play_media|now_playing|transfer_playback",
   "query": "song/album/playlist/radio/search phrase, optional",
   "media_type": "track|album|playlist|radio|artist|",
   "areas": ["room/area names mentioned by the user"],
   "all_speakers": false,
+  "replace_outputs": false,
   "volume_level": null,
   "volume_delta": null
 }
 
 Rules:
 - Use all_speakers=true only when the user explicitly says all/every speakers, everywhere, whole house, all rooms, wszystkie głośniki, wszędzie, cały dom.
+- Use replace_outputs=true when the user says only/tylko, meaning the requested room or players should become the sole output.
+- Use transfer_playback when the user asks to move/transfer currently playing music, or asks to play generic music only in a specific room.
 - For local commands with no named room, leave areas empty; server context will choose the current room.
 - volume_level is a float from 0.0 to 1.0.
 - volume_delta is positive or negative float, normally 0.10 or -0.10.

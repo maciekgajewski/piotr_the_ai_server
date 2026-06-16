@@ -111,16 +111,19 @@ Never copy conversation.area into weather.location.
 
 For media_player tasks, command should be:
 {
-  "intent": "start_last|stop|volume_delta|set_volume|play_media|now_playing",
+  "intent": "start_last|stop|volume_delta|set_volume|play_media|now_playing|transfer_playback",
   "query": "original user phrase or media search text",
   "media_type": "track|album|playlist|radio|artist optional",
   "areas": ["optional named rooms"],
   "all_speakers": false,
+  "replace_outputs": false,
   "volume_level": 0.0,
   "volume_delta": 0.0
 }
 For music commands without a named room, omit areas; the media player agent will use conversation.area.
 Use all_speakers=true only when the user explicitly asks for all speakers/everywhere/whole house/wszystkie głośniki.
+Use replace_outputs=true only when the user explicitly asks for only that room/player, e.g. "only in the office" or "tylko w biurze".
+Use intent="transfer_playback" when the user asks to move/transfer currently playing music, e.g. "Przenieś muzykę do salonu", or asks to play generic music only in a specific room, e.g. "Graj muzykę tylko w biurze".
 For "moje ulubione", use query="Liked Songs" and media_type="playlist".
 For "TOK FM", use domain="media_player", query="TOK FM", and media_type="radio".
 """
@@ -1227,6 +1230,12 @@ def _validate_media_player_command(command: dict[str, Any], task_id: str) -> dic
         raise ValueError(f"orchestrator task {task_id} media_player all_speakers must be a boolean")
     if all_speakers:
         validated["all_speakers"] = True
+
+    replace_outputs = command.get("replace_outputs", False)
+    if not isinstance(replace_outputs, bool):
+        raise ValueError(f"orchestrator task {task_id} media_player replace_outputs must be a boolean")
+    if replace_outputs:
+        validated["replace_outputs"] = True
 
     for key in ("volume_level", "volume_delta"):
         value = command.get(key)

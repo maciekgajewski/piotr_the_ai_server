@@ -11,8 +11,26 @@ from ai_server.utils.text import normalize_text
 
 DEFAULT_VOLUME_DELTA = 0.10
 TRIM_CHARACTERS = " \t\r\n?.!,;:'\"“”‘’"
-VALID_INTENTS = {"start_last", "stop", "volume_delta", "set_volume", "play_media", "now_playing"}
-PLAY_VERBS = ("graj", "zagraj", "wlacz", "włącz", "odtworz", "odtwórz", "pusc", "puść")
+VALID_INTENTS = {
+    "start_last",
+    "stop",
+    "volume_delta",
+    "set_volume",
+    "play_media",
+    "now_playing",
+    "transfer_playback",
+}
+PLAY_VERBS = ("graj", "zagraj", "wlacz", "włącz", "odtworz", "odtwórz", "pusc", "puść", "play")
+TRANSFER_VERBS = ("przenies", "przenieś", "przenieście", "move", "transfer")
+REPLACE_OUTPUT_MARKERS = (
+    "only",
+    "only in",
+    "only on",
+    "tylko",
+    "tylko w",
+    "tylko we",
+    "tylko na",
+)
 ALL_SPEAKERS_MARKERS = (
     "na wszystkich glosnikach",
     "wszystkie glosniki",
@@ -64,6 +82,7 @@ class ParsedMediaCommand:
     all_speakers: bool
     volume_level: float | None
     volume_delta: float | None
+    replace_outputs: bool
     simple: bool
 
 
@@ -74,7 +93,12 @@ def parse_media_command(command: dict[str, Any], *, force_simple: bool = False) 
     ascii_query = ascii_fold(normalized_query)
     intent = _normalize_intent(_string_or_empty(command.get("intent"))) or _intent_from_query(ascii_query)
     all_speakers = _bool(command.get("all_speakers")) or _has_all_speakers_marker(ascii_query)
-    areas = _areas_from_command(command) or _areas_from_query(original_query, ascii_query)
+    replace_outputs = _bool(command.get("replace_outputs")) or _has_replace_output_marker(ascii_query)
+    areas = _areas_from_command(command) or _areas_from_query(
+        original_query,
+        ascii_query,
+        allow_destination_prepositions=intent == "transfer_playback",
+    )
     media_type = _normalize_media_type(_string_or_empty(command.get("media_type"))) or _media_type_from_query(ascii_query)
     volume_level = _volume_level_from_command(command)
     volume_delta = _volume_delta_from_command(command)
@@ -106,6 +130,7 @@ def parse_media_command(command: dict[str, Any], *, force_simple: bool = False) 
         all_speakers=all_speakers,
         volume_level=volume_level,
         volume_delta=volume_delta,
+        replace_outputs=replace_outputs,
         simple=simple,
     )
 
@@ -157,6 +182,8 @@ def _command_from_parsed(parsed: ParsedMediaCommand, query: str) -> dict[str, An
         command["areas"] = list(parsed.areas)
     if parsed.all_speakers:
         command["all_speakers"] = True
+    if parsed.replace_outputs:
+        command["replace_outputs"] = True
     if parsed.volume_level is not None:
         command["volume_level"] = parsed.volume_level
     if parsed.volume_delta is not None:
@@ -165,6 +192,8 @@ def _command_from_parsed(parsed: ParsedMediaCommand, query: str) -> dict[str, An
 
 
 def _intent_from_query(ascii_query: str) -> str:
+    if _is_transfer_playback_query(ascii_query):
+        return "transfer_playback"
     if ascii_query in {ascii_fold(normalize_text(value)) for value in START_LAST_QUERIES}:
         return "start_last"
     if _starts_with_known_query(ascii_query, STOP_QUERIES):
@@ -177,8 +206,10 @@ def _intent_from_query(ascii_query: str) -> str:
         return "volume_delta"
     if _starts_with_play_verb(ascii_query):
         media_query = _media_query_from_query(ascii_query, ascii_query)
-        if media_query and ascii_fold(normalize_text(media_query)) not in {"muzyka", "muzyke"}:
+        if media_query and ascii_fold(normalize_text(media_query)) not in {"music", "muzyka", "muzyke"}:
             return "play_media"
+        if _has_replace_output_marker(ascii_query):
+            return "transfer_playback"
         return "start_last"
     return ""
 
@@ -194,6 +225,8 @@ def _looks_like_media_query(ascii_query: str) -> bool:
         return True
     if _starts_with_music_play_verb(ascii_query):
         return True
+    if _is_transfer_playback_query(ascii_query):
+        return True
     return "muzyka" in ascii_query or "spotify" in ascii_query or _contains_known_radio(ascii_query)
 
 
@@ -204,7 +237,7 @@ def _is_simple_command(
     volume_level: float | None,
     volume_delta: float | None,
 ) -> bool:
-    if intent in {"start_last", "stop", "now_playing"}:
+    if intent in {"start_last", "stop", "now_playing", "transfer_playback"}:
         return True
     if intent == "set_volume":
         return volume_level is not None
@@ -254,7 +287,10 @@ def _strip_provider_phrases(text: str) -> str:
 def _strip_target_phrases(text: str) -> str:
     text = re.sub(r"\s+na\s+wszystkich\s+głośnikach.*$", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+na\s+wszystkich\s+glosnikach.*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+tylko\s+(?:w|we|do|na)\s+.+$", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+(?:w|we)\s+.+$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+only\s+(?:in|on)\s+.+$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+in\s+.+$", "", text, flags=re.IGNORECASE)
     return text
 
 
@@ -267,10 +303,13 @@ def _areas_from_command(command: dict[str, Any]) -> tuple[str, ...]:
     return ()
 
 
-def _areas_from_query(query: str, ascii_query: str) -> tuple[str, ...]:
+def _areas_from_query(query: str, ascii_query: str, *, allow_destination_prepositions: bool = False) -> tuple[str, ...]:
     if _has_all_speakers_marker(ascii_query):
         return ()
-    match = re.search(r"\b(?:w|we)\s+(.+?)[?.!]*$", query.strip(), flags=re.IGNORECASE)
+    prepositions = r"w|we|in"
+    if allow_destination_prepositions:
+        prepositions = r"w|we|do|to|in"
+    match = re.search(rf"\b(?:tylko\s+)?(?:{prepositions})\s+(.+?)[?.!]*$", query.strip(), flags=re.IGNORECASE)
     if match is None:
         return ()
     raw_area = match.group(1).strip(" ?.!")
@@ -282,6 +321,19 @@ def _areas_from_query(query: str, ascii_query: str) -> tuple[str, ...]:
 
 def _has_all_speakers_marker(ascii_query: str) -> bool:
     return any(ascii_fold(normalize_text(marker)) in ascii_query for marker in ALL_SPEAKERS_MARKERS)
+
+
+def _has_replace_output_marker(ascii_query: str) -> bool:
+    words = set(ascii_query.split())
+    if "only" in words or "tylko" in words:
+        return True
+    return any(ascii_fold(normalize_text(marker)) in ascii_query for marker in REPLACE_OUTPUT_MARKERS)
+
+
+def _is_transfer_playback_query(ascii_query: str) -> bool:
+    if not any(ascii_query.startswith(ascii_fold(normalize_text(verb))) for verb in TRANSFER_VERBS):
+        return False
+    return any(marker in ascii_query for marker in ("muzyka", "muzyke", "music", "playback"))
 
 
 def _volume_level_from_query(ascii_query: str) -> float | None:

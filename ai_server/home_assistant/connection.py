@@ -246,6 +246,9 @@ class HomeAssistantConnection:
     async def media_player_stop(self, entity_ids: list[str]) -> dict[str, Any]:
         return await self._call_media_player_service("media_stop", entity_ids)
 
+    async def media_player_shuffle_set(self, entity_ids: list[str], shuffle: bool) -> dict[str, Any]:
+        return await self._call_media_player_service("shuffle_set", entity_ids, {"shuffle": shuffle})
+
     async def media_player_volume_set(self, entity_ids: list[str], volume_level: float) -> dict[str, Any]:
         normalized_level = _clamp_volume(volume_level)
         return await self._call_media_player_service(
@@ -297,6 +300,20 @@ class HomeAssistantConnection:
             service_data["album"] = album
         return await self._call_service_result(
             HomeAssistantServiceCall("music_assistant", "play_media", entity_ids, service_data)
+        )
+
+    async def music_assistant_transfer_queue(
+        self,
+        entity_ids: list[str],
+        *,
+        source_player: str = "",
+        auto_play: bool = True,
+    ) -> dict[str, Any]:
+        service_data: dict[str, Any] = {"auto_play": auto_play}
+        if source_player:
+            service_data["source_player"] = source_player
+        return await self._call_service_result(
+            HomeAssistantServiceCall("music_assistant", "transfer_queue", entity_ids, service_data)
         )
 
     async def music_assistant_search(
