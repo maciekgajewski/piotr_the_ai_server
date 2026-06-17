@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
 from ai_server.domain_agents.media_player.parser import media_task_from_utterance, parse_media_command
@@ -404,6 +405,152 @@ def test_media_domain_agent_resolves_user_playlist_alias() -> None:
     ]
 
 
+def test_media_domain_agent_tries_next_search_candidate_when_playlist_is_unplayable() -> None:
+    connection = FakeMediaConnection(
+        include_ma_duplicate=True,
+        search_result={
+            "status": "ok",
+            "response": {
+                "playlists": [
+                    {"uri": "library://playlist/13", "name": "Post Rock Focus", "media_type": "playlist"},
+                    {
+                        "uri": "spotify--oonEey9Z://playlist/59pF55gB3cbu6Ih4BeMAWz",
+                        "name": "Post Rock - Focus",
+                        "media_type": "playlist",
+                    },
+                ]
+            },
+        },
+        play_media_results_by_media_id={
+            "library://playlist/13": {
+                "status": "failed",
+                "message": "Home Assistant command failed type=call_service error={'code': 'home_assistant_error', 'message': 'No playable item found to start playback'}",
+            }
+        },
+    )
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "play_media", "query": "Muzyka do pracy", "all_speakers": True},
+    }
+    conversation = Conversation(
+        "c1",
+        {"area": "office", "user": "Maciek"},
+        state={"user_settings": _user_media_settings()},
+    )
+
+    result = asyncio.run(agent.run_task(conversation, task, {}))
+
+    assert result["status"] == "ok"
+    assert result["text"] == "Włączam Post Rock - Focus."
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_search", {"name": "Post Rock Focus", "media_type": "playlist", "limit": 5}),
+        ("music_assistant_play_media", {"entity_ids": ["media_player.office_2"], "media_id": "library://playlist/13", "media_type": "playlist"}),
+        (
+            "music_assistant_play_media",
+            {
+                "entity_ids": ["media_player.office_2"],
+                "media_id": "spotify--oonEey9Z://playlist/59pF55gB3cbu6Ih4BeMAWz",
+                "media_type": "playlist",
+            },
+        ),
+        ("media_player_shuffle_set", {"entity_ids": ["media_player.office_2"], "shuffle": True}),
+    ]
+
+
+def test_media_domain_agent_uses_llm_to_resolve_inflected_playlist_alias() -> None:
+    connection = FakeMediaConnection(include_ma_duplicate=True)
+    ollama = FakeOllamaClient(
+        [
+            {
+                "alias": "Muzyka do pracy",
+                "query": "",
+                "media_type": "playlist",
+            }
+        ]
+    )
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=ollama,
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "play_media", "query": "Graj muzykę do pracy w całym domu.", "all_speakers": True},
+    }
+    conversation = Conversation(
+        "c1",
+        {"area": "office", "user": "Maciek"},
+        state={"user_settings": _user_media_settings()},
+    )
+
+    result = asyncio.run(agent.run_task(conversation, task, {}))
+
+    assert result["status"] == "ok"
+    assert len(ollama.requests) == 1
+    resolver_payload = json.loads(ollama.requests[0]["messages"][1]["content"])
+    assert resolver_payload["query"] == "muzykę do pracy"
+    assert resolver_payload["aliases"] == [
+        {"alias": "Muzyka do pracy", "target": "Post Rock Focus", "media_type": "playlist"}
+    ]
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_search", {"name": "Post Rock Focus", "media_type": "playlist", "limit": 5}),
+        ("music_assistant_play_media", {"entity_ids": ["media_player.office_2"], "media_id": "spotify:playlist:soft-jazz", "media_type": "playlist"}),
+        ("media_player_shuffle_set", {"entity_ids": ["media_player.office_2"], "shuffle": True}),
+    ]
+
+
+def test_media_domain_agent_warns_when_alias_resolver_exhausts_budget(caplog) -> None:
+    connection = FakeMediaConnection(include_ma_duplicate=True)
+    ollama = FakeOllamaClient(
+        [
+            {
+                "__raw_response__": {
+                    "message": {"role": "assistant", "content": "", "thinking": "alias matched"},
+                    "done_reason": "length",
+                    "eval_count": 512,
+                }
+            }
+        ]
+    )
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=ollama,
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "play_media", "query": "Graj muzykę do pracy w całym domu.", "all_speakers": True},
+    }
+    conversation = Conversation(
+        "c1",
+        {"area": "office", "user": "Maciek"},
+        state={"user_settings": _user_media_settings()},
+    )
+
+    caplog.set_level(logging.WARNING)
+
+    result = asyncio.run(agent.run_task(conversation, task, {}))
+
+    assert result["status"] == "ok"
+    assert any(
+        "media query resolver returned no JSON" in record.message
+        and "done_reason='length'" in record.message
+        and "num_predict=512" in record.message
+        and "increase num_predict" in record.message
+        for record in caplog.records
+    )
+
+
 def test_media_domain_agent_start_last_uses_in_memory_recent_media() -> None:
     connection = FakeMediaConnection(player_state="idle", include_ma_duplicate=True)
     agent = MediaPlayerDomainAgent(
@@ -489,10 +636,252 @@ def test_media_domain_agent_relocates_current_queue_for_only_request() -> None:
         ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
         ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
         ("music_assistant_get_queue", {"entity_id": "media_player.living_room_2"}),
+        ("media_player_join", {"entity_id": "media_player.living_room_2", "group_members": ["media_player.office_2"]}),
+        ("media_player_unjoin", {"entity_ids": ["media_player.living_room_2"]}),
+    ]
+
+
+def test_media_domain_agent_start_last_with_explicit_target_transfers_active_queue() -> None:
+    connection = FakeMediaConnection(
+        player_state="idle",
+        include_ma_duplicate=True,
+        global_players=[
+            {
+                "entity_id": "media_player.office_2",
+                "device_id": "device-office-ma",
+                "name": "Office",
+                "area_id": "office",
+                "area_name": "Office",
+                "state": "playing",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+            {
+                "entity_id": "media_player.living_room_2",
+                "device_id": "device-living-room-ma",
+                "name": "Living Room",
+                "area_id": "living_room",
+                "area_name": "Living Room",
+                "state": "idle",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+        ],
+    )
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "start_last", "query": "Graj muzykę w całym domu", "all_speakers": True},
+    }
+
+    result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
+
+    assert result["status"] == "ok"
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_get_queue", {"entity_id": "media_player.office_2"}),
+        ("media_player_join", {"entity_id": "media_player.office_2", "group_members": ["media_player.living_room_2"]}),
+    ]
+
+
+def test_media_domain_agent_adds_requested_room_to_current_outputs() -> None:
+    connection = FakeMediaConnection(
+        player_state="idle",
+        include_ma_duplicate=True,
+        global_players=[
+            {
+                "entity_id": "media_player.office_2",
+                "device_id": "device-office-ma",
+                "name": "Office",
+                "area_id": "office",
+                "area_name": "Office",
+                "state": "playing",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+            {
+                "entity_id": "media_player.living_room_2",
+                "device_id": "device-living-room-ma",
+                "name": "Living Room",
+                "area_id": "living_room",
+                "area_name": "Living Room",
+                "state": "idle",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+        ],
+    )
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
+    }
+
+    result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
+
+    assert result["status"] == "ok"
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "living room", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_get_queue", {"entity_id": "media_player.office_2"}),
+        ("media_player_join", {"entity_id": "media_player.office_2", "group_members": ["media_player.living_room_2"]}),
+    ]
+
+
+def test_media_domain_agent_treats_join_timeout_as_success_when_state_changed() -> None:
+    connection = FakeMediaConnection(
+        player_state="idle",
+        include_ma_duplicate=True,
+        join_result={"status": "failed", "error": "service_call_failed", "service": "media_player.join", "message": ""},
+        join_applies=True,
+        global_players=[
+            {
+                "entity_id": "media_player.office_2",
+                "device_id": "device-office-ma",
+                "name": "Office",
+                "area_id": "office",
+                "area_name": "Office",
+                "state": "playing",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+            {
+                "entity_id": "media_player.living_room_2",
+                "device_id": "device-living-room-ma",
+                "name": "Living Room",
+                "area_id": "living_room",
+                "area_name": "Living Room",
+                "state": "idle",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+        ],
+    )
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
+    }
+
+    result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
+
+    assert result["status"] == "ok"
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "living room", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_get_queue", {"entity_id": "media_player.office_2"}),
+        ("media_player_join", {"entity_id": "media_player.office_2", "group_members": ["media_player.living_room_2"]}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+    ]
+
+
+def test_media_domain_agent_falls_back_to_transfer_when_join_is_unavailable() -> None:
+    connection = FakeMediaConnection(
+        player_state="idle",
+        include_ma_duplicate=True,
+        join_result={"status": "failed", "error": "service_call_failed", "service": "media_player.join"},
+        global_players=[
+            {
+                "entity_id": "media_player.office_2",
+                "device_id": "device-office-ma",
+                "name": "Office",
+                "area_id": "office",
+                "area_name": "Office",
+                "state": "playing",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+            {
+                "entity_id": "media_player.living_room_2",
+                "device_id": "device-living-room-ma",
+                "name": "Living Room",
+                "area_id": "living_room",
+                "area_name": "Living Room",
+                "state": "idle",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+        ],
+    )
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
+    }
+
+    result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
+
+    assert result["status"] == "ok"
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "living room", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_get_queue", {"entity_id": "media_player.office_2"}),
+        ("media_player_join", {"entity_id": "media_player.office_2", "group_members": ["media_player.living_room_2"]}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
         (
             "music_assistant_transfer_queue",
-            {"entity_ids": ["media_player.office_2"], "source_player": "media_player.living_room_2", "auto_play": True},
+            {
+                "entity_ids": ["media_player.office_2", "media_player.living_room_2"],
+                "source_player": "media_player.office_2",
+                "auto_play": True,
+            },
         ),
+    ]
+
+
+def test_media_domain_agent_start_last_with_explicit_target_resumes_when_nothing_is_playing() -> None:
+    connection = FakeMediaConnection(player_state="idle", include_ma_duplicate=True)
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
+    }
+
+    result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
+
+    assert result["status"] == "ok"
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "living room", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_play_media", {"entity_ids": ["media_player.living_room_2"], "media_id": "Liked Songs", "media_type": "playlist"}),
+        ("media_player_shuffle_set", {"entity_ids": ["media_player.living_room_2"], "shuffle": True}),
     ]
 
 
@@ -533,6 +922,10 @@ class FakeMediaConnection:
         include_ma_duplicate: bool = False,
         global_players: list[dict] | None = None,
         queue_response: dict | None = None,
+        play_media_results_by_media_id: dict[str, dict] | None = None,
+        join_result: dict | None = None,
+        unjoin_result: dict | None = None,
+        join_applies: bool = False,
     ) -> None:
         self.calls = []
         self.player_state = player_state
@@ -540,6 +933,10 @@ class FakeMediaConnection:
         self.include_ma_duplicate = include_ma_duplicate
         self.global_players = global_players
         self.queue_response = queue_response
+        self.play_media_results_by_media_id = play_media_results_by_media_id or {}
+        self.join_result = join_result
+        self.unjoin_result = unjoin_result
+        self.join_applies = join_applies
 
     async def list_media_players(self, *, area_name: str = "", music_assistant_only: bool = True, speakers_only: bool = True):
         self.calls.append(
@@ -591,6 +988,20 @@ class FakeMediaConnection:
         self.calls.append(("media_player_shuffle_set", {"entity_ids": entity_ids, "shuffle": shuffle}))
         return {"status": "ok"}
 
+    async def media_player_join(self, entity_id: str, group_members: list[str]):
+        self.calls.append(("media_player_join", {"entity_id": entity_id, "group_members": group_members}))
+        result = self.join_result or {"status": "ok"}
+        if result.get("status") == "ok" or self.join_applies:
+            self._set_players_state([entity_id, *group_members], "playing")
+        return result
+
+    async def media_player_unjoin(self, entity_ids: list[str]):
+        self.calls.append(("media_player_unjoin", {"entity_ids": entity_ids}))
+        result = self.unjoin_result or {"status": "ok"}
+        if result.get("status") == "ok":
+            self._set_players_state(entity_ids, "idle")
+        return result
+
     async def music_assistant_search(self, *, name: str, media_type: str = "", limit: int = 5, library_only: bool = False):
         del library_only
         self.calls.append(("music_assistant_search", {"name": name, "media_type": media_type, "limit": limit}))
@@ -617,6 +1028,8 @@ class FakeMediaConnection:
                 {"entity_ids": entity_ids, "media_id": media_id, "media_type": media_type},
             )
         )
+        if media_id in self.play_media_results_by_media_id:
+            return self.play_media_results_by_media_id[media_id]
         return {"status": "ok"}
 
     async def music_assistant_get_queue(self, entity_id: str):
@@ -651,6 +1064,15 @@ class FakeMediaConnection:
         )
         return {"status": "ok"}
 
+    def _set_players_state(self, entity_ids: list[str], state: str) -> None:
+        players = self.global_players
+        if players is None:
+            return
+        entity_id_set = set(entity_ids)
+        for player in players:
+            if player.get("entity_id") in entity_id_set:
+                player["state"] = state
+
 
 def _user_media_settings() -> dict:
     return {
@@ -674,6 +1096,8 @@ class FakeOllamaClient:
     async def chat(self, payload: dict):
         self.requests.append(payload)
         content = self._contents.pop(0)
+        if "__raw_response__" in content:
+            return content["__raw_response__"]
         return {"message": {"role": "assistant", "content": json.dumps(content, ensure_ascii=False)}}
 
     async def close(self) -> None:

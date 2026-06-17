@@ -249,6 +249,12 @@ class HomeAssistantConnection:
     async def media_player_shuffle_set(self, entity_ids: list[str], shuffle: bool) -> dict[str, Any]:
         return await self._call_media_player_service("shuffle_set", entity_ids, {"shuffle": shuffle})
 
+    async def media_player_join(self, entity_id: str, group_members: list[str]) -> dict[str, Any]:
+        return await self._call_media_player_service("join", [entity_id], {"group_members": group_members})
+
+    async def media_player_unjoin(self, entity_ids: list[str]) -> dict[str, Any]:
+        return await self._call_media_player_service("unjoin", entity_ids)
+
     async def media_player_volume_set(self, entity_ids: list[str], volume_level: float) -> dict[str, Any]:
         normalized_level = _clamp_volume(volume_level)
         return await self._call_media_player_service(
@@ -1466,7 +1472,7 @@ def _device_to_mapping(device: HomeAssistantDevice, inventory: HomeAssistantInve
 
 
 def _media_player_to_mapping(player: HomeAssistantMediaPlayer) -> dict[str, Any]:
-    return {
+    mapping = {
         "entity_id": player.entity_id,
         "device_id": player.device_id,
         "name": player.name,
@@ -1478,6 +1484,10 @@ def _media_player_to_mapping(player: HomeAssistantMediaPlayer) -> dict[str, Any]
         "is_music_assistant": player.is_music_assistant,
         "is_speaker": player.is_speaker,
     }
+    group_members = player.attributes.get("group_members")
+    if isinstance(group_members, list) and all(isinstance(member, str) for member in group_members):
+        mapping["group_members"] = group_members
+    return mapping
 
 
 def _media_player_matches_filter(

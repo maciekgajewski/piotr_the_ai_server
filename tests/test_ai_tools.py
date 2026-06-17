@@ -275,7 +275,68 @@ def test_home_assistant_lists_music_assistant_media_players() -> None:
             "volume_level": 0.25,
             "is_music_assistant": True,
             "is_speaker": True,
+            "group_members": ["media_player.living_room_speaker"],
         }
+    ]
+
+
+def test_home_assistant_media_player_join_calls_ws(monkeypatch) -> None:
+    calls = []
+
+    async def fake_call_home_assistant_service(options, service_call: HomeAssistantServiceCall, logger) -> None:
+        calls.append(service_call)
+
+    monkeypatch.setattr(
+        "ai_server.home_assistant.connection._call_home_assistant_service",
+        fake_call_home_assistant_service,
+    )
+    connection = _sample_connection(_sample_media_inventory())
+
+    result = asyncio.run(
+        connection.media_player_join("media_player.office_speaker", ["media_player.living_room_speaker"])
+    )
+
+    assert result == {
+        "status": "ok",
+        "service": "media_player.join",
+        "entity_id": ["media_player.office_speaker"],
+    }
+    assert calls == [
+        HomeAssistantServiceCall(
+            domain="media_player",
+            service="join",
+            entity_id=["media_player.office_speaker"],
+            service_data={"group_members": ["media_player.living_room_speaker"]},
+        )
+    ]
+
+
+def test_home_assistant_media_player_unjoin_calls_ws(monkeypatch) -> None:
+    calls = []
+
+    async def fake_call_home_assistant_service(options, service_call: HomeAssistantServiceCall, logger) -> None:
+        calls.append(service_call)
+
+    monkeypatch.setattr(
+        "ai_server.home_assistant.connection._call_home_assistant_service",
+        fake_call_home_assistant_service,
+    )
+    connection = _sample_connection(_sample_media_inventory())
+
+    result = asyncio.run(connection.media_player_unjoin(["media_player.office_speaker"]))
+
+    assert result == {
+        "status": "ok",
+        "service": "media_player.unjoin",
+        "entity_id": ["media_player.office_speaker"],
+    }
+    assert calls == [
+        HomeAssistantServiceCall(
+            domain="media_player",
+            service="unjoin",
+            entity_id=["media_player.office_speaker"],
+            service_data={},
+        )
     ]
 
 
@@ -652,6 +713,7 @@ def _sample_media_inventory():
                     "friendly_name": "Office speaker",
                     "volume_level": 0.25,
                     "device_class": "speaker",
+                    "group_members": ["media_player.living_room_speaker"],
                 },
             },
             {

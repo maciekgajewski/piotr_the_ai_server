@@ -14,11 +14,17 @@ from ai_server.domain_agents.media_player.formatting import (
     format_volume_level,
 )
 from ai_server.domain_agents.media_player.interfaces import MediaSearchItem, MediaTarget
-from ai_server.domain_agents.media_player.messages import MEDIA_COMPLEX_COMMAND_SYSTEM_PROMPT
+from ai_server.domain_agents.media_player.messages import (
+    MEDIA_COMPLEX_COMMAND_SYSTEM_PROMPT,
+    MEDIA_QUERY_RESOLUTION_SYSTEM_PROMPT,
+)
 from ai_server.domain_agents.media_player.parser import DEFAULT_VOLUME_DELTA, ParsedMediaCommand, ascii_fold, parse_media_command
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient
+
+
+MEDIA_QUERY_RESOLUTION_NUM_PREDICT = 512
 
 
 class MediaPlayerDomainAgent:
@@ -120,8 +126,8 @@ class MediaPlayerDomainAgent:
                 self._remember_recent_media(conversation, media)
             return _ok_result("Muzyka już gra.", targets)
 
-        if parsed.replace_outputs:
-            relocated = await self._relocate_current_queue(conversation, targets)
+        if parsed.replace_outputs or _has_explicit_output_target(parsed):
+            relocated = await self._relocate_current_queue(conversation, targets, replace_outputs=parsed.replace_outputs)
             if relocated is not None:
                 return relocated
 
@@ -190,22 +196,30 @@ class MediaPlayerDomainAgent:
             return targets
         targets = _prefer_music_assistant_targets(targets)
 
-        search_item = await self._search_media(conversation, parsed)
-        if search_item is None:
+        search_items = await self._search_media(conversation, parsed)
+        if not search_items:
             return _failed_result(f"Nie znalazłem muzyki: {parsed.query}.")
-        result = await self._connection.music_assistant_play_media(
-            [target.entity_id for target in targets],
-            media_id=search_item.media_id,
-            media_type=search_item.media_type or parsed.media_type,
-            artist=search_item.artist,
-            album=search_item.album,
-        )
-        if result.get("status") != "ok":
-            return _failed_result("Nie udało się włączyć muzyki.")
-        self._remember_recent_media(conversation, search_item)
-        if _should_shuffle_media(search_item.media_type, parsed.media_type):
-            await self._shuffle_targets(targets)
-        return _ok_result(format_playing_media(search_item.name or parsed.query, len(targets)), targets)
+        for index, search_item in enumerate(search_items):
+            result = await self._connection.music_assistant_play_media(
+                [target.entity_id for target in targets],
+                media_id=search_item.media_id,
+                media_type=search_item.media_type or parsed.media_type,
+                artist=search_item.artist,
+                album=search_item.album,
+            )
+            if result.get("status") == "ok":
+                self._remember_recent_media(conversation, search_item)
+                if _should_shuffle_media(search_item.media_type, parsed.media_type):
+                    await self._shuffle_targets(targets)
+                return _ok_result(format_playing_media(search_item.name or parsed.query, len(targets)), targets)
+            if not _is_unplayable_media_result(result) or index == len(search_items) - 1:
+                return _failed_result("Nie udało się włączyć muzyki.")
+            self._logger.info(
+                "Music Assistant could not play search candidate; trying next media_id=%r name=%r",
+                search_item.media_id,
+                search_item.name,
+            )
+        return _failed_result("Nie udało się włączyć muzyki.")
 
     async def _now_playing(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
         targets = await self._targets(conversation, parsed, allow_playing_fallback=True)
@@ -222,7 +236,7 @@ class MediaPlayerDomainAgent:
         if isinstance(targets, dict):
             return targets
         targets = _prefer_music_assistant_targets(targets)
-        relocated = await self._relocate_current_queue(conversation, targets)
+        relocated = await self._relocate_current_queue(conversation, targets, replace_outputs=parsed.replace_outputs)
         if relocated is None:
             return _failed_result("Nie znalazłem grającej muzyki do przeniesienia.")
         return relocated
@@ -272,44 +286,204 @@ class MediaPlayerDomainAgent:
             speakers_only=True,
         )
 
-    async def _search_media(self, conversation: Conversation, parsed: ParsedMediaCommand) -> MediaSearchItem | None:
+    async def _search_media(self, conversation: Conversation, parsed: ParsedMediaCommand) -> list[MediaSearchItem]:
         if parsed.query == "Liked Songs":
-            return MediaSearchItem(
-                media_id=_conversation_media_setting(conversation, "liked_songs_media_id", self._liked_songs_media_id),
-                name=_conversation_media_setting(conversation, "liked_songs_name", "Liked Songs"),
-                media_type=_conversation_media_setting(conversation, "liked_songs_media_type", self._liked_songs_media_type),
-            )
-        alias = _conversation_playlist_alias(conversation, parsed.query)
-        query = alias or parsed.query
-        media_type = "playlist" if alias else parsed.media_type
+            return [
+                MediaSearchItem(
+                    media_id=_conversation_media_setting(conversation, "liked_songs_media_id", self._liked_songs_media_id),
+                    name=_conversation_media_setting(conversation, "liked_songs_name", "Liked Songs"),
+                    media_type=_conversation_media_setting(conversation, "liked_songs_media_type", self._liked_songs_media_type),
+                )
+            ]
+        aliases = _conversation_media_aliases(conversation)
+        resolved_alias = _matching_media_alias(aliases, parsed.query)
+        resolved_query = parsed.query
+        resolved_media_type = parsed.media_type
+        if resolved_alias is None and aliases:
+            resolved = await self._resolve_media_query(conversation, parsed, aliases)
+            resolved_alias = _alias_by_name(aliases, _string_or_empty(resolved.get("alias")))
+            resolved_query = _string_or_empty(resolved.get("query")) or parsed.query
+            resolved_media_type = _string_or_empty(resolved.get("media_type")) or parsed.media_type
+        if resolved_alias is not None:
+            query = resolved_alias["target"]
+            media_type = resolved_alias["media_type"]
+        else:
+            query = resolved_query
+            media_type = resolved_media_type
         result = await self._connection.music_assistant_search(name=query, media_type=media_type, limit=5)
         if result.get("status") == "ok":
-            item = _best_search_item(result.get("response"))
-            if item is not None:
-                return item
+            items = _search_items(result.get("response"))
+            if items:
+                return items
         if result.get("error") == "music_assistant_config_entry_not_found":
             self._logger.info("Music Assistant search unavailable; using raw play_media media_id=%r", query)
-            return MediaSearchItem(media_id=query, name=query, media_type=media_type)
-        return None
+            return [MediaSearchItem(media_id=query, name=query, media_type=media_type)]
+        return []
 
-    async def _relocate_current_queue(self, conversation: Conversation, targets: list[MediaTarget]) -> dict[str, Any] | None:
+    async def _resolve_media_query(
+        self,
+        conversation: Conversation,
+        parsed: ParsedMediaCommand,
+        aliases: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        payload = {
+            "query": parsed.query,
+            "media_type": parsed.media_type,
+            "aliases": aliases,
+            "conversation": {
+                "area": conversation.area,
+                "user": conversation.user,
+            },
+        }
+        try:
+            response = await self._chat_with_fallback(
+                {
+                    "raw": False,
+                    "think": False,
+                    "format": "json",
+                    "stream": False,
+                    "keep_alive": "1h",
+                    "options": {
+                        "num_predict": MEDIA_QUERY_RESOLUTION_NUM_PREDICT,
+                        "temperature": 0,
+                        "num_ctx": 4096,
+                    },
+                    "messages": [
+                        {"role": "system", "content": MEDIA_QUERY_RESOLUTION_SYSTEM_PROMPT},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                }
+            )
+        except Exception:
+            self._logger.info("media query resolver failed; using original query=%r", parsed.query, exc_info=True)
+            return {}
+        message = response.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        done_reason = response.get("done_reason")
+        if not isinstance(content, str) or not content.strip():
+            self._logger.warning(
+                "media query resolver returned no JSON; using original query=%r done_reason=%r num_predict=%s suggestion='increase num_predict'",
+                parsed.query,
+                done_reason,
+                MEDIA_QUERY_RESOLUTION_NUM_PREDICT,
+            )
+            return {}
+        try:
+            resolved = json.loads(content)
+        except json.JSONDecodeError:
+            self._logger.warning(
+                "media query resolver returned invalid JSON; using original query=%r done_reason=%r num_predict=%s suggestion='increase num_predict'",
+                parsed.query,
+                done_reason,
+                MEDIA_QUERY_RESOLUTION_NUM_PREDICT,
+            )
+            return {}
+        if not isinstance(resolved, dict):
+            self._logger.warning(
+                "media query resolver returned non-object JSON; using original query=%r done_reason=%r num_predict=%s suggestion='increase num_predict'",
+                parsed.query,
+                done_reason,
+                MEDIA_QUERY_RESOLUTION_NUM_PREDICT,
+            )
+            return {}
+        return resolved
+
+    async def _relocate_current_queue(
+        self,
+        conversation: Conversation,
+        targets: list[MediaTarget],
+        *,
+        replace_outputs: bool = False,
+    ) -> dict[str, Any] | None:
         playing_targets = await self._playing_music_assistant_targets()
         if not playing_targets:
             return None
         source = playing_targets[0]
-        if {target.entity_id for target in targets} == {source.entity_id}:
+        requested_targets = _dedupe_targets(targets)
+        desired_targets = requested_targets if replace_outputs else _dedupe_targets([*playing_targets, *requested_targets])
+        desired_entity_ids = {target.entity_id for target in desired_targets}
+        playing_entity_ids = {target.entity_id for target in playing_targets}
+        if playing_entity_ids == desired_entity_ids:
             return _ok_result("Muzyka już gra.", targets)
         media = await self._current_music_assistant_media([source])
         if media is not None:
             self._remember_recent_media(conversation, media)
+
+        join_target_ids = [
+            target.entity_id
+            for target in desired_targets
+            if target.entity_id != source.entity_id and target.entity_id not in playing_entity_ids
+        ]
+        join_result: dict[str, Any] = {"status": "ok"}
+        if join_target_ids:
+            join_result = await self._connection.media_player_join(source.entity_id, join_target_ids)
+
+        unjoin_result: dict[str, Any] = {"status": "ok"}
+        join_reached = join_result.get("status") == "ok"
+        if not join_reached and join_target_ids:
+            join_reached = await self._relocation_reached_targets(desired_entity_ids, replace_outputs=False)
+
+        if replace_outputs and join_reached:
+            unjoin_entity_ids = _dedupe_strings(
+                [
+                    target.entity_id
+                    for target in playing_targets
+                    if target.entity_id not in desired_entity_ids
+                ]
+                + [
+                    member
+                    for target in playing_targets
+                    for member in target.group_members
+                    if member not in desired_entity_ids
+                ]
+            )
+            if unjoin_entity_ids:
+                unjoin_result = await self._connection.media_player_unjoin(unjoin_entity_ids)
+
+        if join_result.get("status") == "ok" and unjoin_result.get("status") == "ok":
+            return _ok_result(format_started(len(desired_targets), "muzykę"), desired_targets)
+
+        if await self._relocation_reached_targets(desired_entity_ids, replace_outputs=replace_outputs):
+            return _ok_result(format_started(len(desired_targets), "muzykę"), desired_targets)
+
+        self._logger.warning(
+            "Home Assistant media_player join/unjoin did not reach requested outputs; falling back to Music Assistant transfer "
+            "source_player=%s target_entity_ids=%s join_result=%r unjoin_result=%r",
+            source.entity_id,
+            sorted(desired_entity_ids),
+            join_result,
+            unjoin_result,
+        )
         result = await self._connection.music_assistant_transfer_queue(
-            [target.entity_id for target in targets],
+            [target.entity_id for target in desired_targets],
             source_player=source.entity_id,
             auto_play=True,
         )
         if result.get("status") != "ok":
             return _failed_result("Nie udało się przenieść muzyki.")
-        return _ok_result(format_started(len(targets), "muzykę"), targets)
+        return _ok_result(format_started(len(desired_targets), "muzykę"), desired_targets)
+
+    async def _relocation_reached_targets(self, desired_entity_ids: set[str], *, replace_outputs: bool) -> bool:
+        refresh_inventory = getattr(self._connection, "refresh_inventory", None)
+        if callable(refresh_inventory):
+            try:
+                await refresh_inventory()
+            except Exception:
+                self._logger.info("could not refresh Home Assistant inventory after media_player join/unjoin", exc_info=True)
+        result = await self._list_speaker_players()
+        if not isinstance(result, list):
+            return False
+        targets = _prefer_music_assistant_targets(_targets_from_player_mappings(result))
+        targets_by_entity_id = {target.entity_id: target for target in targets}
+        if not all(_entity_is_active_output(entity_id, targets_by_entity_id) for entity_id in desired_entity_ids):
+            return False
+        if not replace_outputs:
+            return True
+        return not any(
+            _entity_is_active_output(target.entity_id, targets_by_entity_id)
+            for target in targets
+            if target.entity_id not in desired_entity_ids
+        )
 
     async def _playing_music_assistant_targets(self) -> list[MediaTarget]:
         result = await self._list_speaker_players()
@@ -420,6 +594,12 @@ def _targets_from_player_mappings(players: list[dict[str, Any]]) -> list[MediaTa
         volume_level = player.get("volume_level")
         if not all(isinstance(value, str) and value for value in (entity_id, name, area_id, area_name)):
             continue
+        raw_group_members = player.get("group_members")
+        group_members = (
+            tuple(member for member in raw_group_members if isinstance(member, str))
+            if isinstance(raw_group_members, list)
+            else ()
+        )
         targets.append(
             MediaTarget(
                 entity_id=entity_id,
@@ -429,6 +609,7 @@ def _targets_from_player_mappings(players: list[dict[str, Any]]) -> list[MediaTa
                 volume_level=volume_level if isinstance(volume_level, (int, float)) else None,
                 is_music_assistant=player.get("is_music_assistant") is True,
                 state=player.get("state") if isinstance(player.get("state"), str) else "",
+                group_members=group_members,
             )
         )
     return targets
@@ -442,6 +623,17 @@ def _dedupe_targets(targets: list[MediaTarget]) -> list[MediaTarget]:
             continue
         seen.add(target.entity_id)
         deduped.append(target)
+    return deduped
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen = set()
+    deduped = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
     return deduped
 
 
@@ -476,28 +668,62 @@ def _conversation_media_setting(conversation: Conversation, key: str, default: s
     return value if isinstance(value, str) and value else default
 
 
-def _conversation_playlist_alias(conversation: Conversation, query: str) -> str:
+def _conversation_media_aliases(conversation: Conversation) -> list[dict[str, str]]:
     media_settings = conversation.user_settings.get("media")
     if not isinstance(media_settings, dict):
-        return ""
-    aliases = media_settings.get("playlist_aliases")
-    if not isinstance(aliases, dict):
-        return ""
-    normalized_query = _normalize_media_lookup(query)
-    for raw_alias, raw_playlist in aliases.items():
-        if not isinstance(raw_alias, str) or not isinstance(raw_playlist, str):
+        return []
+    aliases: list[dict[str, str]] = []
+    for key, raw_aliases in media_settings.items():
+        if not isinstance(key, str) or not key.endswith("_aliases") or not isinstance(raw_aliases, dict):
             continue
-        if _normalize_media_lookup(raw_alias) == normalized_query and raw_playlist:
-            return raw_playlist
-    return ""
+        media_type = key[: -len("_aliases")]
+        if media_type == "media":
+            media_type = ""
+        for raw_alias, raw_target in raw_aliases.items():
+            if not isinstance(raw_alias, str) or not raw_alias or not isinstance(raw_target, str) or not raw_target:
+                continue
+            aliases.append({"alias": raw_alias, "target": raw_target, "media_type": media_type})
+    return aliases
+
+
+def _matching_media_alias(aliases: list[dict[str, str]], query: str) -> dict[str, str] | None:
+    normalized_query = _normalize_media_lookup(query)
+    for alias in aliases:
+        if _normalize_media_lookup(alias["alias"]) == normalized_query:
+            return alias
+    return None
+
+
+def _alias_by_name(aliases: list[dict[str, str]], alias_name: str) -> dict[str, str] | None:
+    if not alias_name:
+        return None
+    for alias in aliases:
+        if alias["alias"] == alias_name:
+            return alias
+    return None
+
+
+def _string_or_empty(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _conversation_user_key(conversation: Conversation) -> str:
     return conversation.user or "__default__"
 
 
+def _has_explicit_output_target(parsed: ParsedMediaCommand) -> bool:
+    return parsed.all_speakers or bool(parsed.areas)
+
+
 def _all_targets_playing(targets: list[MediaTarget]) -> bool:
     return bool(targets) and all(target.state == "playing" for target in targets)
+
+
+def _entity_is_active_output(entity_id: str, targets_by_entity_id: dict[str, MediaTarget]) -> bool:
+    target = targets_by_entity_id.get(entity_id)
+    if target is not None and target.state == "playing":
+        return True
+    return any(target.state == "playing" and entity_id in target.group_members for target in targets_by_entity_id.values())
 
 
 def _should_shuffle_media(*media_types: str) -> bool:
@@ -557,17 +783,27 @@ def _result_volume_level(result: dict[str, Any]) -> float | None:
     return volume if isinstance(volume, (int, float)) else None
 
 
-def _best_search_item(response: Any) -> MediaSearchItem | None:
+def _search_items(response: Any) -> list[MediaSearchItem]:
+    items = []
+    seen_media_ids = set()
     for item in _iter_search_items(response):
         media_id = _first_string(item.get("uri"), item.get("item_id"), item.get("media_id"), item.get("id"))
         name = _first_string(item.get("name"), item.get("title"), item.get("sort_name"), media_id)
-        if not media_id or not name:
+        if not media_id or not name or media_id in seen_media_ids:
             continue
+        seen_media_ids.add(media_id)
         media_type = _first_string(item.get("media_type"), item.get("type"))
         artist = _first_string(item.get("artist"), item.get("artists"), item.get("album_artist"))
         album = _first_string(item.get("album"), item.get("album_name"))
-        return MediaSearchItem(media_id=media_id, name=name, media_type=media_type, artist=artist, album=album)
-    return None
+        items.append(MediaSearchItem(media_id=media_id, name=name, media_type=media_type, artist=artist, album=album))
+    return items
+
+
+def _is_unplayable_media_result(result: dict[str, Any]) -> bool:
+    if result.get("status") == "ok":
+        return False
+    message = result.get("message")
+    return isinstance(message, str) and "No playable item found to start playback" in message
 
 
 def _iter_search_items(value: Any):

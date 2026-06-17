@@ -12,6 +12,7 @@ class MediaTarget:
     volume_level: float | None = None
     is_music_assistant: bool = False
     state: str = ""
+    group_members: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
