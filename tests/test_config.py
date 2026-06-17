@@ -13,6 +13,7 @@ from ai_server.config import (
     DEFAULT_WEBSOCKET_PATH,
     Config,
     MicrophoneConfig,
+    SpeakerRecognitionConfig,
     SttConfig,
     TtsConfig,
     WebsocketConfig,
@@ -109,6 +110,33 @@ agent:
             }
         },
     )
+
+
+def test_load_config_with_speaker_recognition_and_voice_profile(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+default_user: Maciek
+users:
+  Maciek:
+    voice_profile: /profiles/maciek/speaker_profile.npz
+speaker_recognition:
+  url: http://127.0.0.1:2140
+  timeout_seconds: 0.8
+websocket:
+  port: 2137
+agent:
+  type: echo
+""",
+    )
+
+    config = load_config_from_yaml(config_path)
+
+    assert config.speaker_recognition == SpeakerRecognitionConfig(
+        url="http://127.0.0.1:2140",
+        timeout_seconds=0.8,
+    )
+    assert config.users["Maciek"]["voice_profile"] == "/profiles/maciek/speaker_profile.npz"
 
 
 def test_load_config_with_explicit_log_level(tmp_path: Path) -> None:

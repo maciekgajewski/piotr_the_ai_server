@@ -8,6 +8,7 @@ services:
       - ollama
       - wyoming-piper
       - wyoming-whisper
+      - speaker-recognition
     network_mode: host
     gpus: all
     volumes:
@@ -27,3 +28,8 @@ services:
       - /config/ai_server.yaml
       - --ollama-url
       - http://127.0.0.1:11434
+
+  speaker-recognition:
+    extends:
+      file: docker-compose.speaker-recognition.yml
+      service: speaker-recognition

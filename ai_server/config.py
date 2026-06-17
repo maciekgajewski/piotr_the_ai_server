@@ -24,6 +24,7 @@ DEFAULT_END_SILENCE_SECONDS = 0.9
 DEFAULT_SPEECH_PEAK_THRESHOLD = 500
 DEFAULT_POST_SPEECH_IGNORE_SECONDS = 1.0
 DEFAULT_CACHE_DIR = "~/.ai-server/cache/"
+DEFAULT_SPEAKER_RECOGNITION_TIMEOUT_SECONDS = 1.0
 LOG_LEVELS = frozenset(("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"))
 STT_DEVICES = frozenset(("auto", "cuda", "cpu"))
 PCM16_MAX_POSITIVE = 32767
@@ -70,6 +71,12 @@ class ConversationConfig:
 
 
 @dataclass(frozen=True)
+class SpeakerRecognitionConfig:
+    url: str | None = None
+    timeout_seconds: float = DEFAULT_SPEAKER_RECOGNITION_TIMEOUT_SECONDS
+
+
+@dataclass(frozen=True)
 class MicrophoneDefaultsConfig:
     initial_silence_seconds: float = DEFAULT_INITIAL_SILENCE_SECONDS
     end_silence_seconds: float = DEFAULT_END_SILENCE_SECONDS
@@ -101,6 +108,7 @@ class Config:
     stt: SttConfig = SttConfig()
     tts: TtsConfig = TtsConfig()
     conversation: ConversationConfig = ConversationConfig()
+    speaker_recognition: SpeakerRecognitionConfig = SpeakerRecognitionConfig()
     microphone_defaults: MicrophoneDefaultsConfig = MicrophoneDefaultsConfig()
     microphones: tuple[MicrophoneConfig, ...] = ()
     default_user: str | None = None
@@ -140,6 +148,7 @@ def load_config_from_yaml(path: str | Path) -> Config:
         stt=_parse_stt_config(raw_config.get("stt", {})),
         tts=_parse_tts_config(raw_config.get("tts", {})),
         conversation=conversation,
+        speaker_recognition=_parse_speaker_recognition_config(raw_config.get("speaker_recognition", {})),
         microphone_defaults=microphone_defaults,
         microphones=microphones,
         default_user=_parse_optional_string(raw_config.get("default_user"), "default_user"),
@@ -199,6 +208,24 @@ def _parse_users_config(raw_config: Any) -> dict[str, dict[str, Any]]:
             raise ValueError(f"users.{user} must be a mapping")
         users[user] = settings
     return users
+
+
+def _parse_speaker_recognition_config(raw_config: Any) -> SpeakerRecognitionConfig:
+    if raw_config is None:
+        return SpeakerRecognitionConfig()
+    if not isinstance(raw_config, dict):
+        raise ValueError("speaker_recognition must be a mapping")
+
+    url = raw_config.get("url")
+    if url is not None and (not isinstance(url, str) or not url):
+        raise ValueError("speaker_recognition.url must be a non-empty string when provided")
+
+    timeout_seconds = _parse_optional_positive_float(
+        raw_config.get("timeout_seconds"),
+        DEFAULT_SPEAKER_RECOGNITION_TIMEOUT_SECONDS,
+        "speaker_recognition.timeout_seconds",
+    )
+    return SpeakerRecognitionConfig(url=url, timeout_seconds=timeout_seconds)
 
 
 def _parse_optional_string(value: Any, field: str) -> str | None:

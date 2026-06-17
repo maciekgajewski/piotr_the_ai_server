@@ -1,0 +1,26 @@
+services:
+  speaker-recognition:
+    build:
+      context: .
+      dockerfile: docker/speaker-recognition.Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    gpus: all
+    environment:
+      HF_HOME: /app/.hf-cache
+    volumes:
+      - ./.hf-cache:/app/.hf-cache
+      - ./audio:/app/audio
+      - "${SPEAKER_RECOGNITION_PROFILE_ROOT:-./audio/speaker-profiles}:${SPEAKER_RECOGNITION_PROFILE_MOUNT:-/profiles}:ro"
+    command:
+      - python3
+      - -m
+      - ai_server.speaker_recognition.http_server
+      - --profiles-dir
+      - /app/audio/speaker-profiles
+      - --host
+      - 0.0.0.0
+      - --port
+      - "${SPEAKER_RECOGNITION_PORT:-2140}"
+      - --device
+      - "${SPEAKER_RECOGNITION_DEVICE:-cpu}"

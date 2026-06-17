@@ -8,6 +8,7 @@ server:
 default_user: Maciek
 users:
   Maciek:
+    voice_profile: /home/maciek/user_voice_data/maciek/profile/speaker_profile.npz
     media:
       liked_songs_media_id: library://playlist/7
       liked_songs_media_type: playlist
@@ -56,6 +57,10 @@ stt:
 tts:
   voice: pl_PL-bass-high
   volume: 1.0
+
+speaker_recognition:
+  url: http://127.0.0.1:2140
+  timeout_seconds: 1.0
 
 # Example microphone override:
 # microphones:

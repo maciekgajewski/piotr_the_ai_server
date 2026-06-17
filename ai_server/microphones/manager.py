@@ -4,10 +4,11 @@ import asyncio
 import logging
 import uuid
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any
 
 from ai_server.agent import Agent
-from ai_server.config import ConversationConfig, MicrophoneConfig, SttConfig, TtsConfig
+from ai_server.config import ConversationConfig, MicrophoneConfig, SpeakerRecognitionConfig, SttConfig, TtsConfig
 from ai_server.messages import ConversationEnded, MessageBegin, MessageEnd, MessageFragment, NewConversation, RequestFollowUp
 from ai_server.messages import TextMessage, WaitForNewConversation, WaitForNewMessage
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
@@ -18,6 +19,16 @@ from ai_server.microphones.messages import StartFollowUpListening, StartWakeWord
 from ai_server.microphones.stt import WyomingFasterWhisperSpeechToText
 from ai_server.microphones.tts import PiperTextToSpeech
 from ai_server.sessions import Session
+from ai_server.speaker_recognition.client import SpeakerRecognitionAudioFormat, SpeakerRecognitionClient
+from ai_server.speaker_recognition.client import SpeakerRecognitionResult, SpeakerRecognitionStream
+from ai_server.speaker_recognition.client import voice_profiles_from_users
+
+
+@dataclass(frozen=True)
+class CapturedUtterance:
+    captured: bool
+    text_fragments: tuple[str, ...]
+    speaker_result: SpeakerRecognitionResult | None = None
 
 
 class MicrophoneManager:
@@ -31,6 +42,7 @@ class MicrophoneManager:
         microphone_follow_up_timeouts: dict[str, float] | None = None,
         default_user: str | None = None,
         user_settings: dict[str, dict[str, Any]] | None = None,
+        speaker_recognition: SpeakerRecognitionClient | None = None,
     ) -> None:
         self._microphones = microphones
         self._stt = stt
@@ -40,6 +52,11 @@ class MicrophoneManager:
         self._microphone_follow_up_timeouts = dict(microphone_follow_up_timeouts or {})
         self._default_user = default_user
         self._user_settings = dict(user_settings or {})
+        self._speaker_recognition = speaker_recognition or SpeakerRecognitionClient(
+            url=None,
+            timeout_seconds=1.0,
+            profiles={},
+        )
         self._tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
@@ -110,7 +127,7 @@ class MicrophoneManager:
                             starts_new_conversation=True,
                             timeout_seconds=None,
                         )
-                        if not captured:
+                        if not captured.captured:
                             logger.info("wake-word stream had no transcript; ending conversation")
                             await endpoint.send_to_session(ConversationEnded())
                         pending_event = None
@@ -127,7 +144,7 @@ class MicrophoneManager:
                             starts_new_conversation=False,
                             timeout_seconds=follow_up_timeout,
                         )
-                        if not captured:
+                        if not captured.captured:
                             logger.info("follow-up timed out; ending conversation")
                             await microphone.send_output_event(ConversationTimeoutCue())
                             await endpoint.send_to_session(ConversationEnded())
@@ -169,22 +186,32 @@ class MicrophoneManager:
         logger: logging.Logger,
         starts_new_conversation: bool,
         timeout_seconds: float | None,
-    ) -> bool:
+    ) -> CapturedUtterance:
         event = await self._wait_for_audio_start(microphone, logger, timeout_seconds)
         if event is None:
-            return False
-
-        if starts_new_conversation:
-            await endpoint.send_to_session(NewConversation(attributes={}))
+            return CapturedUtterance(captured=False, text_fragments=())
 
         logger.info("wake_word=%r audio stream started", event.wake_word)
-        captured = await self._send_transcript_message(microphone, endpoint, logger)
-        if not captured:
+        captured = await self._capture_transcript_and_speaker(
+            microphone,
+            logger,
+            first_event=None,
+            audio_start=event,
+            recognize_speaker=starts_new_conversation,
+        )
+        if not captured.captured:
             logger.info("audio stream ended without transcript")
-            return False
+            return captured
+
+        if starts_new_conversation:
+            attributes = {}
+            if captured.speaker_result is not None and captured.speaker_result.recognized_user:
+                attributes["user"] = captured.speaker_result.recognized_user
+            await endpoint.send_to_session(NewConversation(attributes=attributes))
+        await self._send_captured_text(endpoint, captured.text_fragments)
 
         await microphone.send_output_event(MessageEndCue())
-        return True
+        return captured
 
     async def _wait_for_audio_start(
         self,
@@ -213,26 +240,48 @@ class MicrophoneManager:
     ) -> bool:
         event = await microphone.wait_for_event()
         if not isinstance(event, AudioStart):
-            return await self._send_audio_stream_to_stt(microphone, endpoint, logger, first_event=event)
+            captured = await self._capture_transcript_and_speaker(
+                microphone,
+                logger,
+                first_event=event,
+                audio_start=None,
+                recognize_speaker=False,
+            )
+            await self._send_captured_text(endpoint, captured.text_fragments)
+            return captured.captured
 
         logger.info("wake_word=%r audio stream started", event.wake_word)
-        return await self._send_audio_stream_to_stt(microphone, endpoint, logger, first_event=None)
+        captured = await self._capture_transcript_and_speaker(
+            microphone,
+            logger,
+            first_event=None,
+            audio_start=event,
+            recognize_speaker=False,
+        )
+        await self._send_captured_text(endpoint, captured.text_fragments)
+        return captured.captured
 
-    async def _send_audio_stream_to_stt(
+    async def _capture_transcript_and_speaker(
         self,
         microphone: Microphone,
-        endpoint: MicrophoneAgentEndpoint,
         logger: logging.Logger,
         first_event,
-    ) -> bool:
+        audio_start: AudioStart | None,
+        recognize_speaker: bool,
+    ) -> CapturedUtterance:
         stt_session = await self._stt.create_session(microphone.context.name)
-        text_task = asyncio.create_task(self._forward_text_to_agent(endpoint, stt_session, logger))
+        text_task = asyncio.create_task(self._collect_transcript(stt_session, logger))
+        speaker_stream = self._start_speaker_recognition(audio_start, recognize_speaker, logger)
         try:
             audio_done = False
             if isinstance(first_event, AudioChunk):
                 await stt_session.send_audio(first_event)
+                if speaker_stream is not None:
+                    await speaker_stream.send_audio(first_event)
             elif isinstance(first_event, AudioEnd):
                 await stt_session.end_audio()
+                if speaker_stream is not None:
+                    await speaker_stream.end_audio()
                 audio_done = True
             elif first_event is not None:
                 logger.warning("ignored microphone event in audio stream event=%s", type(first_event).__name__)
@@ -241,26 +290,113 @@ class MicrophoneManager:
                 next_event = await microphone.wait_for_event()
                 if isinstance(next_event, AudioChunk):
                     await stt_session.send_audio(next_event)
+                    if speaker_stream is not None:
+                        await speaker_stream.send_audio(next_event)
                     continue
                 if isinstance(next_event, AudioEnd):
                     await stt_session.end_audio()
+                    if speaker_stream is not None:
+                        await speaker_stream.end_audio()
                     audio_done = True
                     break
                 if isinstance(next_event, AudioStart):
                     logger.warning("received nested audio start; ending current stream")
                     await stt_session.end_audio()
+                    if speaker_stream is not None:
+                        await speaker_stream.end_audio()
                     audio_done = True
                     break
 
-            captured = await text_task
+            text_fragments = await text_task
+            captured = any(fragment.strip() for fragment in text_fragments)
+            speaker_result = await self._await_speaker_result(speaker_stream, logger)
             await stt_session.close()
-            return captured
+            return CapturedUtterance(
+                captured=captured,
+                text_fragments=tuple(text_fragments),
+                speaker_result=speaker_result,
+            )
         except Exception:
             text_task.cancel()
             with suppress(asyncio.CancelledError):
                 await text_task
+            if speaker_stream is not None:
+                speaker_stream.cancel()
             await stt_session.close()
             raise
+
+    def _start_speaker_recognition(
+        self,
+        audio_start: AudioStart | None,
+        recognize_speaker: bool,
+        logger: logging.Logger,
+    ) -> SpeakerRecognitionStream | None:
+        if not recognize_speaker or not self._speaker_recognition.enabled:
+            return None
+        sample_rate = 16000
+        sample_width = 2
+        channels = 1
+        if audio_start is not None:
+            sample_rate = audio_start.rate or sample_rate
+            sample_width = audio_start.width or sample_width
+            channels = audio_start.channels or channels
+        audio_format = SpeakerRecognitionAudioFormat(
+            sample_rate=sample_rate,
+            sample_width=sample_width,
+            channels=channels,
+        )
+        logger.debug(
+            "starting speaker recognition stream sample_rate=%s sample_width=%s channels=%s",
+            audio_format.sample_rate,
+            audio_format.sample_width,
+            audio_format.channels,
+        )
+        return self._speaker_recognition.start_stream(audio_format)
+
+    async def _await_speaker_result(
+        self,
+        speaker_stream: SpeakerRecognitionStream | None,
+        logger: logging.Logger,
+    ) -> SpeakerRecognitionResult | None:
+        if speaker_stream is None:
+            return None
+        try:
+            result = await asyncio.wait_for(
+                speaker_stream.result(),
+                timeout=self._speaker_recognition.timeout_seconds,
+            )
+        except TimeoutError:
+            logger.warning(
+                "speaker recognition did not finish within %.2fs; continuing without recognized user",
+                self._speaker_recognition.timeout_seconds,
+            )
+            speaker_stream.cancel()
+            return None
+        except Exception as exc:
+            logger.warning("speaker recognition failed; continuing without recognized user error=%s", exc)
+            return None
+
+        logger.info(
+            "speaker recognition result user=%r confidence=%.3f score=%.3f threshold=%.3f profile=%r",
+            result.recognized_user,
+            result.confidence,
+            result.score,
+            result.threshold,
+            result.profile,
+        )
+        return result
+
+    async def _send_captured_text(
+        self,
+        endpoint: MicrophoneAgentEndpoint,
+        text_fragments: tuple[str, ...],
+    ) -> None:
+        if not text_fragments:
+            return
+        await endpoint.send_to_session(MessageBegin())
+        for fragment in text_fragments:
+            await endpoint.send_to_session(MessageFragment(text=fragment))
+        await endpoint.send_to_session(MessageEnd())
 
     async def _speak_reply(
         self,
@@ -313,31 +449,23 @@ class MicrophoneManager:
             audio_byte_count,
         )
 
-    async def _forward_text_to_agent(
+    async def _collect_transcript(
         self,
-        endpoint: MicrophoneAgentEndpoint,
         stt_session: SttSession,
         logger: logging.Logger,
-    ) -> bool:
-        message_started = False
-        captured = False
+    ) -> tuple[str, ...]:
+        text_fragments: list[str] = []
         while True:
             event = await stt_session.receive_text()
             if isinstance(event, TextFragment):
-                if not captured and not event.text.strip():
+                if not text_fragments and not event.text.strip():
                     continue
-                captured = True
-                if not message_started:
-                    await endpoint.send_to_session(MessageBegin())
-                    message_started = True
                 logger.info("transcription fragment chars=%s", len(event.text))
                 logger.debug("transcript_fragment=%r", event.text)
-                await endpoint.send_to_session(MessageFragment(text=event.text))
+                text_fragments.append(event.text)
                 continue
             if isinstance(event, TextEnd):
-                if message_started:
-                    await endpoint.send_to_session(MessageEnd())
-                return captured
+                return tuple(text_fragments)
             raise ValueError(f"unsupported STT event: {type(event).__name__}")
 
     async def _receive_agent_reply(
@@ -375,6 +503,7 @@ async def init_mics(
     stt_config: SttConfig,
     tts_config: TtsConfig,
     conversation_config: ConversationConfig,
+    speaker_recognition_config: SpeakerRecognitionConfig,
     agent: Agent,
     *,
     default_user: str | None = None,
@@ -397,6 +526,11 @@ async def init_mics(
         },
         default_user=default_user,
         user_settings=user_settings,
+        speaker_recognition=SpeakerRecognitionClient(
+            url=speaker_recognition_config.url,
+            timeout_seconds=speaker_recognition_config.timeout_seconds,
+            profiles=voice_profiles_from_users(user_settings or {}),
+        ),
     )
     await manager.start()
     return manager

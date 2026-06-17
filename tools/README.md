@@ -74,6 +74,50 @@ state:
 .venv/bin/python tools/lib/box3_reset_voice.py
 ```
 
+## Capture Voice Learning Samples
+
+Captures voice samples through a configured microphone for speaker-recognition
+enrollment. The tool prints all behavior-test phrases as prompts, starts the
+microphone in follow-up listening mode, removes silent audio using the selected
+microphone's `speech_peak_threshold`, and writes 5 second WAV samples.
+
+```bash
+tools/capture-voice-samples.sh --config /path/to/ai-server.yaml --mic office --out audio/voice-samples/maciek
+```
+
+Press Ctrl-C to stop. On startup, the tool scans the output directory, reports
+the existing usable voice seconds, and continues at the next free numbered WAV
+file name.
+
+## Build Speaker Profile
+
+Builds a SpeechBrain ECAPA-TDNN speaker profile from a directory of captured
+voice samples. SpeechBrain runs inside the `speaker-recognition` Docker image;
+the output directory receives `speaker_profile.npz`, `metadata.json`, and
+`manifest.json`.
+
+```bash
+tools/speaker-profile-build.sh audio/voice-samples/maciek audio/speaker-profiles/maciek
+```
+
+Rebuild an existing profile:
+
+```bash
+tools/speaker-profile-build.sh audio/voice-samples/maciek audio/speaker-profiles/maciek --overwrite
+```
+
+The same image also provides the HTTP recognition service:
+
+```bash
+docker compose -f docker-compose.speaker-recognition.yml up speaker-recognition
+```
+
+The service listens on port `2140` by default. The AI server sends configured
+`users.<name>.voice_profile` paths with each streamed utterance, so the profile
+directory must be mounted into the speaker-recognition container. On this host,
+`config/services.env` mounts `/home/maciek/user_voice_data` read-only at the
+same path.
+
 ## Record Wake-Word Training Samples
 
 Records positive training samples through the Box microphone without relying on

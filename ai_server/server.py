@@ -82,6 +82,7 @@ async def run_server(config: Config, ollama_url: str) -> None:
             config.stt,
             config.tts,
             config.conversation,
+            config.speaker_recognition,
             agent,
             default_user=config.default_user,
             user_settings=config.users,
