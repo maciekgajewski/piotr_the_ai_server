@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
-import time
-from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Callable
 
 from aiohttp import ClientSession
 
+from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask
 from ai_server.domain_agents.weather.formatting import format_current_weather, format_forecast, weather_to_json
 from ai_server.domain_agents.weather.interfaces import (
@@ -18,13 +17,13 @@ from ai_server.domain_agents.weather.interfaces import (
     WeatherNowRequest,
     WeatherProvider,
 )
-from ai_server.domain_agents.weather.messages import WEATHER_COMPLEX_SYSTEM_PROMPT, WEATHER_LOCATION_CANONICALIZATION_SYSTEM_PROMPT
-from ai_server.domain_agents.weather.parser import ParsedWeatherCommand, parse_weather_command
-from ai_server.utils.text import normalize_text
+from ai_server.domain_agents.weather.fast_lane import fast_lane_command_from_task_command
+from ai_server.domain_agents.weather.messages import WEATHER_AGENT_SYSTEM_PROMPT
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
 from ai_server.interfaces import Conversation
-from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient
+from ai_server.ollama_client import OLLAMA_BASE_URL
+from ai_server.utils.text import ascii_fold, normalize_text
 
 
 class WeatherDomainAgent:
@@ -39,22 +38,22 @@ class WeatherDomainAgent:
         cache_dir: Path,
         providers: list[WeatherProvider] | None = None,
         session: ClientSession | None = None,
-        ollama_client: OllamaClient | None = None,
+        ollama_connection: AgentLoopOllamaConnection | None = None,
+        loop_factory: Callable[..., AgentLoop] = AgentLoop,
     ) -> None:
         self._model = model
         self._ollama_url = ollama_url
         self._fallback_model = fallback_model
         self._fallback_backoff_seconds = fallback_backoff_seconds
         self._location = location
-        self._session = session
         self._providers = providers or [
             ImgwWeatherProvider(session=session),
             OpenMeteoWeatherProvider(cache_dir=cache_dir, session=session),
         ]
         self._owns_providers = providers is None
-        self._ollama = ollama_client or OllamaClient(base_url=ollama_url, session=session)
-        self._owns_ollama = ollama_client is None
-        self._fallback_until = 0.0
+        self._ollama_connection = ollama_connection or AgentLoopOllamaConnection(base_url=ollama_url, session=session)
+        self._owns_ollama_connection = ollama_connection is None
+        self._loop_factory = loop_factory
         self._logger = logging.getLogger(f"{__name__}.WeatherDomainAgent[{model}:{location or 'no-location'}]")
 
     async def run_task(
@@ -63,53 +62,93 @@ class WeatherDomainAgent:
         task: DomainTask,
         active_context: dict[str, Any],
     ) -> dict[str, Any]:
-        del active_context
         command = task.get("command", {})
         command = command if isinstance(command, dict) else {}
-        parsed = parse_weather_command(command, default_location=self._location)
         logger = logging.getLogger(
             f"{__name__}.WeatherDomainAgent[{self._model}:{conversation.conversation_id}:{task.get('id', 'unknown')}]"
         )
-        logger.info(
-            "running weather task tool=%s location=%r horizon=%r granularity=%s simple=%s",
-            parsed.tool,
-            parsed.location,
-            parsed.horizon,
-            parsed.granularity,
-            parsed.simple,
+        fast_command = fast_lane_command_from_task_command(command)
+        if fast_command is not None:
+            return await self._run_fast_lane(fast_command, logger)
+
+        toolset = WeatherDomainToolSet(
+            self._providers,
+            default_location=self._location,
+            logger_name=f"{__name__}.WeatherDomainToolSet[{conversation.conversation_id}:{task.get('id', 'unknown')}]",
         )
-
-        if not parsed.location:
-            return _clarification_result("Dla jakiej lokalizacji mam sprawdzić pogodę?")
-
-        if parsed.tool == "get_weather_now":
-            weather = await self._get_weather_now(parsed)
-            if weather is None:
-                canonical = await self._with_canonical_location(parsed)
-                if canonical is not None:
-                    weather = await self._get_weather_now(canonical)
-            if weather is None:
-                return _not_found_result(parsed.location)
-            return await self._result_for_current_weather(parsed, weather)
-
-        forecast = await self._get_weather_forecast(parsed)
-        if forecast is None:
-            canonical = await self._with_canonical_location(parsed)
-            if canonical is not None:
-                forecast = await self._get_weather_forecast(canonical)
-        if forecast is None:
-            return _not_found_result(parsed.location)
-        return await self._result_for_forecast(parsed, forecast)
+        loop_config = AgentLoopConfig(
+            model=self._model,
+            ollama_url=self._ollama_url,
+            fallback_model=self._fallback_model,
+            fallback_backoff_seconds=self._fallback_backoff_seconds,
+            options={"num_predict": 512, "temperature": 0, "num_ctx": 4096},
+            keep_alive="1h",
+        )
+        payload = {
+            "task": task,
+            "active_context": active_context,
+            "conversation": {
+                "user": conversation.user,
+                "area": conversation.area,
+                "server_location": self._location,
+                "user_settings": conversation.user_settings,
+            },
+        }
+        logger.debug("running Weather DSA agent loop task=%s active_context=%s", task, active_context)
+        async with self._loop_factory(
+            config=loop_config,
+            system_prompt=WEATHER_AGENT_SYSTEM_PROMPT,
+            tools=toolset,
+            ollama_connection=self._ollama_connection,
+        ) as loop:
+            reply = await loop.send_user_message(json.dumps(payload, ensure_ascii=False))
+        logger.debug("Weather DSA raw reply=%r end_conversation=%s", reply.reply_text, reply.end_conversation)
+        if reply.end_conversation:
+            return _failed_result("Nie mogę teraz sprawdzić pogody.")
+        try:
+            return _parse_domain_reply(reply.reply_text)
+        except ValueError:
+            logger.debug("rejecting non-JSON Weather DSA reply=%r", reply.reply_text)
+            return _failed_result("Nie mogę teraz przygotować odpowiedzi pogodowej.")
 
     async def close(self) -> None:
         if self._owns_providers:
             for provider in self._providers:
                 await provider.close()
-        if self._owns_ollama:
-            await self._ollama.close()
+        if self._owns_ollama_connection:
+            await self._ollama_connection.close()
 
-    async def _get_weather_now(self, parsed: ParsedWeatherCommand) -> CurrentWeather | None:
-        request = WeatherNowRequest(location=parsed.location, focus=parsed.focus)
+    async def _run_fast_lane(self, command: dict[str, str], logger: logging.Logger) -> dict[str, Any]:
+        location = self._location or ""
+        tool = command["tool"]
+        focus = command.get("focus")
+        horizon = command.get("horizon")
+        granularity = command.get("granularity", "daily")
+        logger.info(
+            "running fast-lane weather task tool=%s location=%r horizon=%r granularity=%s",
+            tool,
+            location,
+            horizon,
+            granularity,
+        )
+
+        if not location:
+            return _clarification_result("Dla jakiej lokalizacji mam sprawdzić pogodę?")
+
+        if tool == "get_weather_now":
+            request = WeatherNowRequest(location=location, focus=focus)
+            weather = await self._get_weather_now(request)
+            if weather is None:
+                return _not_found_result(location)
+            return _result_for_current_weather(weather, focus=focus)
+
+        request = WeatherForecastRequest(location=location, horizon=horizon or "today", granularity=granularity)
+        forecast = await self._get_weather_forecast(request)
+        if forecast is None:
+            return _not_found_result(location)
+        return _result_for_forecast(forecast)
+
+    async def _get_weather_now(self, request: WeatherNowRequest) -> CurrentWeather | None:
         for provider in self._providers:
             try:
                 weather = await provider.get_weather_now(request)
@@ -120,12 +159,7 @@ class WeatherDomainAgent:
                 return weather
         return None
 
-    async def _get_weather_forecast(self, parsed: ParsedWeatherCommand) -> WeatherForecast | None:
-        request = WeatherForecastRequest(
-            location=parsed.location,
-            horizon=parsed.horizon or "today",
-            granularity=parsed.granularity,
-        )
+    async def _get_weather_forecast(self, request: WeatherForecastRequest) -> WeatherForecast | None:
         for provider in self._providers:
             try:
                 forecast = await provider.get_weather_forecast(request)
@@ -136,109 +170,106 @@ class WeatherDomainAgent:
                 return forecast
         return None
 
-    async def _result_for_current_weather(self, parsed: ParsedWeatherCommand, weather: CurrentWeather) -> dict[str, Any]:
-        data = weather_to_json(weather)
-        if parsed.simple or not parsed.query:
-            return _ok_result(
-                text=format_current_weather(weather, focus=parsed.focus),
-                data={"kind": "current", "weather": data},
-                entities=[f"weather.{weather.location}"],
-                final_reply_mode="verbatim",
-            )
-        return _ok_result(
-            text=await self._complex_answer(parsed, {"kind": "current", "weather": data}),
-            data={"kind": "current", "weather": data},
-            entities=[f"weather.{weather.location}"],
-            final_reply_mode="verbatim",
+
+class WeatherDomainToolSet(AgentCallableSet):
+    def __init__(self, providers: list[WeatherProvider], *, default_location: str | None, logger_name: str | None = None) -> None:
+        self._providers = providers
+        self._default_location = default_location
+        self._logger = logging.getLogger(logger_name or f"{__name__}.{type(self).__name__}")
+
+    @AgentCallableSet.tool(
+        description=(
+            "Fetch current weather observations. Omit location only for the assistant server's local weather. "
+            "Use a canonical geographic place name when the user named one."
         )
-
-    async def _result_for_forecast(self, parsed: ParsedWeatherCommand, forecast: WeatherForecast) -> dict[str, Any]:
-        data = weather_to_json(forecast)
-        if parsed.simple or not parsed.query:
-            return _ok_result(
-                text=format_forecast(forecast),
-                data={"kind": "forecast", "forecast": data},
-                entities=[f"weather.{forecast.location}"],
-                final_reply_mode="verbatim",
-            )
-        return _ok_result(
-            text=await self._complex_answer(parsed, {"kind": "forecast", "forecast": data}),
-            data={"kind": "forecast", "forecast": data},
-            entities=[f"weather.{forecast.location}"],
-            final_reply_mode="verbatim",
-        )
-
-    async def _complex_answer(self, parsed: ParsedWeatherCommand, weather_data: dict[str, Any]) -> str:
-        payload = {
-            "query": parsed.query,
-            "tool": parsed.tool,
-            "location": parsed.location,
-            "focus": parsed.focus,
-            "horizon": parsed.horizon,
-            "granularity": parsed.granularity,
-            "weather_data": weather_data,
-        }
-        response = await self._chat_with_fallback(
-            {
-                "raw": False,
-                "think": False,
-                "stream": False,
-                "keep_alive": "1h",
-                "options": {"num_predict": 192, "temperature": 0, "num_ctx": 4096},
-                "messages": [
-                    {"role": "system", "content": WEATHER_COMPLEX_SYSTEM_PROMPT},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
-            }
-        )
-        message = response.get("message")
-        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
-            return "Nie mogę teraz przygotować odpowiedzi pogodowej."
-        return message["content"].strip() or "Nie mogę teraz przygotować odpowiedzi pogodowej."
-
-    async def _with_canonical_location(self, parsed: ParsedWeatherCommand) -> ParsedWeatherCommand | None:
-        canonical_location = await self._canonicalize_location(parsed)
-        if canonical_location is None or normalize_text(canonical_location) == normalize_text(parsed.location):
-            return None
-        self._logger.info("retrying weather task with canonical location original=%r canonical=%r", parsed.location, canonical_location)
-        return replace(parsed, location=canonical_location)
-
-    async def _canonicalize_location(self, parsed: ParsedWeatherCommand) -> str | None:
-        payload = {
-            "query": parsed.query,
-            "location": parsed.location,
-            "server_location": self._location,
-        }
-        try:
-            response = await self._chat_with_fallback(
-                {
-                    "raw": False,
-                    "think": False,
-                    "format": "json",
-                    "stream": False,
-                    "keep_alive": "1h",
-                    "options": {"num_predict": 64, "temperature": 0, "num_ctx": 2048},
-                    "messages": [
-                        {"role": "system", "content": WEATHER_LOCATION_CANONICALIZATION_SYSTEM_PROMPT},
-                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                    ],
+    )
+    async def get_current_weather(
+        self,
+        location: Annotated[str | None, "Optional canonical geographic place name, for example Gdańsk."] = None,
+        focus: Annotated[str | None, "Optional focus. Use temperature only when the user asked about temperature."] = None,
+    ) -> dict[str, Any]:
+        resolved_location = self._resolved_location(location)
+        if resolved_location is None:
+            return _tool_clarification("Dla jakiej lokalizacji mam sprawdzić pogodę?")
+        normalized_focus = _normalize_tool_focus(focus)
+        if focus is not None and normalized_focus is None:
+            return _tool_invalid("focus", "Use focus='temperature' or omit focus.")
+        request = WeatherNowRequest(location=resolved_location, focus=normalized_focus)
+        for provider in self._providers:
+            try:
+                weather = await provider.get_weather_now(request)
+            except Exception:
+                self._logger.debug("weather provider failed provider=%s request=%s", provider.name, request, exc_info=True)
+                continue
+            if weather is not None:
+                data = weather_to_json(weather)
+                return {
+                    "status": "ok",
+                    "kind": "current",
+                    "formatted_text": format_current_weather(weather, focus=normalized_focus),
+                    "weather": data,
+                    "entities": [f"weather.{weather.location}"],
                 }
-            )
-        except Exception:
-            self._logger.debug("weather location canonicalization failed location=%r", parsed.location, exc_info=True)
-            return None
-        return _parse_canonical_location(response)
+        return _tool_not_found(resolved_location)
 
-    async def _chat_with_fallback(self, payload: dict[str, Any]) -> dict[str, Any]:
-        model = self._fallback_model if self._fallback_model and time.monotonic() < self._fallback_until else self._model
-        try:
-            return await self._ollama.chat({**payload, "model": model})
-        except Exception:
-            if self._fallback_model is None or model == self._fallback_model:
-                raise
-            self._fallback_until = time.monotonic() + self._fallback_backoff_seconds
-            self._logger.warning("weather DSA model failed, retrying fallback_model=%s", self._fallback_model, exc_info=True)
-            return await self._ollama.chat({**payload, "model": self._fallback_model})
+    @AgentCallableSet.tool(
+        description=(
+            "Fetch a weather forecast. Choose horizon and granularity from the user phrase. "
+            "Omit location only for the assistant server's local forecast."
+        )
+    )
+    async def get_weather_forecast(
+        self,
+        horizon: Annotated[
+            str,
+            "today, tomorrow, weekend, next_weekend, monday, tuesday, wednesday, thursday, friday, saturday, or sunday.",
+        ],
+        location: Annotated[str | None, "Optional canonical geographic place name, for example Gdańsk."] = None,
+        granularity: Annotated[str, "daily or hourly. Use hourly for later today, tonight, evening, rain timing, or yes/no event questions."] = "daily",
+        focus: Annotated[str | None, "Optional focus. Use temperature only when the user asked about temperature."] = None,
+    ) -> dict[str, Any]:
+        resolved_location = self._resolved_location(location)
+        if resolved_location is None:
+            return _tool_clarification("Dla jakiej lokalizacji mam sprawdzić pogodę?")
+        normalized_horizon = _normalize_tool_horizon(horizon)
+        if normalized_horizon is None:
+            return _tool_invalid("horizon", "Use a supported forecast horizon.")
+        normalized_granularity = _normalize_tool_granularity(granularity)
+        if normalized_granularity is None:
+            return _tool_invalid("granularity", "Use granularity='daily' or granularity='hourly'.")
+        normalized_focus = _normalize_tool_focus(focus)
+        if focus is not None and normalized_focus is None:
+            return _tool_invalid("focus", "Use focus='temperature' or omit focus.")
+
+        request = WeatherForecastRequest(
+            location=resolved_location,
+            horizon=normalized_horizon,
+            granularity=normalized_granularity,
+        )
+        for provider in self._providers:
+            try:
+                forecast = await provider.get_weather_forecast(request)
+            except Exception:
+                self._logger.debug("weather provider failed provider=%s request=%s", provider.name, request, exc_info=True)
+                continue
+            if forecast is not None:
+                data = weather_to_json(forecast)
+                return {
+                    "status": "ok",
+                    "kind": "forecast",
+                    "formatted_text": format_forecast(forecast),
+                    "forecast": data,
+                    "focus": normalized_focus,
+                    "entities": [f"weather.{forecast.location}"],
+                }
+        return _tool_not_found(resolved_location)
+
+    def _resolved_location(self, location: str | None) -> str | None:
+        if isinstance(location, str) and location.strip():
+            return location.strip()
+        if self._default_location:
+            return self._default_location
+        return None
 
 
 def _ok_result(
@@ -257,6 +288,26 @@ def _ok_result(
         "final_reply_mode": final_reply_mode,
         "data": data,
     }
+
+
+def _result_for_current_weather(weather: CurrentWeather, *, focus: str | None) -> dict[str, Any]:
+    data = weather_to_json(weather)
+    return _ok_result(
+        text=format_current_weather(weather, focus=focus),
+        data={"kind": "current", "weather": data},
+        entities=[f"weather.{weather.location}"],
+        final_reply_mode="verbatim",
+    )
+
+
+def _result_for_forecast(forecast: WeatherForecast) -> dict[str, Any]:
+    data = weather_to_json(forecast)
+    return _ok_result(
+        text=format_forecast(forecast),
+        data={"kind": "forecast", "forecast": data},
+        entities=[f"weather.{forecast.location}"],
+        final_reply_mode="verbatim",
+    )
 
 
 def _clarification_result(question: str) -> dict[str, Any]:
@@ -279,21 +330,111 @@ def _not_found_result(location: str) -> dict[str, Any]:
     }
 
 
-def _parse_canonical_location(response: dict[str, Any]) -> str | None:
-    message = response.get("message")
-    if not isinstance(message, dict):
-        return None
-    content = message.get("content")
-    if not isinstance(content, str) or not content.strip():
-        return None
+def _failed_result(text: str) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "text": text,
+        "needs_clarification": False,
+        "clarification_question": None,
+        "entities": [],
+    }
+
+
+def _parse_domain_reply(content: str) -> dict[str, Any]:
     try:
         raw = json.loads(content)
-    except json.JSONDecodeError:
-        return None
+    except json.JSONDecodeError as exc:
+        raise ValueError("Weather DSA reply must be valid JSON") from exc
     if not isinstance(raw, dict):
+        raise ValueError("Weather DSA reply must be a JSON object")
+    status = raw.get("status")
+    if not isinstance(status, str) or not status:
+        raise ValueError("Weather DSA reply status must be a non-empty string")
+    text = raw.get("text")
+    if not isinstance(text, str):
+        raise ValueError("Weather DSA reply text must be a string")
+    needs_clarification = raw.get("needs_clarification", status == "needs_clarification")
+    if not isinstance(needs_clarification, bool):
+        raise ValueError("Weather DSA reply needs_clarification must be a boolean")
+    clarification_question = raw.get("clarification_question")
+    if clarification_question is not None and not isinstance(clarification_question, str):
+        raise ValueError("Weather DSA reply clarification_question must be a string or null")
+    entities = raw.get("entities", [])
+    if not isinstance(entities, list) or any(not isinstance(entity, str) for entity in entities):
+        raise ValueError("Weather DSA reply entities must be a list of strings")
+
+    parsed = dict(raw)
+    parsed["needs_clarification"] = needs_clarification
+    parsed["clarification_question"] = clarification_question
+    parsed["entities"] = entities
+    parsed.setdefault("final_reply_mode", "verbatim")
+    return parsed
+
+
+def _ascii_key(value: str) -> str:
+    return ascii_fold(normalize_text(value)).strip(" ?.!").strip()
+
+
+def _normalize_tool_horizon(value: str) -> str | None:
+    normalized = _ascii_key(value).replace("next weekeend", "next weekend")
+    if normalized in {"today", "dzis", "dzisiaj"}:
+        return "today"
+    if normalized in {"tomorrow", "jutro"}:
+        return "tomorrow"
+    if normalized in {"weekend", "wekend", "weekeend"}:
+        return "weekend"
+    if normalized in {"next weekend", "nastepny weekend", "przyszly weekend", "kolejny weekend"}:
+        return "next_weekend"
+    return {
+        "poniedzialek": "monday",
+        "poniedzialku": "monday",
+        "monday": "monday",
+        "wtorek": "tuesday",
+        "wtorku": "tuesday",
+        "tuesday": "tuesday",
+        "sroda": "wednesday",
+        "srode": "wednesday",
+        "wednesday": "wednesday",
+        "czwartek": "thursday",
+        "czwartku": "thursday",
+        "thursday": "thursday",
+        "piatek": "friday",
+        "piatku": "friday",
+        "friday": "friday",
+        "sobota": "saturday",
+        "sobote": "saturday",
+        "saturday": "saturday",
+        "niedziela": "sunday",
+        "niedziele": "sunday",
+        "sunday": "sunday",
+    }.get(normalized)
+
+
+def _normalize_tool_granularity(value: str) -> str | None:
+    normalized = _ascii_key(value)
+    if normalized in {"daily", "dzienna", "dziennie", "dzien"}:
+        return "daily"
+    if normalized in {"hourly", "godzinowa", "godzinowo", "godzinna"}:
+        return "hourly"
+    return None
+
+
+def _normalize_tool_focus(value: str | None) -> str | None:
+    if value is None or not value.strip():
         return None
-    confidence = raw.get("confidence")
-    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or confidence < 0.55:
-        return None
-    location = raw.get("location")
-    return location.strip() if isinstance(location, str) and location.strip() else None
+    normalized = _ascii_key(value)
+    if normalized in {"temperature", "temperatura", "temp", "stopnie"}:
+        return "temperature"
+    return None
+
+
+def _tool_clarification(question: str) -> dict[str, Any]:
+    return {"status": "needs_clarification", "message": question}
+
+
+def _tool_invalid(field: str, message: str) -> dict[str, Any]:
+    return {"status": "invalid_request", "field": field, "message": message}
+
+
+def _tool_not_found(location: str) -> dict[str, Any]:
+    return {"status": "not_found", "message": f"Nie znalazłem danych pogodowych dla lokalizacji: {location}."}

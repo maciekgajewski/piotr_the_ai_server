@@ -9,8 +9,7 @@ from zoneinfo import ZoneInfo
 from aiohttp import ClientSession, ClientTimeout
 
 from ai_server.domain_agents.weather.interfaces import CurrentWeather, WeatherForecast, WeatherForecastRequest, WeatherNowRequest
-from ai_server.domain_agents.weather.parser import ascii_fold
-from ai_server.utils.text import normalize_text
+from ai_server.utils.text import ascii_fold, normalize_text
 
 
 IMGW_BASE_URL = "https://danepubliczne.imgw.pl/api/data/synop"

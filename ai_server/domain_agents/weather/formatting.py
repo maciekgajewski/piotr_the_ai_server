@@ -5,8 +5,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from ai_server.domain_agents.weather.interfaces import CurrentWeather, DailyForecast, HourlyForecast, WeatherForecast
-from ai_server.domain_agents.weather.parser import ascii_fold
-from ai_server.utils.text import normalize_text
+from ai_server.utils.text import ascii_fold, normalize_text
 
 
 WEEKDAYS = ("poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela")

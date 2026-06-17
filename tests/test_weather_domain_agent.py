@@ -1,10 +1,13 @@
 import asyncio
 import datetime as dt
+import json
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from ai_server.agent_loop import AgentReply
 from ai_server.domain_agents.weather import (
     CurrentWeather,
     HourlyForecast,
@@ -13,15 +16,16 @@ from ai_server.domain_agents.weather import (
     WeatherForecastRequest,
     WeatherNowRequest,
 )
+from ai_server.domain_agents.weather.agent import WeatherDomainToolSet
+from ai_server.domain_agents.weather.fast_lane import weather_task_from_utterance
 from ai_server.domain_agents.weather.formatting import format_current_weather
-from ai_server.domain_agents.weather.parser import parse_weather_command, weather_task_from_utterance
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider, _station_slug
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
 from ai_server.interfaces import Conversation
 from ai_server.orchestrator.known_utterances import known_utterance_task
 
 
-def test_weather_short_path_creates_rich_current_temperature_task() -> None:
+def test_weather_fast_lane_creates_current_temperature_task() -> None:
     task = weather_task_from_utterance("Jaka jest temperatura?")
 
     assert task == {
@@ -38,13 +42,26 @@ def test_weather_short_path_creates_rich_current_temperature_task() -> None:
     }
 
 
-def test_weather_short_path_creates_rich_weekend_forecast_task() -> None:
-    task = weather_task_from_utterance("Jaka pogoda na wekeend?")
+def test_weather_fast_lane_creates_weekend_forecast_task() -> None:
+    task = weather_task_from_utterance("Jaka pogoda w ten weekend?")
 
     assert task["command"]["tool"] == "get_weather_forecast"
     assert task["command"]["horizon"] == "weekend"
     assert task["command"]["granularity"] == "daily"
-    assert task["command"]["query"] == "Jaka pogoda na wekeend?"
+    assert task["command"]["query"] == "Jaka pogoda w ten weekend?"
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "Ile stopni?",
+        "Jaka pogoda w ten weekend w Gdańsku?",
+        "Czy dziś wieczorem będzie deszcz?",
+        "Jaka pogoda na wekeend?",
+    ],
+)
+def test_weather_fast_lane_avoids_ambiguous_or_location_queries(utterance: str) -> None:
+    assert weather_task_from_utterance(utterance) is None
 
 
 @pytest.mark.parametrize(
@@ -69,6 +86,15 @@ def test_weather_short_path_creates_rich_weekend_forecast_task() -> None:
                 "granularity": "daily",
             },
         ),
+        (
+            "jaka pogoda w ten weekend",
+            {
+                "tool": "get_weather_forecast",
+                "query": "jaka pogoda w ten weekend",
+                "horizon": "weekend",
+                "granularity": "daily",
+            },
+        ),
     ],
 )
 def test_weather_known_utterances_are_explicit_rich_tasks(utterance: str, expected_command: dict[str, str]) -> None:
@@ -76,42 +102,6 @@ def test_weather_known_utterances_are_explicit_rich_tasks(utterance: str, expect
 
     assert task["domain"] == "weather"
     assert task["command"] == expected_command
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("weekend", "weekend"),
-        ("next_weekeend", "next_weekend"),
-        ("sobotę", "saturday"),
-        ("piątek", "friday"),
-    ],
-)
-def test_weather_parser_normalizes_horizon_variants(raw: str, expected: str) -> None:
-    parsed = parse_weather_command(
-        {"tool": "get_weather_forecast", "query": "pogoda", "horizon": raw},
-        default_location="Wrocław",
-    )
-
-    assert parsed.horizon == expected
-    assert parsed.location == "Wrocław"
-
-
-def test_weather_parser_corrects_now_temperature_hint_for_evening_rain_query() -> None:
-    parsed = parse_weather_command(
-        {
-            "tool": "get_weather_now",
-            "query": "Czy dziś wieczorem będzie deszcz?",
-            "focus": "temperature",
-        },
-        default_location="Wrocław",
-    )
-
-    assert parsed.tool == "get_weather_forecast"
-    assert parsed.horizon == "today"
-    assert parsed.granularity == "hourly"
-    assert parsed.focus is None
-    assert not parsed.simple
 
 
 def test_imgw_provider_resolves_wroclaw_strachowice_alias() -> None:
@@ -217,7 +207,7 @@ def test_weather_domain_agent_formats_simple_current_weather() -> None:
         location="Wrocław",
         cache_dir=Path("/tmp/piotr-test-cache"),
         providers=[provider],
-        ollama_client=FakeOllamaClient(),
+        ollama_connection=FakeOllamaConnection(),
     )
 
     result = asyncio.run(
@@ -234,9 +224,85 @@ def test_weather_domain_agent_formats_simple_current_weather() -> None:
     assert provider.now_requests == [WeatherNowRequest(location="Wrocław", focus=None)]
 
 
-def test_weather_domain_agent_uses_forecast_for_evening_rain_even_when_planner_asked_now() -> None:
-    forecast = WeatherForecast(
+def test_weather_domain_agent_runs_agent_loop_for_non_fast_lane_query() -> None:
+    loop_factory = FakeLoopFactory(
+        json.dumps(
+            {
+                "status": "ok",
+                "text": "Wieczorem we Wrocławiu prawdopodobnie będzie deszcz.",
+                "needs_clarification": False,
+                "clarification_question": None,
+                "entities": ["weather.Wrocław"],
+            },
+            ensure_ascii=False,
+        )
+    )
+    agent = WeatherDomainAgent(
+        model="qwen3:4b-instruct",
+        ollama_url="http://ollama:11434",
+        fallback_model="qwen3:4b-fallback",
+        fallback_backoff_seconds=120,
         location="Wrocław",
+        cache_dir=Path("/tmp/piotr-test-cache"),
+        providers=[FakeWeatherProvider()],
+        loop_factory=loop_factory.factory,
+        ollama_connection=FakeOllamaConnection(),
+    )
+
+    result = asyncio.run(
+        agent.run_task(
+            Conversation(conversation_id="c1", attributes={}),
+            {
+                "id": "t1",
+                "domain": "weather",
+                "command": {
+                    "tool": "get_weather_now",
+                    "query": "Czy dziś wieczorem będzie deszcz?",
+                    "focus": "temperature",
+                },
+            },
+            {"active_domain": "weather"},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["final_reply_mode"] == "verbatim"
+    assert result["text"] == "Wieczorem we Wrocławiu prawdopodobnie będzie deszcz."
+    assert loop_factory.config.model == "qwen3:4b-instruct"
+    assert loop_factory.config.ollama_url == "http://ollama:11434"
+    assert loop_factory.config.fallback_model == "qwen3:4b-fallback"
+    assert loop_factory.config.fallback_backoff_seconds == 120
+    assert isinstance(loop_factory.tools, WeatherDomainToolSet)
+    payload = json.loads(loop_factory.loop.user_message)
+    assert payload["task"]["command"]["query"] == "Czy dziś wieczorem będzie deszcz?"
+    assert payload["conversation"]["server_location"] == "Wrocław"
+
+
+def test_weather_domain_agent_rejects_non_json_agent_loop_reply() -> None:
+    agent = WeatherDomainAgent(
+        model="qwen3:4b-instruct",
+        location="Wrocław",
+        cache_dir=Path("/tmp/piotr-test-cache"),
+        providers=[FakeWeatherProvider()],
+        loop_factory=FakeLoopFactory("to nie jest json").factory,
+        ollama_connection=FakeOllamaConnection(),
+    )
+
+    result = asyncio.run(
+        agent.run_task(
+            Conversation(conversation_id="c1", attributes={}),
+            {"id": "t1", "domain": "weather", "command": {"query": "Czy brać parasol?"}},
+            {},
+        )
+    )
+
+    assert result["status"] == "failed"
+    assert result["text"] == "Nie mogę teraz przygotować odpowiedzi pogodowej."
+
+
+def test_weather_toolset_fetches_hourly_forecast_with_canonical_location() -> None:
+    forecast = WeatherForecast(
+        location="Gdańsk",
         provider="fake",
         timezone="Europe/Warsaw",
         horizon="today",
@@ -256,38 +322,23 @@ def test_weather_domain_agent_uses_forecast_for_evening_rain_even_when_planner_a
         ),
     )
     provider = FakeWeatherProvider(forecast=forecast)
-    ollama = ReplyingOllamaClient("Wieczorem we Wrocławiu prawdopodobnie będzie deszcz.")
-    agent = WeatherDomainAgent(
-        model="qwen3:4b-instruct",
-        location="Wrocław",
-        cache_dir=Path("/tmp/piotr-test-cache"),
-        providers=[provider],
-        ollama_client=ollama,
-    )
+    toolset = WeatherDomainToolSet([provider], default_location="Wrocław")
 
     result = asyncio.run(
-        agent.run_task(
-            Conversation(conversation_id="c1", attributes={}),
-            {
-                "id": "t1",
-                "domain": "weather",
-                "command": {
-                    "tool": "get_weather_now",
-                    "query": "Czy dziś wieczorem będzie deszcz?",
-                    "focus": "temperature",
-                },
-            },
-            {},
+        toolset.get_weather_forecast(
+            location="Gdańsk",
+            horizon="dzisiaj",
+            granularity="godzinowa",
         )
     )
 
     assert result["status"] == "ok"
-    assert result["text"] == "Wieczorem we Wrocławiu prawdopodobnie będzie deszcz."
-    assert provider.now_requests == []
-    assert provider.forecast_requests == [WeatherForecastRequest(location="Wrocław", horizon="today", granularity="hourly")]
+    assert result["kind"] == "forecast"
+    assert result["forecast"]["location"] == "Gdańsk"
+    assert provider.forecast_requests == [WeatherForecastRequest(location="Gdańsk", horizon="today", granularity="hourly")]
 
 
-def test_weather_domain_agent_canonicalizes_location_with_llm_after_provider_miss() -> None:
+def test_weather_toolset_reports_not_found_for_unknown_location() -> None:
     forecast = WeatherForecast(
         location="Szklarska Poręba",
         provider="fake",
@@ -299,40 +350,12 @@ def test_weather_domain_agent_canonicalizes_location_with_llm_after_provider_mis
         forecast=forecast,
         forecast_location="Szklarska Poręba",
     )
-    ollama = ReplyingOllamaClient('{"location":"Szklarska Poręba","confidence":0.88}')
-    agent = WeatherDomainAgent(
-        model="qwen3:4b-instruct",
-        location="Wrocław",
-        cache_dir=Path("/tmp/piotr-test-cache"),
-        providers=[provider],
-        ollama_client=ollama,
-    )
+    toolset = WeatherDomainToolSet([provider], default_location="Wrocław")
 
-    result = asyncio.run(
-        agent.run_task(
-            Conversation(conversation_id="c1", attributes={}),
-            {
-                "id": "t1",
-                "domain": "weather",
-                "command": {
-                    "tool": "get_weather_forecast",
-                    "query": "Jaka pogoda na weekend w Szkarskiej Porębie?",
-                    "location": "Szkarskiej Porębie",
-                    "horizon": "weekend",
-                    "granularity": "daily",
-                },
-            },
-            {},
-        )
-    )
+    result = asyncio.run(toolset.get_weather_forecast(location="Szkarskiej Porębie", horizon="weekend"))
 
-    assert result["status"] == "ok"
-    assert provider.forecast_requests == [
-        WeatherForecastRequest(location="Szkarskiej Porębie", horizon="weekend", granularity="daily"),
-        WeatherForecastRequest(location="Szklarska Poręba", horizon="weekend", granularity="daily"),
-    ]
-    payload = ollama.requests[0]["messages"][-1]["content"]
-    assert "Szkarskiej Porębie" in payload
+    assert result["status"] == "not_found"
+    assert provider.forecast_requests == [WeatherForecastRequest(location="Szkarskiej Porębie", horizon="weekend", granularity="daily")]
 
 
 def test_format_current_weather_temperature_focus() -> None:
@@ -420,22 +443,36 @@ class LocationSensitiveWeatherProvider:
         pass
 
 
-class FakeOllamaClient:
-    async def chat(self, payload: dict):
-        raise AssertionError("unexpected weather LLM call")
+class FakeLoopFactory:
+    def __init__(self, reply_text: str) -> None:
+        self.reply_text = reply_text
+        self.config = None
+        self.tools = None
+        self.loop = None
 
-    async def close(self) -> None:
+    def factory(self, config: Any, system_prompt: str, tools: Any, ollama_connection: Any) -> "FakeLoop":
+        self.config = config
+        self.tools = tools
+        self.loop = FakeLoop(self.reply_text)
+        return self.loop
+
+
+class FakeLoop:
+    def __init__(self, reply_text: str) -> None:
+        self._reply_text = reply_text
+        self.user_message = ""
+
+    async def __aenter__(self) -> "FakeLoop":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         pass
 
+    async def send_user_message(self, message: str) -> AgentReply:
+        self.user_message = message
+        return AgentReply(reply_text=self._reply_text, end_conversation=False)
 
-class ReplyingOllamaClient:
-    def __init__(self, reply: str) -> None:
-        self.reply = reply
-        self.requests = []
 
-    async def chat(self, payload: dict):
-        self.requests.append(payload)
-        return {"message": {"role": "assistant", "content": self.reply}}
-
+class FakeOllamaConnection:
     async def close(self) -> None:
         pass

@@ -9,3 +9,9 @@ def normalize_text(value: str) -> str:
         for character in value.lower()
     )
     return " ".join(without_punctuation.split())
+
+
+def ascii_fold(value: str) -> str:
+    value = value.translate(str.maketrans({"ł": "l", "Ł": "L"}))
+    folded = unicodedata.normalize("NFKD", value)
+    return "".join(character for character in folded if not unicodedata.combining(character))

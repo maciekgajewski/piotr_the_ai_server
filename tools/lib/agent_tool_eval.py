@@ -264,6 +264,13 @@ class FakeHomeAssistantConnection:
             {"status": "ok", "entity_ids": entity_ids, "volume_level": volume_level},
         )
 
+    async def media_player_shuffle_set(self, entity_ids: list[str], shuffle: bool) -> dict[str, Any]:
+        return await self._record_and_reply(
+            "media_player_shuffle_set",
+            {"entity_ids": entity_ids, "shuffle": shuffle},
+            {"status": "ok", "entity_ids": entity_ids, "shuffle": shuffle},
+        )
+
     async def media_player_volume_delta(self, entity_ids: list[str], delta: float) -> dict[str, Any]:
         results = []
         for entity_id in entity_ids:

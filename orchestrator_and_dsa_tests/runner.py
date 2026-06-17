@@ -622,7 +622,6 @@ async def _run_dsa_weather_case(case: TestCase, settings: dict[str, Any]) -> Cas
         location=settings["location"],
         cache_dir=Path(tempfile.gettempdir()),
         providers=[FakeWeatherProvider(current)],
-        ollama_client=FakeWeatherOllamaClient(),
     )
     result = CaseResult(case=case)
     try:

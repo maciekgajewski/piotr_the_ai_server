@@ -19,8 +19,7 @@ from ai_server.domain_agents.weather.interfaces import (
     WeatherForecastRequest,
     WeatherNowRequest,
 )
-from ai_server.domain_agents.weather.parser import ascii_fold
-from ai_server.utils.text import normalize_text
+from ai_server.utils.text import ascii_fold, normalize_text
 
 
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"

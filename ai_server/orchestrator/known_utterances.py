@@ -4,7 +4,7 @@ import copy
 
 from ai_server.domain_agents.interfaces import DomainTask
 from ai_server.domain_agents.media_player.parser import media_task_from_utterance
-from ai_server.domain_agents.weather.parser import weather_task_from_utterance
+from ai_server.domain_agents.weather.fast_lane import weather_task_from_utterance
 from ai_server.utils.text import normalize_text
 
 
