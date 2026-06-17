@@ -278,6 +278,41 @@ def test_weather_domain_agent_runs_agent_loop_for_non_fast_lane_query() -> None:
     assert payload["conversation"]["server_location"] == "Wrocław"
 
 
+def test_weather_domain_agent_removes_celsius_degree_symbol_from_agent_loop_reply() -> None:
+    loop_factory = FakeLoopFactory(
+        json.dumps(
+            {
+                "status": "ok",
+                "text": "W Gdańsku będzie około 20°C i pochmurno.",
+                "needs_clarification": False,
+                "clarification_question": None,
+                "entities": ["weather.Gdańsk"],
+            },
+            ensure_ascii=False,
+        )
+    )
+    agent = WeatherDomainAgent(
+        model="qwen3:4b-instruct",
+        location="Wrocław",
+        cache_dir=Path("/tmp/piotr-test-cache"),
+        providers=[FakeWeatherProvider()],
+        loop_factory=loop_factory.factory,
+        ollama_connection=FakeOllamaConnection(),
+    )
+
+    result = asyncio.run(
+        agent.run_task(
+            Conversation(conversation_id="c1", attributes={}),
+            {"id": "t1", "domain": "weather", "command": {"query": "Jaka pogoda w Gdańsku?"}},
+            {},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["text"] == "W Gdańsku będzie około 20 stopni i pochmurno."
+    assert "°" not in result["text"]
+
+
 def test_weather_domain_agent_rejects_non_json_agent_loop_reply() -> None:
     agent = WeatherDomainAgent(
         model="qwen3:4b-instruct",

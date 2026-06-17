@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Annotated, Any, Callable
 
@@ -364,11 +365,19 @@ def _parse_domain_reply(content: str) -> dict[str, Any]:
         raise ValueError("Weather DSA reply entities must be a list of strings")
 
     parsed = dict(raw)
+    parsed["text"] = _sanitize_reply_text(text)
     parsed["needs_clarification"] = needs_clarification
     parsed["clarification_question"] = clarification_question
     parsed["entities"] = entities
     parsed.setdefault("final_reply_mode", "verbatim")
     return parsed
+
+
+def _sanitize_reply_text(text: str) -> str:
+    sanitized = re.sub(r"(?<=\d)\s*(?:°\s*C|℃|°)", " stopni", text, flags=re.IGNORECASE)
+    sanitized = re.sub(r"(?:°\s*C|℃)", "stopni", sanitized, flags=re.IGNORECASE)
+    sanitized = sanitized.replace("°", "")
+    return " ".join(sanitized.split())
 
 
 def _ascii_key(value: str) -> str:

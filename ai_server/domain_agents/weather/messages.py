@@ -29,6 +29,7 @@ Return only compact valid JSON with this shape:
 When a tool returns status="ok", prefer its formatted_text for simple weather or forecast questions.
 For advice/action questions, use the returned weather JSON to answer briefly and practically.
 If source data is insufficient, say what is missing.
+Do not use the Celsius degree symbol; write temperatures as Polish words, for example "20 stopni".
 Use status="needs_clarification" only when another user turn is needed.
 Use status="not_found" when tools found no weather data for the requested place.
 Set final_reply_mode="verbatim" so the orchestrator preserves the text.
