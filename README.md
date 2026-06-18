@@ -1,4 +1,4 @@
-# The Piotr project
+# The "Piotr" project
 
 A project to turn this computer into a AI server
 
@@ -6,10 +6,15 @@ A project to turn this computer into a AI server
 
 - Solid, stable server, with logs, monitoring, resiliency
 - Uses local models on local GPU as much as possible
-- Supports multiple sattelites of various types
+- Supports multiple satellites of various types
 - Capable of multiple actions using dynamic, extensible tool system
 - Works in simple wakeword-utterance-reply mode, but can also switch to conversational mode
-- Recognise users by voice
+- Recognize users by voice
+
+# Naming
+
+- "Piotr" is the project and computer name
+- The AI assistant is called "Ryszard"
 
 ## Architecture decisions
 
@@ -17,7 +22,7 @@ A project to turn this computer into a AI server
 
 ## Directory
 
-- notes/ - notes from various endavours
+- notes/ - notes from various endeavors
 - firmware/esphome/ - ESP32-S3-BOX-3 satellite firmware templates
 - docs/ - architecture and setup notes
 
