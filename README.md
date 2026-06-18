@@ -11,7 +11,7 @@ A project to turn this computer into a AI server
 - Works in simple wakeword-utterance-reply mode, but can also switch to conversational mode
 - Recognize users by voice
 
-# Naming
+### Naming
 
 - "Piotr" is the project and computer name
 - The AI assistant is called "Ryszard"
