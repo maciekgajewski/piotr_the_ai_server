@@ -385,6 +385,57 @@ def test_chat_client_help_command_prints_available_commands(capsys) -> None:
     assert chat_client.CLIENT_TEXT_STYLE in output
 
 
+def test_chat_client_initial_prompt_is_connecting() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        input_session = chat_client._InteractiveInputSession(loop)
+
+        assert input_session._current_prompt() == chat_client.CONNECTING_PROMPT
+    finally:
+        loop.close()
+
+
+def test_interactive_chat_uses_connecting_prompt_before_first_connect(monkeypatch) -> None:
+    class FakeClientSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    class FakeInputSession:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def set_prompt(self, prompt: str) -> None:
+            self.prompts.append(prompt)
+
+    async def fake_connect_interactive(
+        session,
+        options,
+        input_session,
+        stop_event,
+        reconnect_delay,
+        connection_prompt,
+    ):
+        assert connection_prompt == chat_client.CONNECTING_PROMPT
+        raise chat_client.ChatExited()
+
+    async def run() -> list[str]:
+        input_session = FakeInputSession()
+        monkeypatch.setattr(chat_client, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(chat_client, "_connect_interactive", fake_connect_interactive)
+
+        await chat_client._run_interactive_chat(
+            ChatClientOptions(url="ws://127.0.0.1:2137/chat", user=None, area=None),
+            input_session,
+            asyncio.Event(),
+        )
+        return input_session.prompts
+
+    assert asyncio.run(run()) == [chat_client.CONNECTING_PROMPT]
+
+
 def test_chat_client_accepts_area_option() -> None:
     args = chat_client.parse_args(["--area", "office", "ws://127.0.0.1:2137/chat"])
 

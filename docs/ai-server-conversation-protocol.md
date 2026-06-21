@@ -205,6 +205,7 @@ The websocket chat client sends `SessionAttributes` immediately after connecting
 
 Interactive prompts are:
 
+- `connecting> `
 - `waiting for new conversation> `
 - `waiting for next message> `
 - `waiting for server> `

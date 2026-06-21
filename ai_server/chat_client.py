@@ -23,6 +23,7 @@ from ai_server.ws_client_common import send_user_text
 WAITING_FOR_NEW_CONVERSATION_PROMPT = "waiting for new conversation> "
 WAITING_FOR_NEXT_MESSAGE_PROMPT = "waiting for next message> "
 WAITING_FOR_SERVER_PROMPT = "waiting for server> "
+CONNECTING_PROMPT = "connecting> "
 DISCONNECTED_PROMPT = "disconnected; reconnecting> "
 RECONNECT_INITIAL_DELAY_SECONDS = 0.5
 RECONNECT_MAX_DELAY_SECONDS = 5.0
@@ -87,10 +88,11 @@ async def _run_interactive_chat(
     stop_event: asyncio.Event,
 ) -> None:
     reconnect_delay = RECONNECT_INITIAL_DELAY_SECONDS
+    connection_prompt = CONNECTING_PROMPT
 
     async with ClientSession() as session:
         while True:
-            input_session.set_prompt(DISCONNECTED_PROMPT)
+            input_session.set_prompt(connection_prompt)
             try:
                 websocket = await _connect_interactive(
                     session,
@@ -98,6 +100,7 @@ async def _run_interactive_chat(
                     input_session,
                     stop_event,
                     reconnect_delay,
+                    connection_prompt,
                 )
             except ChatExited:
                 return
@@ -110,6 +113,7 @@ async def _run_interactive_chat(
                 await _run_interactive_connection(websocket, input_session, stop_event)
                 return
             except (WebsocketDisconnected, ClientError, OSError) as exc:
+                connection_prompt = DISCONNECTED_PROMPT
                 input_session.set_prompt(DISCONNECTED_PROMPT)
                 _print_client_message(f"Connection lost: {exc}.")
                 reconnect_delay = min(reconnect_delay * 2, RECONNECT_MAX_DELAY_SECONDS)
@@ -123,9 +127,10 @@ async def _connect_interactive(
     input_session: "_InteractiveInputSession",
     stop_event: asyncio.Event,
     reconnect_delay: float,
+    connection_prompt: str,
 ):
     while True:
-        input_session.set_prompt(DISCONNECTED_PROMPT)
+        input_session.set_prompt(connection_prompt)
         _print_client_message(f"Connecting to {options.url} ...")
         connect_task = asyncio.create_task(asyncio.wait_for(session.ws_connect(options.url), CONNECT_TIMEOUT_SECONDS))
         line_task = asyncio.create_task(input_session.read_line())
@@ -151,6 +156,8 @@ async def _connect_interactive(
             try:
                 return connect_task.result()
             except (asyncio.TimeoutError, ClientError, OSError) as exc:
+                connection_prompt = DISCONNECTED_PROMPT
+                input_session.set_prompt(connection_prompt)
                 _print_client_message(f"Connection failed: {exc}. Retrying in {reconnect_delay:.1f}s.")
                 if await _sleep_or_handle_offline_input(input_session, stop_event, reconnect_delay):
                     raise ChatExited()
@@ -350,7 +357,7 @@ class _InteractiveInputSession:
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
         self._lines: asyncio.Queue[str | None] = asyncio.Queue()
-        self._prompt = DISCONNECTED_PROMPT
+        self._prompt = CONNECTING_PROMPT
         self._prompt_lock = threading.Lock()
         self._thread: threading.Thread | None = None
 
