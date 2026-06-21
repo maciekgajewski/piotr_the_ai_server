@@ -65,6 +65,15 @@ class FollowUpAgent:
         pass
 
 
+class FakeUserSettingsProvider:
+    def __init__(self) -> None:
+        self.users = []
+
+    async def settings_for_user(self, user: str | None) -> dict:
+        self.users.append(user)
+        return {"media": {"playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"}}}
+
+
 def test_websocket_shutdown_closes_active_websockets() -> None:
     async def run() -> None:
         app = create_app(
@@ -82,6 +91,90 @@ def test_websocket_shutdown_closes_active_websockets() -> None:
         assert websocket.close_calls == [(WSCloseCode.GOING_AWAY, b"server shutdown")]
 
     asyncio.run(run())
+
+
+def test_websocket_applies_user_settings_from_provider_to_conversation() -> None:
+    async def run() -> None:
+        port = _unused_port()
+        agent = CapturingAgent()
+        provider = FakeUserSettingsProvider()
+        config = Config(
+            agent=AgentConfig(type="capturing", options={}),
+            websocket=WebsocketConfig(host="127.0.0.1", port=port),
+        )
+        app = create_app(config, agent, user_settings_provider=provider)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
+        await site.start()
+
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"user": "Maciek"})))
+
+                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+
+                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
+                    for event in text_message_to_events(TextMessage(text="hello")):
+                        await websocket.send_str(endpoint_event_to_json(event))
+
+                    assert await _receive_session_event(websocket) == MessageBegin()
+                    assert await _receive_session_event(websocket) == MessageFragment(text="reply:hello")
+                    assert await _receive_session_event(websocket) == MessageEnd()
+                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+        finally:
+            await runner.cleanup()
+
+        assert provider.users == ["Maciek"]
+        assert agent.conversations[0].user_settings == {
+            "media": {"playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"}}
+        }
+
+    asyncio.run(run())
+
+
+def test_status_reports_user_settings_provider_without_private_settings() -> None:
+    class StatusProvider(FakeUserSettingsProvider):
+        def status(self) -> dict:
+            return {
+                "mode": "home_assistant",
+                "mapped_users": ["Maciek"],
+                "last_success_by_user": {"Maciek": "2026-06-18T00:00:00+00:00"},
+                "failed_users": [],
+                "unmapped_users": [],
+            }
+
+    async def run() -> dict:
+        port = _unused_port()
+        config = Config(
+            agent=AgentConfig(type="single_reply", options={}),
+            websocket=WebsocketConfig(host="127.0.0.1", port=port),
+        )
+        app = create_app(config, SingleReplyAgent(), user_settings_provider=StatusProvider())
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
+        await site.start()
+
+        try:
+            async with ClientSession() as session:
+                async with session.get(f"http://127.0.0.1:{port}/api/status") as response:
+                    assert response.status == 200
+                    return await response.json()
+        finally:
+            await runner.cleanup()
+
+    result = asyncio.run(run())
+
+    assert result["user_settings"] == {
+        "mode": "home_assistant",
+        "mapped_users": ["Maciek"],
+        "last_success_by_user": {"Maciek": "2026-06-18T00:00:00+00:00"},
+        "failed_users": [],
+        "unmapped_users": [],
+    }
+    assert "playlist_aliases" not in str(result)
 
 
 def test_batch_websocket_client_drives_interrogator_flow(capsys) -> None:

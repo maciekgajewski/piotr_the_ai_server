@@ -12,6 +12,7 @@ from ai_server.agent import create_agent
 from ai_server.config import Config, LOG_LEVELS, load_config_from_yaml
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 from ai_server.microphones import init_mics
+from ai_server.user_settings import create_user_settings_provider
 from ai_server.websocket_server import create_app
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
@@ -69,6 +70,10 @@ async def run_server(config: Config, ollama_url: str) -> None:
         home_assistant_connection = create_home_assistant_connection(config)
         if home_assistant_connection is not None:
             await home_assistant_connection.start()
+        user_settings_provider = create_user_settings_provider(
+            home_assistant_connection=home_assistant_connection,
+            fallback_settings=config.users,
+        )
 
         agent = await create_agent(
             config.agent,
@@ -86,8 +91,9 @@ async def run_server(config: Config, ollama_url: str) -> None:
             agent,
             default_user=config.default_user,
             user_settings=config.users,
+            user_settings_provider=user_settings_provider,
         )
-        app = create_app(config, agent)
+        app = create_app(config, agent, user_settings_provider=user_settings_provider)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, config.websocket.host, config.websocket.port)

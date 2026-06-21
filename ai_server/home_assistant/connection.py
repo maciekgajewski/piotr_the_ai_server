@@ -376,6 +376,16 @@ class HomeAssistantConnection:
             "content_type": _first_optional_string(attributes.get("media_content_type")),
         }
 
+    async def get_ryszard_user_settings(self, ha_user_id: str) -> dict[str, Any]:
+        async with _HomeAssistantWebSocket(self._options, self._logger, log_traffic=False) as client:
+            result = await client.command({"type": "ryszard/settings/get_for_user", "user_id": ha_user_id})
+        if not isinstance(result, dict):
+            raise ValueError("Ryszard settings response must be a mapping")
+        settings = result.get("settings")
+        if not isinstance(settings, dict):
+            raise ValueError("Ryszard settings response must contain settings mapping")
+        return settings
+
     def system_prompt_context(self, *, user: str | None, area: str | None) -> str:
         inventory = self._inventory
         area_text = area or "unknown"

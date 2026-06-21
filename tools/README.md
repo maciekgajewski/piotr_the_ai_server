@@ -29,6 +29,22 @@ tools/ollama-cloud-setup-test.sh --services-config config/services.env --model M
 
 See [../docs/ollama-cloud-models.md](../docs/ollama-cloud-models.md).
 
+## Deploy Ryszard Home Assistant Integration
+
+Uploads the Ryszard custom integration to Home Assistant over SSH.
+
+```bash
+tools/deploy-ryszard-ha.sh
+```
+
+By default it uploads to `root@homeassistant.local:/config/custom_components/ryszard`
+and does not restart Home Assistant. Run a config check or restart explicitly:
+
+```bash
+tools/deploy-ryszard-ha.sh --check
+tools/deploy-ryszard-ha.sh --restart
+```
+
 ## Probe API
 
 Checks that Piotr can connect to the Box over the encrypted ESPHome native API

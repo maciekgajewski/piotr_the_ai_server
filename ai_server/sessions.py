@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -12,6 +11,7 @@ from ai_server.interfaces import CommunicationEndpoint, Conversation, Conversati
 from ai_server.messages import ConversationEnded, ConversationInputEvent, ConversationOutputEvent, MessageBegin, MessageEnd
 from ai_server.messages import MessageFragment, NewConversation, RequestFollowUp, SessionAttributes, TextMessage
 from ai_server.messages import WaitForNewConversation, text_message_to_events
+from ai_server.user_settings import ConfigUserSettingsProvider, UserSettingsProvider
 
 
 @dataclass
@@ -22,11 +22,14 @@ class Session:
     require_session_attributes: bool = False
     default_user: str | None = None
     user_settings: dict[str, dict[str, Any]] | None = None
+    user_settings_provider: UserSettingsProvider | None = None
 
     def __post_init__(self) -> None:
         self._logger = logging.getLogger(f"{__name__}.Session[{self.session_id}]")
         self.attributes = dict(self.attributes or {})
         self.user_settings = dict(self.user_settings or {})
+        if self.user_settings_provider is None:
+            self.user_settings_provider = ConfigUserSettingsProvider(self.user_settings)
 
     async def run(self, agent: Agent) -> None:
         try:
@@ -73,7 +76,8 @@ class Session:
         attributes = _merge_attributes(self.attributes or {}, event.attributes)
         if not attributes.get("user") and self.default_user:
             attributes["user"] = self.default_user
-        settings = _user_settings_for(attributes.get("user"), self.user_settings or {})
+        assert self.user_settings_provider is not None
+        settings = await self.user_settings_provider.settings_for_user(attributes.get("user"))
         return Conversation(
             conversation_id=str(uuid.uuid4()),
             attributes=attributes,
@@ -104,6 +108,7 @@ class SessionManager:
         session_id: str | None = None,
         default_user: str | None = None,
         user_settings: dict[str, dict[str, Any]] | None = None,
+        user_settings_provider: UserSettingsProvider | None = None,
     ) -> None:
         session = Session(
             session_id=session_id or str(uuid.uuid4()),
@@ -112,6 +117,7 @@ class SessionManager:
             require_session_attributes=require_session_attributes,
             default_user=default_user,
             user_settings=user_settings,
+            user_settings_provider=user_settings_provider,
         )
         self._sessions[session.session_id] = session
         session._logger.info("new session")
@@ -231,16 +237,3 @@ def _merge_attributes(base: dict[str, str], overrides: dict[str, str]) -> dict[s
     merged = dict(base)
     merged.update(overrides)
     return merged
-
-
-def _user_settings_for(user: str | None, user_settings: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    if not user:
-        return {}
-    settings = user_settings.get(user)
-    if settings is None:
-        normalized_user = user.casefold()
-        for candidate_user, candidate_settings in user_settings.items():
-            if candidate_user.casefold() == normalized_user:
-                settings = candidate_settings
-                break
-    return copy.deepcopy(settings) if isinstance(settings, dict) else {}

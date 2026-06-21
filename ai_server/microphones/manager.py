@@ -22,6 +22,7 @@ from ai_server.sessions import Session
 from ai_server.speaker_recognition.client import SpeakerRecognitionAudioFormat, SpeakerRecognitionClient
 from ai_server.speaker_recognition.client import SpeakerRecognitionResult, SpeakerRecognitionStream
 from ai_server.speaker_recognition.client import voice_profiles_from_users
+from ai_server.user_settings import UserSettingsProvider
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class MicrophoneManager:
         microphone_follow_up_timeouts: dict[str, float] | None = None,
         default_user: str | None = None,
         user_settings: dict[str, dict[str, Any]] | None = None,
+        user_settings_provider: UserSettingsProvider | None = None,
         speaker_recognition: SpeakerRecognitionClient | None = None,
     ) -> None:
         self._microphones = microphones
@@ -52,6 +54,7 @@ class MicrophoneManager:
         self._microphone_follow_up_timeouts = dict(microphone_follow_up_timeouts or {})
         self._default_user = default_user
         self._user_settings = dict(user_settings or {})
+        self._user_settings_provider = user_settings_provider
         self._speaker_recognition = speaker_recognition or SpeakerRecognitionClient(
             url=None,
             timeout_seconds=1.0,
@@ -97,6 +100,7 @@ class MicrophoneManager:
             attributes=attributes,
             default_user=self._default_user,
             user_settings=self._user_settings,
+            user_settings_provider=self._user_settings_provider,
         )
         session_task = asyncio.create_task(session.run(self._agent))
         availability_logger = _MicrophoneAvailabilityLogger(logger)
@@ -508,6 +512,7 @@ async def init_mics(
     *,
     default_user: str | None = None,
     user_settings: dict[str, dict[str, Any]] | None = None,
+    user_settings_provider: UserSettingsProvider | None = None,
 ) -> MicrophoneManager | None:
     if not mic_configs:
         return None
@@ -526,6 +531,7 @@ async def init_mics(
         },
         default_user=default_user,
         user_settings=user_settings,
+        user_settings_provider=user_settings_provider,
         speaker_recognition=SpeakerRecognitionClient(
             url=speaker_recognition_config.url,
             timeout_seconds=speaker_recognition_config.timeout_seconds,

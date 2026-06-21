@@ -8,6 +8,7 @@ server:
 default_user: Maciek
 users:
   Maciek:
+    home_assistant_user_id: 01HY3C67GQ70R6E7M5F9Q6B7CZ
     voice_profile: /home/maciek/user_voice_data/maciek/profile/speaker_profile.npz
     media:
       liked_songs_media_id: library://playlist/7

@@ -112,6 +112,25 @@ agent:
     )
 
 
+def test_load_config_with_user_home_assistant_user_id(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+users:
+  Maciek:
+    home_assistant_user_id: 01HY3C67GQ70R6E7M5F9Q6B7CZ
+websocket:
+  port: 2137
+agent:
+  type: echo
+""",
+    )
+
+    config = load_config_from_yaml(config_path)
+
+    assert config.users["Maciek"]["home_assistant_user_id"] == "01HY3C67GQ70R6E7M5F9Q6B7CZ"
+
+
 def test_load_config_with_speaker_recognition_and_voice_profile(tmp_path: Path) -> None:
     config_path = write_config(
         tmp_path,
@@ -519,6 +538,18 @@ agent:
         ("default_user: ''\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "default_user must be a non-empty string"),
         ("users: []\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "users must be a mapping"),
         ("users:\n  Maciek: []\nwebsocket:\n  port: 2137\nagent:\n  type: echo", "users.Maciek must be a mapping"),
+        (
+            "users:\n  Maciek:\n    home_assistant_user_id: ''\nwebsocket:\n  port: 2137\nagent:\n  type: echo",
+            "users.Maciek.home_assistant_user_id must be a non-empty string when provided",
+        ),
+        (
+            "users:\n  Maciek:\n    home_assistant_user_id: 123\nwebsocket:\n  port: 2137\nagent:\n  type: echo",
+            "users.Maciek.home_assistant_user_id must be a non-empty string when provided",
+        ),
+        (
+            "home_assistant_user_settings: {}\nwebsocket:\n  port: 2137\nagent:\n  type: echo",
+            "home_assistant_user_settings has moved to users.<user>.home_assistant_user_id",
+        ),
         ("websocket:\n  port: 2137\nagent:\n  type: echo\nstt: []", "stt must be a mapping"),
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  device: nope",

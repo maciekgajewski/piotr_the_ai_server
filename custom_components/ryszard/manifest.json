@@ -1,0 +1,9 @@
+{
+  "domain": "ryszard",
+  "name": "Ryszard",
+  "codeowners": [],
+  "config_flow": false,
+  "documentation": "https://github.com/maciek/piotr",
+  "iot_class": "local_push",
+  "version": "0.1.0"
+}

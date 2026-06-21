@@ -124,6 +124,8 @@ def load_config_from_yaml(path: str | Path) -> Config:
         raw_config = {}
     if not isinstance(raw_config, dict):
         raise ValueError("config must be a YAML mapping")
+    if "home_assistant_user_settings" in raw_config:
+        raise ValueError("home_assistant_user_settings has moved to users.<user>.home_assistant_user_id")
 
     websocket_config = raw_config.get("websocket")
     if not isinstance(websocket_config, dict):
@@ -206,6 +208,11 @@ def _parse_users_config(raw_config: Any) -> dict[str, dict[str, Any]]:
             raise ValueError("users keys must be non-empty strings")
         if not isinstance(settings, dict):
             raise ValueError(f"users.{user} must be a mapping")
+        home_assistant_user_id = settings.get("home_assistant_user_id")
+        if home_assistant_user_id is not None and (
+            not isinstance(home_assistant_user_id, str) or not home_assistant_user_id
+        ):
+            raise ValueError(f"users.{user}.home_assistant_user_id must be a non-empty string when provided")
         users[user] = settings
     return users
 

@@ -11,6 +11,7 @@ from ai_server.interfaces import CommunicationEndpoint, EndpointClosed
 from ai_server.messages import ConversationEnded, EndpointToSessionEvent, RequestFollowUp, SessionToEndpointEvent
 from ai_server.messages import endpoint_event_from_json, session_event_to_json
 from ai_server.sessions import SessionManager
+from ai_server.user_settings import UserSettingsProvider
 
 
 class WebsocketCommunicationEndpoint(CommunicationEndpoint):
@@ -67,6 +68,7 @@ def create_app(
     config: Config,
     agent: Agent,
     session_manager: SessionManager | None = None,
+    user_settings_provider: UserSettingsProvider | None = None,
 ) -> web.Application:
     manager = session_manager or SessionManager(agent)
     app = web.Application()
@@ -91,6 +93,7 @@ def create_app(
                 require_session_attributes=True,
                 default_user=config.default_user,
                 user_settings=config.users,
+                user_settings_provider=user_settings_provider,
             )
             return websocket
         except AssertionError as exc:
@@ -107,7 +110,26 @@ def create_app(
                 message=b"server shutdown",
             )
 
+    async def status_handler(_request: web.Request) -> web.Response:
+        provider_status = {"mode": "config"}
+        if user_settings_provider is not None and hasattr(user_settings_provider, "status"):
+            provider_status = user_settings_provider.status()
+        return web.json_response(
+            {
+                "status": "ok",
+                "websocket": {
+                    "host": config.websocket.host,
+                    "port": config.websocket.port,
+                    "path": config.websocket.path,
+                    "active_connections": len(websockets),
+                    "active_sessions": manager.session_count,
+                },
+                "user_settings": provider_status,
+            }
+        )
+
     app.router.add_get(config.websocket.path, websocket_handler)
+    app.router.add_get("/api/status", status_handler)
     app.on_shutdown.append(close_websockets)
     app["session_manager"] = manager
     app["websockets"] = websockets
