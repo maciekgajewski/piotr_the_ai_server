@@ -34,7 +34,7 @@ def test_config_user_settings_provider_returns_deep_copy_case_insensitively() ->
     }
 
 
-def test_home_assistant_user_settings_provider_merges_ha_settings_over_config_without_config_aliases() -> None:
+def test_home_assistant_user_settings_provider_deep_merges_ha_settings_over_config() -> None:
     connection = FakeHomeAssistantConnection()
     connection.settings_by_ha_user_id["ha-user-1"] = {
         "media": {"playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"}}
@@ -46,7 +46,10 @@ def test_home_assistant_user_settings_provider_merges_ha_settings_over_config_wi
                 "home_assistant_user_id": "ha-user-1",
                 "media": {
                     "liked_songs_media_id": "library://playlist/7",
-                    "playlist_aliases": {"stale": "stale target"},
+                    "playlist_aliases": {
+                        "Muzyka do pracy": "stale target",
+                        "Do gotowania": "Dinner Jazz",
+                    },
                 }
             }
         },
@@ -57,8 +60,29 @@ def test_home_assistant_user_settings_provider_merges_ha_settings_over_config_wi
     assert settings == {
         "media": {
             "liked_songs_media_id": "library://playlist/7",
-            "playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"},
+            "playlist_aliases": {
+                "Muzyka do pracy": "Post Rock Focus",
+                "Do gotowania": "Dinner Jazz",
+            },
         }
+    }
+
+
+def test_home_assistant_user_settings_provider_keeps_config_aliases_when_ha_aliases_are_empty() -> None:
+    connection = FakeHomeAssistantConnection()
+    connection.settings_by_ha_user_id["ha-user-1"] = {"media": {"playlist_aliases": {}}}
+    provider = HomeAssistantUserSettingsProvider(
+        connection=connection,
+        fallback_settings={
+            "Maciek": {
+                "home_assistant_user_id": "ha-user-1",
+                "media": {"playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"}},
+            }
+        },
+    )
+
+    assert asyncio.run(provider.settings_for_user("Maciek")) == {
+        "media": {"playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"}}
     }
 
 

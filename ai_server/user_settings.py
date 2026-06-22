@@ -43,9 +43,7 @@ class HomeAssistantUserSettingsProvider(UserSettingsProvider):
         self._logger = logging.getLogger(f"{__name__}.HomeAssistantUserSettingsProvider")
 
     async def settings_for_user(self, user: str | None) -> dict[str, Any]:
-        base_settings = _strip_ha_owned_settings(
-            _strip_internal_settings(_user_settings_for(user, self._fallback_settings))
-        )
+        base_settings = _strip_internal_settings(_user_settings_for(user, self._fallback_settings))
         if not user:
             return base_settings
 
@@ -130,15 +128,6 @@ def _ha_user_ids_by_user(user_settings: dict[str, dict[str, Any]]) -> dict[str, 
 
 def _strip_internal_settings(settings: dict[str, Any]) -> dict[str, Any]:
     settings.pop(HOME_ASSISTANT_USER_ID_KEY, None)
-    return settings
-
-
-def _strip_ha_owned_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    media_settings = settings.get("media")
-    if isinstance(media_settings, dict):
-        media_settings.pop("playlist_aliases", None)
-        if not media_settings:
-            settings.pop("media", None)
     return settings
 
 
