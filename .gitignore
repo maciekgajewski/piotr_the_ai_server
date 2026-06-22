@@ -19,3 +19,4 @@ wakeword/*/generated_features_recorded/
 wakeword/*/negative_datasets/
 wakeword/*/trained_models/
 third_party/tensorflow-wheels/*.whl
+vendor/
