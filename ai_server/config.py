@@ -25,6 +25,8 @@ DEFAULT_SPEECH_PEAK_THRESHOLD = 500
 DEFAULT_POST_SPEECH_IGNORE_SECONDS = 1.0
 DEFAULT_CACHE_DIR = "~/.ai-server/cache/"
 DEFAULT_SPEAKER_RECOGNITION_TIMEOUT_SECONDS = 1.0
+DEFAULT_PROCESSING_UPDATE_INTERVAL_SECONDS = 5.0
+DEFAULT_PROCESSING_UPDATE_SPOKEN_CUES = ("Hmm...", "Myslę....", "momencik...")
 LOG_LEVELS = frozenset(("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"))
 STT_DEVICES = frozenset(("auto", "cuda", "cpu"))
 PCM16_MAX_POSITIVE = 32767
@@ -71,6 +73,12 @@ class ConversationConfig:
 
 
 @dataclass(frozen=True)
+class ProcessingUpdatesConfig:
+    interval_seconds: float = DEFAULT_PROCESSING_UPDATE_INTERVAL_SECONDS
+    spoken_cues: tuple[str, ...] = DEFAULT_PROCESSING_UPDATE_SPOKEN_CUES
+
+
+@dataclass(frozen=True)
 class SpeakerRecognitionConfig:
     url: str | None = None
     timeout_seconds: float = DEFAULT_SPEAKER_RECOGNITION_TIMEOUT_SECONDS
@@ -108,6 +116,7 @@ class Config:
     stt: SttConfig = SttConfig()
     tts: TtsConfig = TtsConfig()
     conversation: ConversationConfig = ConversationConfig()
+    processing_updates: ProcessingUpdatesConfig = ProcessingUpdatesConfig()
     speaker_recognition: SpeakerRecognitionConfig = SpeakerRecognitionConfig()
     microphone_defaults: MicrophoneDefaultsConfig = MicrophoneDefaultsConfig()
     microphones: tuple[MicrophoneConfig, ...] = ()
@@ -150,6 +159,7 @@ def load_config_from_yaml(path: str | Path) -> Config:
         stt=_parse_stt_config(raw_config.get("stt", {})),
         tts=_parse_tts_config(raw_config.get("tts", {})),
         conversation=conversation,
+        processing_updates=_parse_processing_updates_config(raw_config.get("processing_updates", {})),
         speaker_recognition=_parse_speaker_recognition_config(raw_config.get("speaker_recognition", {})),
         microphone_defaults=microphone_defaults,
         microphones=microphones,
@@ -366,6 +376,32 @@ def _parse_conversation_config(raw_config: Any) -> ConversationConfig:
         raise ValueError("conversation.follow_up_timeout_seconds must be a positive number")
 
     return ConversationConfig(follow_up_timeout_seconds=float(follow_up_timeout_seconds))
+
+
+def _parse_processing_updates_config(raw_config: Any) -> ProcessingUpdatesConfig:
+    if not isinstance(raw_config, dict):
+        raise ValueError("processing_updates must be a mapping")
+
+    interval_seconds = _parse_optional_positive_float(
+        raw_config.get("interval_seconds"),
+        DEFAULT_PROCESSING_UPDATE_INTERVAL_SECONDS,
+        "processing_updates.interval_seconds",
+    )
+    raw_spoken_cues = raw_config.get("spoken_cues", DEFAULT_PROCESSING_UPDATE_SPOKEN_CUES)
+    if not isinstance(raw_spoken_cues, (list, tuple)):
+        raise ValueError("processing_updates.spoken_cues must be a list")
+    if not raw_spoken_cues:
+        raise ValueError("processing_updates.spoken_cues must contain at least one cue")
+    spoken_cues = []
+    for index, cue in enumerate(raw_spoken_cues):
+        if not isinstance(cue, str) or not cue:
+            raise ValueError(f"processing_updates.spoken_cues[{index}] must be a non-empty string")
+        spoken_cues.append(cue)
+
+    return ProcessingUpdatesConfig(
+        interval_seconds=interval_seconds,
+        spoken_cues=tuple(spoken_cues),
+    )
 
 
 def _parse_microphones_config(

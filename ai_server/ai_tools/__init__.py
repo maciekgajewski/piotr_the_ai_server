@@ -8,7 +8,7 @@ from ai_server.ai_tools.time.time import TimeTool
 from ai_server.ai_tools.weather.weather import WeatherTool
 from ai_server.ai_tools.web_search.web_search import WebSearchTool
 from ai_server.ai_tools.wikipedia.wikipedia import WikipediaTool
-from ai_server.config import AgentConfig
+from ai_server.config import AgentConfig, ProcessingUpdatesConfig
 from ai_server.home_assistant import HomeAssistantConnection
 
 
@@ -23,12 +23,20 @@ TOOL_CLASSES = (
 )
 
 
-def create_tools(config: AgentConfig, home_assistant_connection: HomeAssistantConnection | None = None) -> dict[str, Tool]:
+def create_tools(
+    config: AgentConfig,
+    home_assistant_connection: HomeAssistantConnection | None = None,
+    processing_updates: ProcessingUpdatesConfig = ProcessingUpdatesConfig(),
+) -> dict[str, Tool]:
     logger = logging.getLogger(f"{__name__}.factory")
     tools: dict[str, Tool] = {}
     for tool_class in TOOL_CLASSES:
         if tool_class is HomeAssistantTool:
-            tool = tool_class(config, connection=home_assistant_connection)
+            tool = tool_class(
+                config,
+                connection=home_assistant_connection,
+                processing_update_interval_seconds=processing_updates.interval_seconds,
+            )
         else:
             tool = tool_class(config)
         if tool.name in tools:

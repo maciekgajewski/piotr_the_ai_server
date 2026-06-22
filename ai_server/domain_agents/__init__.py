@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any
 
-from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, ServerConfig
+from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, ProcessingUpdatesConfig, ServerConfig
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
 from ai_server.domain_agents.interfaces import DomainAgent, DomainTask
@@ -17,6 +17,7 @@ def create_domain_agents(
     *,
     home_assistant_connection: HomeAssistantConnection | None = None,
     server_config: ServerConfig = ServerConfig(),
+    processing_updates: ProcessingUpdatesConfig = ProcessingUpdatesConfig(),
     cache_dir: Path = Path(DEFAULT_CACHE_DIR).expanduser(),
 ) -> dict[str, DomainAgent]:
     raw_domain_agents = config.options.get("domain_agents", {})
@@ -36,6 +37,7 @@ def create_domain_agents(
                 fallback_backoff_seconds=_domain_agent_fallback_backoff_seconds(config.options, raw_options, domain),
                 ollama_url=ollama_url,
                 connection=home_assistant_connection,
+                processing_update_interval_seconds=processing_updates.interval_seconds,
             )
             continue
         if domain == "time":
@@ -59,6 +61,7 @@ def create_domain_agents(
                 default_music_media_id=_optional_domain_string(raw_options, domain, "default_music_media_id", "Liked Songs") or "Liked Songs",
                 default_music_media_type=_optional_domain_string(raw_options, domain, "default_music_media_type", "playlist") or "playlist",
                 default_music_name=_optional_domain_string(raw_options, domain, "default_music_name", "muzykę ze Spotify") or "muzykę ze Spotify",
+                processing_update_interval_seconds=processing_updates.interval_seconds,
             )
             continue
         if domain == "wikipedia":
@@ -68,6 +71,7 @@ def create_domain_agents(
                 fallback_backoff_seconds=_domain_agent_fallback_backoff_seconds(config.options, raw_options, domain),
                 ollama_url=ollama_url,
                 languages=_domain_languages(raw_options, domain),
+                processing_update_interval_seconds=processing_updates.interval_seconds,
             )
             continue
         if domain == "weather":
@@ -78,6 +82,7 @@ def create_domain_agents(
                 ollama_url=ollama_url,
                 location=_optional_domain_string(raw_options, domain, "location", server_config.location),
                 cache_dir=_domain_cache_dir(raw_options, domain, cache_dir),
+                processing_update_interval_seconds=processing_updates.interval_seconds,
             )
             continue
         domain_agents[domain] = _UnsupportedConfiguredDomainAgent(domain)

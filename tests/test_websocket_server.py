@@ -2,7 +2,7 @@ import asyncio
 import socket
 from dataclasses import dataclass
 
-from aiohttp import ClientSession, WSCloseCode
+from aiohttp import ClientSession, WSCloseCode, WSMsgType
 from aiohttp import web
 import pytest
 
@@ -14,10 +14,11 @@ from ai_server.batch_ws_client import BatchWsClientOptions, run_batch_ws_client
 from ai_server.chat_client import ChatClientOptions
 from ai_server.config import AgentConfig, Config, WebsocketConfig
 from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, RequestFollowUp
+from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, ProcessingUpdate, RequestFollowUp
 from ai_server.messages import SessionAttributes, TextMessage, WaitForNewConversation, endpoint_event_to_json
-from ai_server.messages import session_event_from_json, text_message_to_events
+from ai_server.messages import session_event_from_json, session_event_to_json, text_message_to_events
 from ai_server.websocket_server import create_app
+from ai_server.ws_client_common import handle_websocket_message
 
 
 class FakeWebsocket:
@@ -31,6 +32,7 @@ class FakeWebsocket:
 @dataclass(frozen=True)
 class FakeWebsocketMessage:
     data: str
+    type: WSMsgType = WSMsgType.TEXT
 
 
 class SingleReplyAgent:
@@ -60,6 +62,16 @@ class FollowUpAgent:
         async for message in endpoint.messages():
             await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
             await endpoint.send(RequestFollowUp())
+
+    async def close(self) -> None:
+        pass
+
+
+class ProcessingUpdateAgent:
+    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
+        async for message in endpoint.messages():
+            await endpoint.send(ProcessingUpdate())
+            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
 
     async def close(self) -> None:
         pass
@@ -130,6 +142,40 @@ def test_websocket_applies_user_settings_from_provider_to_conversation() -> None
         assert agent.conversations[0].user_settings == {
             "media": {"playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"}}
         }
+
+    asyncio.run(run())
+
+
+def test_websocket_forwards_processing_update() -> None:
+    async def run() -> None:
+        port = _unused_port()
+        config = Config(
+            agent=AgentConfig(type="processing", options={}),
+            websocket=WebsocketConfig(host="127.0.0.1", port=port),
+        )
+        app = create_app(config, ProcessingUpdateAgent())
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
+        await site.start()
+
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={})))
+
+                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+
+                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
+                    for event in text_message_to_events(TextMessage(text="hello")):
+                        await websocket.send_str(endpoint_event_to_json(event))
+
+                    assert await _receive_session_event(websocket) == ProcessingUpdate()
+                    assert await _receive_session_event(websocket) == MessageBegin()
+                    assert await _receive_session_event(websocket) == MessageFragment(text="reply:hello")
+                    assert await _receive_session_event(websocket) == MessageEnd()
+        finally:
+            await runner.cleanup()
 
     asyncio.run(run())
 
@@ -393,6 +439,103 @@ def test_chat_client_initial_prompt_is_connecting() -> None:
         assert input_session._current_prompt() == chat_client.CONNECTING_PROMPT
     finally:
         loop.close()
+
+
+def test_ws_client_prints_processing_update(capsys) -> None:
+    result = handle_websocket_message(None, FakeWebsocketMessage('{"type":"processing_update"}'))
+
+    assert result is None
+    assert capsys.readouterr().out == "processing...\n"
+
+
+def test_ws_client_routes_processing_update_to_system_printer() -> None:
+    system_messages = []
+
+    result = handle_websocket_message(
+        None,
+        FakeWebsocketMessage('{"type":"processing_update"}'),
+        system_message_printer=system_messages.append,
+    )
+
+    assert result is None
+    assert system_messages == ["processing..."]
+
+
+def test_chat_client_suppresses_initial_wait_for_new_conversation_notice(capsys) -> None:
+    class FakeReceiveLoop:
+        async def receive(self):
+            return FakeWebsocketMessage(session_event_to_json(WaitForNewConversation()))
+
+    async def run():
+        return await chat_client._read_next_wait_state(
+            None,
+            FakeReceiveLoop(),
+            show_wait_for_new_conversation_message=False,
+        )
+
+    wait_state = asyncio.run(run())
+
+    assert wait_state.starts_new_conversation is True
+    assert capsys.readouterr().out == ""
+
+
+def test_chat_client_dims_visible_wait_for_new_conversation_notice(capsys) -> None:
+    result = handle_websocket_message(
+        None,
+        FakeWebsocketMessage(session_event_to_json(WaitForNewConversation())),
+        system_message_printer=chat_client._print_client_message,
+    )
+
+    assert result is not None
+    assert result.starts_new_conversation is True
+    assert capsys.readouterr().out == chat_client._style_client_text(
+        "Conversation ended; waiting for a new conversation."
+    ) + "\n"
+
+
+def test_interactive_chat_suppresses_only_first_new_conversation_notice(capsys) -> None:
+    class FakeInteractiveInputSession:
+        def __init__(self) -> None:
+            self._lines: asyncio.Queue[str | None] = asyncio.Queue()
+            self.prompts: list[str] = []
+
+        def set_prompt(self, prompt: str) -> None:
+            self.prompts.append(prompt)
+
+        async def read_line(self) -> str | None:
+            return await self._lines.get()
+
+    class FakeInteractiveWebsocket(StrictReceiveWebsocket):
+        def __init__(self) -> None:
+            super().__init__()
+            self.sent: list[str] = []
+
+        async def send_str(self, data: str) -> None:
+            self.sent.append(data)
+
+    async def run() -> None:
+        websocket = FakeInteractiveWebsocket()
+        input_session = FakeInteractiveInputSession()
+        stop_event = asyncio.Event()
+
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(WaitForNewConversation())))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageBegin())))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageFragment(text="reply"))))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageEnd())))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(WaitForNewConversation())))
+        await input_session._lines.put("hello")
+        await input_session._lines.put(None)
+
+        await asyncio.wait_for(
+            chat_client._run_interactive_connection(websocket, input_session, stop_event),
+            timeout=1,
+        )
+
+    asyncio.run(run())
+
+    assert capsys.readouterr().out == "reply\n" + chat_client._style_client_text(
+        "Conversation ended; waiting for a new conversation."
+    ) + "\n"
 
 
 def test_interactive_chat_uses_connecting_prompt_before_first_connect(monkeypatch) -> None:

@@ -4,7 +4,8 @@ import logging
 import pytest
 
 from ai_server.config import ConversationConfig, MicrophoneConfig, SpeakerRecognitionConfig, SttConfig, TtsConfig
-from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, RequestFollowUp, TextMessage, WaitForNewConversation
+from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, ProcessingUpdate, RequestFollowUp, TextMessage
+from ai_server.messages import WaitForNewConversation
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.interfaces import MicrophoneUnavailable
 from ai_server.microphones.manager import MicrophoneManager, _MicrophoneAvailabilityLogger, init_mics
@@ -37,6 +38,14 @@ class FakeFollowUpAgent(FakeAgent):
             self.messages.append(message.text)
             await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
             await endpoint.send(RequestFollowUp())
+
+
+class FakeProcessingAgent(FakeAgent):
+    async def run_conversation(self, conversation, endpoint) -> None:
+        async for message in endpoint.messages():
+            self.messages.append(message.text)
+            await endpoint.send(ProcessingUpdate())
+            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
 
 
 class FakeMicrophone:
@@ -377,6 +386,31 @@ def test_microphone_manager_treats_empty_follow_up_as_timeout() -> None:
             StartFollowUpListening(),
             ConversationTimeoutCue(),
         ]
+
+    asyncio.run(run())
+
+
+def test_microphone_manager_speaks_processing_update_at_reduced_volume(monkeypatch) -> None:
+    async def run() -> None:
+        monkeypatch.setattr("ai_server.microphones.manager.random.choice", lambda choices: choices[0])
+        microphone = FakeMicrophone()
+        tts = FakeTts()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=FakeStt(),
+            tts=tts,
+            agent=FakeProcessingAgent(),
+            follow_up_timeout_seconds=0.1,
+            processing_update_spoken_cues=("zaraz...",),
+        )
+
+        await manager.start()
+        await asyncio.wait_for(_wait_until(lambda: len(tts.synthesized) >= 2), timeout=1)
+        await manager.close()
+
+        assert tts.synthesized[:2] == ["zaraz...", "reply:cześć"]
+        assert AudioStart(rate=22050, width=2, channels=1, volume=0.7) in microphone.sent_audio_events
+        assert AudioStart(rate=22050, width=2, channels=1, volume=1.0) in microphone.sent_audio_events
 
     asyncio.run(run())
 

@@ -9,7 +9,7 @@ from typing import Any
 from ai_server.agent import Agent
 from ai_server.interfaces import CommunicationEndpoint, Conversation, ConversationEndpoint, EndpointClosed
 from ai_server.messages import ConversationEnded, ConversationInputEvent, ConversationOutputEvent, MessageBegin, MessageEnd
-from ai_server.messages import MessageFragment, NewConversation, RequestFollowUp, SessionAttributes, TextMessage
+from ai_server.messages import MessageFragment, NewConversation, ProcessingUpdate, RequestFollowUp, SessionAttributes, TextMessage
 from ai_server.messages import WaitForNewConversation, text_message_to_events
 from ai_server.user_settings import ConfigUserSettingsProvider, UserSettingsProvider
 
@@ -179,6 +179,10 @@ class _SessionConversationEndpoint(ConversationEndpoint):
         raise AssertionError(f"unsupported conversation input event: {type(event).__name__}")
 
     async def send(self, event: ConversationOutputEvent) -> None:
+        if isinstance(event, ProcessingUpdate):
+            assert not self._output_open, "sent ProcessingUpdate while output message is open"
+            await self._session.endpoint.send(event)
+            return
         if isinstance(event, RequestFollowUp):
             assert self._requires_follow_up_request, "sent RequestFollowUp before completing an input message"
             assert not self._follow_up_requested, "sent duplicate RequestFollowUp"

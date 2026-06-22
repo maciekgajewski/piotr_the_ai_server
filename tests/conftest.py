@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 
 from ai_server.interfaces import ConversationEndpoint
 from ai_server.messages import ConversationInputEvent, ConversationOutputEvent, MessageBegin, MessageEnd, MessageFragment
-from ai_server.messages import RequestFollowUp, TextMessage, text_message_to_events
+from ai_server.messages import ProcessingUpdate, RequestFollowUp, TextMessage, text_message_to_events
 
 
 class FakeConversationEndpoint(ConversationEndpoint):
@@ -14,6 +14,7 @@ class FakeConversationEndpoint(ConversationEndpoint):
             self._incoming.extend(text_message_to_events(message))
         self.sent: list[ConversationOutputEvent] = []
         self.control_events: list[ConversationOutputEvent] = []
+        self.processing_updates: list[ProcessingUpdate] = []
         self._unconsumed_follow_up_requests = 0
 
     async def receive(self) -> ConversationInputEvent:
@@ -25,6 +26,9 @@ class FakeConversationEndpoint(ConversationEndpoint):
         if isinstance(event, RequestFollowUp):
             self.control_events.append(event)
             self._unconsumed_follow_up_requests += 1
+            return
+        if isinstance(event, ProcessingUpdate):
+            self.processing_updates.append(event)
             return
         self.sent.append(event)
 

@@ -43,6 +43,11 @@ class RequestFollowUp:
 
 
 @dataclass(frozen=True)
+class ProcessingUpdate:
+    pass
+
+
+@dataclass(frozen=True)
 class MessageBegin:
     pass
 
@@ -58,12 +63,12 @@ class MessageEnd:
 
 
 ConversationInputEvent: TypeAlias = MessageBegin | MessageFragment | MessageEnd
-ConversationOutputEvent: TypeAlias = MessageBegin | MessageFragment | MessageEnd | RequestFollowUp
+ConversationOutputEvent: TypeAlias = MessageBegin | MessageFragment | MessageEnd | RequestFollowUp | ProcessingUpdate
 EndpointToSessionEvent: TypeAlias = (
     SessionAttributes | NewConversation | ConversationEnded | MessageBegin | MessageFragment | MessageEnd
 )
 SessionToEndpointEvent: TypeAlias = (
-    WaitForNewConversation | WaitForNewMessage | RequestFollowUp | MessageBegin | MessageFragment | MessageEnd
+    WaitForNewConversation | WaitForNewMessage | RequestFollowUp | ProcessingUpdate | MessageBegin | MessageFragment | MessageEnd
 )
 ProtocolEvent: TypeAlias = EndpointToSessionEvent | SessionToEndpointEvent
 
@@ -144,6 +149,9 @@ def session_event_from_mapping(raw_event: dict[str, Any]) -> SessionToEndpointEv
             raise ValueError("request_follow_up.timeout_seconds must be a positive number")
         _reject_extra_keys(raw_event, {"type", "timeout_seconds"})
         return RequestFollowUp(timeout_seconds=float(timeout_seconds))
+    if event_type == "processing_update":
+        _reject_extra_keys(raw_event, {"type"})
+        return ProcessingUpdate()
     if event_type == "message_begin":
         _reject_extra_keys(raw_event, {"type"})
         return MessageBegin()
@@ -195,6 +203,8 @@ def session_event_to_mapping(event: SessionToEndpointEvent) -> dict[str, Any]:
         if event.timeout_seconds is not None:
             payload["timeout_seconds"] = event.timeout_seconds
         return payload
+    if isinstance(event, ProcessingUpdate):
+        return {"type": "processing_update"}
     if isinstance(event, MessageBegin):
         return {"type": "message_begin"}
     if isinstance(event, MessageFragment):

@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ai_server.agent import Agent
 from ai_server.config import ConversationConfig, MicrophoneConfig, SpeakerRecognitionConfig, SttConfig, TtsConfig
-from ai_server.messages import ConversationEnded, MessageBegin, MessageEnd, MessageFragment, NewConversation, RequestFollowUp
-from ai_server.messages import TextMessage, WaitForNewConversation, WaitForNewMessage
+from ai_server.messages import ConversationEnded, MessageBegin, MessageEnd, MessageFragment, NewConversation, ProcessingUpdate
+from ai_server.messages import RequestFollowUp, TextMessage, WaitForNewConversation, WaitForNewMessage
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.interfaces import Microphone, MicrophoneUnavailable, SpeechToText, SttSession, TextToSpeech
@@ -23,6 +24,10 @@ from ai_server.speaker_recognition.client import SpeakerRecognitionAudioFormat, 
 from ai_server.speaker_recognition.client import SpeakerRecognitionResult, SpeakerRecognitionStream
 from ai_server.speaker_recognition.client import voice_profiles_from_users
 from ai_server.user_settings import UserSettingsProvider
+
+
+DEFAULT_PROCESSING_UPDATE_CUES = ("Hmm...", "Myslę....", "momencik...")
+PROCESSING_UPDATE_VOLUME = 0.7
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,7 @@ class MicrophoneManager:
         user_settings: dict[str, dict[str, Any]] | None = None,
         user_settings_provider: UserSettingsProvider | None = None,
         speaker_recognition: SpeakerRecognitionClient | None = None,
+        processing_update_spoken_cues: tuple[str, ...] = DEFAULT_PROCESSING_UPDATE_CUES,
     ) -> None:
         self._microphones = microphones
         self._stt = stt
@@ -55,6 +61,7 @@ class MicrophoneManager:
         self._default_user = default_user
         self._user_settings = dict(user_settings or {})
         self._user_settings_provider = user_settings_provider
+        self._processing_update_spoken_cues = processing_update_spoken_cues
         self._speaker_recognition = speaker_recognition or SpeakerRecognitionClient(
             url=None,
             timeout_seconds=1.0,
@@ -160,6 +167,11 @@ class MicrophoneManager:
                         await self._speak_reply(microphone, reply, logger)
                         availability_logger.available()
                         pending_reply = None
+                        pending_event = None
+                        continue
+                    if isinstance(event, ProcessingUpdate):
+                        await self._speak_processing_update(microphone, logger)
+                        availability_logger.available()
                         pending_event = None
                         continue
 
@@ -416,12 +428,42 @@ class MicrophoneManager:
         logger.debug("reply=%r", reply.text)
 
         logger.info("starting TTS playback")
+        await self._speak_tts_text(
+            microphone=microphone,
+            text=reply.text,
+            logger=logger,
+            volume=None,
+        )
+
+    async def _speak_processing_update(
+        self,
+        microphone: Microphone,
+        logger: logging.Logger,
+    ) -> None:
+        cue = random.choice(self._processing_update_spoken_cues)
+        logger.info("starting processing cue TTS playback cue=%r", cue)
+        await self._speak_tts_text(
+            microphone=microphone,
+            text=cue,
+            logger=logger,
+            volume=PROCESSING_UPDATE_VOLUME,
+        )
+
+    async def _speak_tts_text(
+        self,
+        microphone: Microphone,
+        text: str,
+        logger: logging.Logger,
+        volume: float | None,
+    ) -> None:
         audio_start_count = 0
         audio_chunk_count = 0
         audio_byte_count = 0
-        async for audio_event in self._tts.synthesize(reply.text):
+        async for audio_event in self._tts.synthesize(text):
             if isinstance(audio_event, AudioStart):
                 audio_start_count += 1
+                if volume is not None:
+                    audio_event = replace(audio_event, volume=volume)
                 logger.debug(
                     "TTS audio start count=%s rate=%s width=%s channels=%s",
                     audio_start_count,
@@ -513,6 +555,7 @@ async def init_mics(
     default_user: str | None = None,
     user_settings: dict[str, dict[str, Any]] | None = None,
     user_settings_provider: UserSettingsProvider | None = None,
+    processing_update_spoken_cues: tuple[str, ...] = DEFAULT_PROCESSING_UPDATE_CUES,
 ) -> MicrophoneManager | None:
     if not mic_configs:
         return None
@@ -537,6 +580,7 @@ async def init_mics(
             timeout_seconds=speaker_recognition_config.timeout_seconds,
             profiles=voice_profiles_from_users(user_settings or {}),
         ),
+        processing_update_spoken_cues=processing_update_spoken_cues,
     )
     await manager.start()
     return manager

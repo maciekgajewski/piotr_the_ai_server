@@ -22,6 +22,7 @@ from ai_server.domain_agents.media_player.parser import DEFAULT_VOLUME_DELTA, Pa
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient
+from ai_server.utils.processing import ProcessingUpdateCallback, await_with_processing_updates
 
 
 MEDIA_QUERY_RESOLUTION_NUM_PREDICT = 512
@@ -42,6 +43,7 @@ class MediaPlayerDomainAgent:
         default_music_media_id: str = "Liked Songs",
         default_music_media_type: str = "playlist",
         default_music_name: str = "muzykę ze Spotify",
+        processing_update_interval_seconds: float = 5.0,
     ) -> None:
         self._model = model
         self._connection = connection
@@ -56,6 +58,7 @@ class MediaPlayerDomainAgent:
         self._default_music_media_id = default_music_media_id
         self._default_music_media_type = default_music_media_type
         self._default_music_name = default_music_name
+        self._processing_update_interval_seconds = processing_update_interval_seconds
         self._recent_media_by_user: dict[str, MediaSearchItem] = {}
         self._logger = logging.getLogger(f"{__name__}.MediaPlayerDomainAgent[{model}]")
 
@@ -352,7 +355,8 @@ class MediaPlayerDomainAgent:
                         {"role": "system", "content": MEDIA_QUERY_RESOLUTION_SYSTEM_PROMPT},
                         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
                     ],
-                }
+                },
+                processing_update_callback=conversation.processing_update_callback,
             )
         except Exception:
             self._logger.info("media query resolver failed; using original query=%r", parsed.query, exc_info=True)
@@ -549,7 +553,8 @@ class MediaPlayerDomainAgent:
                     {"role": "system", "content": MEDIA_COMPLEX_COMMAND_SYSTEM_PROMPT},
                     {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
                 ],
-            }
+            },
+            processing_update_callback=conversation.processing_update_callback,
         )
         message = response.get("message")
         content = message.get("content") if isinstance(message, dict) else None
@@ -563,16 +568,31 @@ class MediaPlayerDomainAgent:
             return parse_media_command(command, force_simple=True)
         return parse_media_command(parsed_command, force_simple=True)
 
-    async def _chat_with_fallback(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _chat_with_fallback(
+        self,
+        payload: dict[str, Any],
+        *,
+        processing_update_callback: ProcessingUpdateCallback | None = None,
+    ) -> dict[str, Any]:
         model = self._fallback_model if self._fallback_model and time.monotonic() < self._fallback_until else self._model
         try:
-            return await self._ollama.chat({**payload, "model": model})
+            return await await_with_processing_updates(
+                self._ollama.chat({**payload, "model": model}),
+                callback=processing_update_callback,
+                logger=self._logger,
+                interval_seconds=self._processing_update_interval_seconds,
+            )
         except Exception:
             if self._fallback_model is None or model == self._fallback_model:
                 raise
             self._fallback_until = time.monotonic() + self._fallback_backoff_seconds
             self._logger.warning("media_player DSA model failed, retrying fallback_model=%s", self._fallback_model, exc_info=True)
-            return await self._ollama.chat({**payload, "model": self._fallback_model})
+            return await await_with_processing_updates(
+                self._ollama.chat({**payload, "model": self._fallback_model}),
+                callback=processing_update_callback,
+                logger=self._logger,
+                interval_seconds=self._processing_update_interval_seconds,
+            )
 
 
 def _targets_from_result(result: list[dict[str, Any]] | dict[str, Any]) -> list[MediaTarget] | dict[str, Any]:

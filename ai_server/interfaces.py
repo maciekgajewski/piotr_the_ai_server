@@ -7,6 +7,8 @@ from typing import Any
 
 from ai_server.messages import ConversationInputEvent, ConversationOutputEvent, EndpointToSessionEvent
 from ai_server.messages import SessionToEndpointEvent, TextMessage
+from ai_server.utils.processing import ProcessingUpdateCallback
+from ai_server.utils.processing import DEFAULT_PROCESSING_UPDATE_INTERVAL_SECONDS
 
 
 class CommunicationEndpoint(ABC):
@@ -42,6 +44,8 @@ class Conversation:
     conversation_id: str
     attributes: dict[str, str]
     state: dict[str, Any] = field(default_factory=dict)
+    processing_update_callback: ProcessingUpdateCallback | None = None
+    processing_update_interval_seconds: float = DEFAULT_PROCESSING_UPDATE_INTERVAL_SECONDS
 
     @property
     def user(self) -> str | None:

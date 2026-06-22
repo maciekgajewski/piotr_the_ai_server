@@ -9,7 +9,7 @@ from ai_server.config import AgentConfig
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 from ai_server.home_assistant.toolset import HomeAssistantToolSet
 from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import RequestFollowUp, TextMessage
+from ai_server.messages import ProcessingUpdate, RequestFollowUp, TextMessage
 
 
 class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
@@ -19,7 +19,12 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
         "air conditioning, lighting, etc."
     )
 
-    def __init__(self, config: AgentConfig, connection: HomeAssistantConnection | None = None) -> None:
+    def __init__(
+        self,
+        config: AgentConfig,
+        connection: HomeAssistantConnection | None = None,
+        processing_update_interval_seconds: float = 5.0,
+    ) -> None:
         BaseTool.__init__(self, config)
         self._owns_connection = connection is None
         connection = connection or HomeAssistantConnection(parse_home_assistant_options(config.options))
@@ -28,6 +33,7 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
         self._agent_loop_fallback_model = _parse_agent_loop_fallback_model(config.options)
         self._agent_loop_fallback_backoff_seconds = _parse_agent_loop_fallback_backoff_seconds(config.options)
         self._ollama_url = _parse_ollama_url(config.options)
+        self._processing_update_interval_seconds = processing_update_interval_seconds
         self._start_task: asyncio.Task[None] | None = None
         self._logger.debug(
             "configured HomeAssistantTool agent_loop_model=%s fallback_model=%s ollama_url=%s owns_connection=%s",
@@ -57,7 +63,13 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
             fallback_backoff_seconds=self._agent_loop_fallback_backoff_seconds,
         )
 
-        async with AgentLoop(config=loop_config, system_prompt=system_prompt, tools=self) as loop:
+        async with AgentLoop(
+            config=loop_config,
+            system_prompt=system_prompt,
+            tools=self,
+            processing_update_callback=lambda: endpoint.send(ProcessingUpdate()),
+            processing_update_interval_seconds=self._processing_update_interval_seconds,
+        ) as loop:
             self.set_request_context(user_message=request.text, area=conversation.area)
             reply = await loop.send_user_message(request.text)
             self._logger.debug(

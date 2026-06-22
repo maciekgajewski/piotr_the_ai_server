@@ -59,6 +59,13 @@ tts:
   voice: pl_PL-bass-high
   volume: 1.0
 
+processing_updates:
+  interval_seconds: 5.0
+  spoken_cues:
+    - Hmm...
+    - Myslę....
+    - momencik...
+
 speaker_recognition:
   url: http://127.0.0.1:2140
   timeout_seconds: 1.0

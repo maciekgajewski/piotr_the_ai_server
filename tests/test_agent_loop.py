@@ -71,6 +71,13 @@ class ExampleTools(AgentCallableSet):
         return values
 
 
+class SlowTools(AgentCallableSet):
+    @AgentCallableSet.tool
+    async def wait(self) -> dict[str, str]:
+        await asyncio.sleep(0.04)
+        return {"status": "ok"}
+
+
 def test_tool_schema_uses_convention_explicit_params_defaults_and_annotated_descriptions() -> None:
     tools = ExampleTools()
 
@@ -231,6 +238,54 @@ def test_agent_loop_notifies_context_message_observer() -> None:
         {"role": "user", "content": "hej"},
         {"role": "assistant", "thinking": "Rozważam.", "content": "Cześć!"},
     ]
+
+
+def test_agent_loop_emits_processing_updates_for_llm_and_tool_work() -> None:
+    async def run() -> list[str]:
+        session = FakeSession(
+            [
+                FakeResponse(
+                    {
+                        "done": True,
+                        "eval_count": 1,
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{"function": {"name": "wait", "arguments": {}}}],
+                        },
+                    }
+                ),
+                FakeResponse(
+                    {
+                        "done": True,
+                        "eval_count": 1,
+                        "message": {"role": "assistant", "content": "Gotowe."},
+                    }
+                ),
+            ]
+        )
+        updates: list[str] = []
+
+        async def emit_update() -> None:
+            updates.append("processing")
+
+        loop = AgentLoop(
+            AgentLoopConfig(model="qwen3:4b"),
+            "System.",
+            SlowTools(),
+            session=session,
+            processing_update_callback=emit_update,
+            processing_update_interval_seconds=0.01,
+        )
+
+        reply = await loop.send_user_message("poczekaj")
+
+        assert reply.reply_text == "Gotowe."
+        return updates
+
+    updates = asyncio.run(run())
+
+    assert len(updates) >= 5
 
 
 def test_agent_loop_runs_multiple_tool_turns_and_tracks_history() -> None:

@@ -6,6 +6,7 @@ from ai_server.config import (
     AgentConfig,
     ConversationConfig,
     MicrophoneDefaultsConfig,
+    ProcessingUpdatesConfig,
     ServerConfig,
     DEFAULT_LOG_LEVEL,
     DEFAULT_WEBSOCKET_FOLLOW_UP_TIMEOUT_SECONDS,
@@ -450,6 +451,31 @@ tts:
     assert config.tts == TtsConfig(voice="pl_PL-darkman-medium", volume=0.7)
 
 
+def test_load_config_with_processing_updates(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path,
+        """
+websocket:
+  port: 2137
+agent:
+  type: echo
+processing_updates:
+  interval_seconds: 2.5
+  spoken_cues:
+    - Hmm...
+    - Myslę....
+    - momencik...
+""",
+    )
+
+    config = load_config_from_yaml(config_path)
+
+    assert config.processing_updates == ProcessingUpdatesConfig(
+        interval_seconds=2.5,
+        spoken_cues=("Hmm...", "Myslę....", "momencik..."),
+    )
+
+
 def test_load_config_rejects_legacy_microphone_location(tmp_path: Path) -> None:
     config_path = write_config(
         tmp_path,
@@ -562,6 +588,22 @@ agent:
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  devices: nope",
             "microphones.devices must be a list",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nprocessing_updates: nope",
+            "processing_updates must be a mapping",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nprocessing_updates:\n  interval_seconds: 0",
+            "processing_updates.interval_seconds must be a positive number",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nprocessing_updates:\n  spoken_cues: []",
+            "processing_updates.spoken_cues must contain at least one cue",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nprocessing_updates:\n  spoken_cues:\n    - ''",
+            r"processing_updates.spoken_cues\[0\] must be a non-empty string",
         ),
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  initial_silence_seconds: 0",

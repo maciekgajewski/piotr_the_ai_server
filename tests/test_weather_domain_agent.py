@@ -485,7 +485,7 @@ class FakeLoopFactory:
         self.tools = None
         self.loop = None
 
-    def factory(self, config: Any, system_prompt: str, tools: Any, ollama_connection: Any) -> "FakeLoop":
+    def factory(self, config: Any, system_prompt: str, tools: Any, ollama_connection: Any, **kwargs: Any) -> "FakeLoop":
         self.config = config
         self.tools = tools
         self.loop = FakeLoop(self.reply_text)

@@ -178,8 +178,14 @@ async def _run_interactive_connection(
     receive_loop = _WebsocketReceiveLoop(websocket, stop_event)
     receive_loop.start()
     try:
+        show_wait_for_new_conversation_message = False
         while True:
-            wait_state = await _read_next_wait_state(websocket, receive_loop)
+            wait_state = await _read_next_wait_state(
+                websocket,
+                receive_loop,
+                show_wait_for_new_conversation_message=show_wait_for_new_conversation_message,
+            )
+            show_wait_for_new_conversation_message = True
             input_session.set_prompt(_prompt_for_wait_state(wait_state))
             while True:
                 text, wait_state = await _read_next_interactive_text(
@@ -204,9 +210,19 @@ async def _run_interactive_connection(
         await receive_loop.close()
 
 
-async def _read_next_wait_state(websocket, receive_loop: "_WebsocketReceiveLoop") -> WaitState:
+async def _read_next_wait_state(
+    websocket,
+    receive_loop: "_WebsocketReceiveLoop",
+    *,
+    show_wait_for_new_conversation_message: bool = True,
+) -> WaitState:
     while True:
-        wait_state = handle_websocket_message(websocket, await receive_loop.receive())
+        wait_state = handle_websocket_message(
+            websocket,
+            await receive_loop.receive(),
+            system_message_printer=_print_client_message,
+            show_wait_for_new_conversation_message=show_wait_for_new_conversation_message,
+        )
         if wait_state is not None:
             return wait_state
 
@@ -228,7 +244,11 @@ async def _read_next_interactive_text(
         await _cancel_tasks(pending)
 
         if receive_task in done:
-            next_wait_state = handle_websocket_message(websocket, receive_task.result())
+            next_wait_state = handle_websocket_message(
+                websocket,
+                receive_task.result(),
+                system_message_printer=_print_client_message,
+            )
             if next_wait_state is not None:
                 wait_state = next_wait_state
                 input_session.set_prompt(_prompt_for_wait_state(wait_state))

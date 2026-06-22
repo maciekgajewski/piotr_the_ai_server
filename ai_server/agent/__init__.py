@@ -11,7 +11,7 @@ from ai_server.agent.interrogator import InterrogatorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.orchestrator import OrchestratorAgent
 
-from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, ServerConfig
+from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, ProcessingUpdatesConfig, ServerConfig
 from ai_server.domain_agents import create_domain_agents
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation, ConversationEndpoint
@@ -31,6 +31,7 @@ async def create_agent(
     ollama_url: str,
     home_assistant_connection: HomeAssistantConnection | None = None,
     server_config: ServerConfig = ServerConfig(),
+    processing_updates: ProcessingUpdatesConfig = ProcessingUpdatesConfig(),
     cache_dir: Path = Path(DEFAULT_CACHE_DIR).expanduser(),
 ) -> Agent:
     logger = logging.getLogger(f"{__name__}.factory[{config.type}]")
@@ -62,7 +63,11 @@ async def create_agent(
         logger.info("Creating assistant agent intent_router_model=%s", intent_router_model)
         ollama_client = OllamaClient(base_url=ollama_url)
         tool_config = AgentConfig(type=config.type, options={**config.options, "ollama_url": ollama_url})
-        tools = create_tools(tool_config, home_assistant_connection=home_assistant_connection)
+        tools = create_tools(
+            tool_config,
+            home_assistant_connection=home_assistant_connection,
+            processing_updates=processing_updates,
+        )
         logger.info("Loaded %s assistant tools", len(tools))
         agent = AssistantAgent(intent_router_model=intent_router_model, tools=tools, ollama_client=ollama_client)
         try:
@@ -89,6 +94,7 @@ async def create_agent(
             ollama_url,
             home_assistant_connection=home_assistant_connection,
             server_config=server_config,
+            processing_updates=processing_updates,
             cache_dir=cache_dir,
         )
         logger.info("Loaded %s orchestrator domain agents", len(domain_agents))
@@ -98,6 +104,7 @@ async def create_agent(
             domain_agents=domain_agents,
             ollama_client=ollama_client,
             server_config=server_config,
+            processing_update_interval_seconds=processing_updates.interval_seconds,
             home_assistant_inventory_provider=home_assistant_connection,
         )
         try:

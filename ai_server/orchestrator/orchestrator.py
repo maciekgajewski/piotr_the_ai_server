@@ -13,9 +13,10 @@ from ai_server.config import ServerConfig
 from ai_server.domain_agents import DomainAgent, DomainTask
 from ai_server.home_assistant.interfaces import HomeAssistantInventory
 from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import RequestFollowUp, TextMessage
+from ai_server.messages import ProcessingUpdate, RequestFollowUp, TextMessage
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
 from ai_server.orchestrator.known_utterances import known_utterance_task
+from ai_server.utils.processing import ProcessingUpdateCallback, ProcessingUpdateThrottle, await_with_processing_updates
 from ai_server.utils.text import normalize_text
 
 
@@ -183,6 +184,7 @@ class OrchestratorAgent:
         ollama_client: OllamaClient | None = None,
         owns_ollama_client: bool = True,
         server_config: ServerConfig = ServerConfig(),
+        processing_update_interval_seconds: float = 5.0,
         home_assistant_inventory_provider: HomeAssistantInventoryProvider | None = None,
     ) -> None:
         self._orchestrator_model = orchestrator_model
@@ -191,6 +193,7 @@ class OrchestratorAgent:
         self._ollama = ollama_client or OllamaClient(base_url=base_url, session=session)
         self._owns_ollama = owns_ollama_client
         self._server_config = server_config
+        self._processing_update_interval_seconds = processing_update_interval_seconds
         self._home_assistant_inventory_provider = home_assistant_inventory_provider
         self._logger = logging.getLogger(f"{__name__}.OrchestratorAgent[{orchestrator_model}]")
 
@@ -211,8 +214,17 @@ class OrchestratorAgent:
 
     async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
         logger = logging.getLogger(f"{__name__}.OrchestratorAgent[{conversation.conversation_id}]")
+        previous_processing_update_callback = conversation.processing_update_callback
+        previous_processing_update_interval_seconds = conversation.processing_update_interval_seconds
+        processing_update_throttle = ProcessingUpdateThrottle(
+            lambda: endpoint.send(ProcessingUpdate()),
+            interval_seconds=self._processing_update_interval_seconds,
+        )
+        conversation.processing_update_callback = processing_update_throttle.emit
+        conversation.processing_update_interval_seconds = self._processing_update_interval_seconds
         try:
             async for message in endpoint.messages():
+                processing_update_throttle.reset()
                 started_at = time.perf_counter()
                 logger.info("received message text=%r", message.text)
                 try:
@@ -235,6 +247,8 @@ class OrchestratorAgent:
                 if _has_pending_clarification(conversation):
                     await endpoint.send(RequestFollowUp())
         finally:
+            conversation.processing_update_callback = previous_processing_update_callback
+            conversation.processing_update_interval_seconds = previous_processing_update_interval_seconds
             state = conversation.state.get(ORCHESTRATOR_STATE_KEY)
             if isinstance(state, dict) and state.get("pending_clarification") is not None:
                 logger.info("dropping unanswered clarification pending=%s", _compact_json(state.get("pending_clarification")))
@@ -317,6 +331,7 @@ class OrchestratorAgent:
             active_context=_active_context(state),
             plan=plan,
             task_results=task_results,
+            processing_update_callback=conversation.processing_update_callback,
         )
         _append_last_turn(state, user_input=user_input, assistant_reply=reply)
         return reply
@@ -366,6 +381,7 @@ class OrchestratorAgent:
             active_context=_active_context(state),
             plan=plan,
             task_results=task_results,
+            processing_update_callback=conversation.processing_update_callback,
         )
         return reply
 
@@ -398,7 +414,11 @@ class OrchestratorAgent:
             self._orchestrator_model,
             user_input,
         )
-        plan = await self._plan_message_with_model(self._orchestrator_model, prompt)
+        plan = await self._plan_message_with_model(
+            self._orchestrator_model,
+            prompt,
+            conversation.processing_update_callback,
+        )
         if (
             plan["confidence"] >= PLANNING_CONFIDENCE_THRESHOLD
             or self._clarification_model is None
@@ -412,25 +432,39 @@ class OrchestratorAgent:
             PLANNING_CONFIDENCE_THRESHOLD,
             self._clarification_model,
         )
-        return await self._plan_message_with_model(self._clarification_model, prompt)
+        return await self._plan_message_with_model(
+            self._clarification_model,
+            prompt,
+            conversation.processing_update_callback,
+        )
 
-    async def _plan_message_with_model(self, model: str, prompt: dict[str, Any]) -> dict[str, Any]:
+    async def _plan_message_with_model(
+        self,
+        model: str,
+        prompt: dict[str, Any],
+        processing_update_callback: ProcessingUpdateCallback | None,
+    ) -> dict[str, Any]:
         try:
             self._logger.info("planning request model=%s utterance=%r", model, prompt.get("utterance"))
-            response = await self._ollama.chat(
-                {
-                    "model": model,
-                    "raw": False,
-                    "think": False,
-                    "format": "json",
-                    "stream": False,
-                    "keep_alive": "1h",
-                    "options": PLANNING_OPTIONS,
-                    "messages": [
-                        {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
-                        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-                    ],
-                }
+            response = await await_with_processing_updates(
+                self._ollama.chat(
+                    {
+                        "model": model,
+                        "raw": False,
+                        "think": False,
+                        "format": "json",
+                        "stream": False,
+                        "keep_alive": "1h",
+                        "options": PLANNING_OPTIONS,
+                        "messages": [
+                            {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
+                            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                        ],
+                    }
+                ),
+                callback=processing_update_callback,
+                logger=self._logger,
+                interval_seconds=self._processing_update_interval_seconds,
             )
             plan = _parse_plan(_assistant_content(response))
             self._logger.info(
@@ -445,7 +479,7 @@ class OrchestratorAgent:
         except Exception:
             if model == self._orchestrator_model and self._clarification_model is not None and self._clarification_model != model:
                 self._logger.warning("planning with orchestrator model failed, retrying clarification_model", exc_info=True)
-                return await self._plan_message_with_model(self._clarification_model, prompt)
+                return await self._plan_message_with_model(self._clarification_model, prompt, processing_update_callback)
             raise
 
     async def _clarification_task(
@@ -483,6 +517,7 @@ class OrchestratorAgent:
                 model=model,
                 prompt=prompt,
                 pending_clarification=pending_clarification,
+                processing_update_callback=conversation.processing_update_callback,
             )
         except Exception:
             fallback_model = self._orchestrator_model
@@ -497,6 +532,7 @@ class OrchestratorAgent:
                     model=fallback_model,
                     prompt=prompt,
                     pending_clarification=pending_clarification,
+                    processing_update_callback=conversation.processing_update_callback,
                 )
             raise
 
@@ -506,21 +542,27 @@ class OrchestratorAgent:
         model: str,
         prompt: dict[str, Any],
         pending_clarification: dict[str, Any],
+        processing_update_callback: ProcessingUpdateCallback | None,
     ) -> dict[str, Any]:
-        response = await self._ollama.chat(
-            {
-                "model": model,
-                "raw": False,
-                "think": False,
-                "format": "json",
-                "stream": False,
-                "keep_alive": "1h",
-                "options": PLANNING_OPTIONS,
-                "messages": [
-                    {"role": "system", "content": CLARIFICATION_SYSTEM_PROMPT},
-                    {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-                ],
-            }
+        response = await await_with_processing_updates(
+            self._ollama.chat(
+                {
+                    "model": model,
+                    "raw": False,
+                    "think": False,
+                    "format": "json",
+                    "stream": False,
+                    "keep_alive": "1h",
+                    "options": PLANNING_OPTIONS,
+                    "messages": [
+                        {"role": "system", "content": CLARIFICATION_SYSTEM_PROMPT},
+                        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                    ],
+                }
+            ),
+            callback=processing_update_callback,
+            logger=self._logger,
+            interval_seconds=self._processing_update_interval_seconds,
         )
         clarification = _parse_clarification_task(_assistant_content(response), pending_clarification)
         self._logger.info(
@@ -627,6 +669,7 @@ class OrchestratorAgent:
         active_context: dict[str, Any],
         plan: dict[str, Any],
         task_results: list[dict[str, Any]],
+        processing_update_callback: ProcessingUpdateCallback | None,
     ) -> str:
         prompt = {
             "utterance": user_input,
@@ -645,30 +688,49 @@ class OrchestratorAgent:
             self._logger.info("final reply using verbatim task result text=%r", verbatim_reply)
             return verbatim_reply
 
-        reply = await self._final_reply_with_model(self._orchestrator_model, prompt)
+        reply = await self._final_reply_with_model(
+            self._orchestrator_model,
+            prompt,
+            processing_update_callback=processing_update_callback,
+        )
         if reply or self._clarification_model is None:
             return reply or GENERATION_FAILURE_MESSAGE
 
         self._logger.info("final reply from orchestrator model was empty, retrying clarification_model=%s", self._clarification_model)
-        reply = await self._final_reply_with_model(self._clarification_model, prompt)
+        reply = await self._final_reply_with_model(
+            self._clarification_model,
+            prompt,
+            processing_update_callback=processing_update_callback,
+        )
         return reply or GENERATION_FAILURE_MESSAGE
 
-    async def _final_reply_with_model(self, model: str, prompt: dict[str, Any]) -> str:
+    async def _final_reply_with_model(
+        self,
+        model: str,
+        prompt: dict[str, Any],
+        *,
+        processing_update_callback: ProcessingUpdateCallback | None,
+    ) -> str:
         try:
             self._logger.info("final reply model request model=%s utterance=%r", model, prompt.get("utterance"))
-            response = await self._ollama.chat(
-                {
-                    "model": model,
-                    "raw": False,
-                    "think": False,
-                    "stream": False,
-                    "keep_alive": "1h",
-                    "options": FINAL_REPLY_OPTIONS,
-                    "messages": [
-                        {"role": "system", "content": FINAL_REPLY_SYSTEM_PROMPT},
-                        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-                    ],
-                }
+            response = await await_with_processing_updates(
+                self._ollama.chat(
+                    {
+                        "model": model,
+                        "raw": False,
+                        "think": False,
+                        "stream": False,
+                        "keep_alive": "1h",
+                        "options": FINAL_REPLY_OPTIONS,
+                        "messages": [
+                            {"role": "system", "content": FINAL_REPLY_SYSTEM_PROMPT},
+                            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                        ],
+                    }
+                ),
+                callback=processing_update_callback,
+                logger=self._logger,
+                interval_seconds=self._processing_update_interval_seconds,
             )
             reply = _assistant_content(response).strip()
             self._logger.info("final reply output model=%s text=%r", model, reply)
@@ -676,7 +738,11 @@ class OrchestratorAgent:
         except Exception:
             if model == self._orchestrator_model and self._clarification_model is not None and self._clarification_model != model:
                 self._logger.warning("final reply with orchestrator model failed, retrying clarification_model", exc_info=True)
-                return await self._final_reply_with_model(self._clarification_model, prompt)
+                return await self._final_reply_with_model(
+                    self._clarification_model,
+                    prompt,
+                    processing_update_callback=processing_update_callback,
+                )
             raise
 
 

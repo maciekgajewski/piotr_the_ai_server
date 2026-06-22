@@ -211,4 +211,8 @@ Interactive prompts are:
 - `waiting for server> `
 - `disconnected; reconnecting> `
 
+Interactive chat suppresses the initial `WaitForNewConversation` status line because that event means
+the server is ready, not that a conversation has ended. Later client and system status lines are printed
+with client styling.
+
 Batch mode uses `tools/batch-ws-client.sh` with repeated `--message` arguments. After all batch messages are sent, the client exits when the next wait-state event arrives, either `RequestFollowUp`, legacy `WaitForNewMessage`, or `WaitForNewConversation`.

@@ -14,7 +14,7 @@ from ai_server.ai_tools.time import TimeTool
 from ai_server.ai_tools.weather import WeatherTool
 from ai_server.ai_tools.web_search import WebSearchTool
 from ai_server.ai_tools.wikipedia import WikipediaTool
-from ai_server.config import AgentConfig
+from ai_server.config import AgentConfig, ProcessingUpdatesConfig
 from ai_server.home_assistant import HomeAssistantConnection, HomeAssistantServiceCall, parse_home_assistant_options
 from ai_server.home_assistant.connection import _build_inventory, _call_home_assistant_service
 from ai_server.interfaces import Conversation
@@ -123,6 +123,24 @@ def test_home_assistant_tool_runs_local_agent_loop_with_context(monkeypatch) -> 
     assert fake_loop.config.ollama_url == "http://ollama:11434"
     assert "Current user: maciek" in fake_loop.system_prompt
     assert "Current area: office" in fake_loop.system_prompt
+    assert fake_loop.processing_update_interval_seconds == 5.0
+
+
+def test_home_assistant_tool_uses_processing_update_interval_from_factory(monkeypatch) -> None:
+    fake_loop = FakeAgentLoop()
+    monkeypatch.setattr("ai_server.ai_tools.home_assistant.home_assistant.AgentLoop", fake_loop.factory)
+    config = _sample_config()
+    tools = create_tools(
+        config,
+        home_assistant_connection=_sample_connection(_sample_inventory()),
+        processing_updates=ProcessingUpdatesConfig(interval_seconds=2.5),
+    )
+    endpoint = FakeConversationEndpoint([])
+    conversation = Conversation(conversation_id="conversation-1", attributes={})
+
+    asyncio.run(tools["home_assistant"].run(conversation, endpoint, TextMessage(text="włącz klimę")))
+
+    assert fake_loop.processing_update_interval_seconds == 2.5
     assert "area_id=office; name=Office; aliases=Biuro, Pracownia" in fake_loop.system_prompt
     assert "hvac_mode: fan_only aliases:" in fake_loop.system_prompt
     assert fake_loop.messages == ["włącz klimę"]
@@ -548,11 +566,13 @@ class FakeAgentLoop:
         self.tools = None
         self.messages = []
         self.eval_count = 0
+        self.processing_update_interval_seconds = None
 
-    def factory(self, config, system_prompt, tools):
+    def factory(self, config, system_prompt, tools, **kwargs):
         self.config = config
         self.system_prompt = system_prompt
         self.tools = tools
+        self.processing_update_interval_seconds = kwargs.get("processing_update_interval_seconds")
         return self
 
     async def __aenter__(self):

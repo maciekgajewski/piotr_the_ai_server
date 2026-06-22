@@ -10,6 +10,8 @@ from ai_server.agent_loop.interfaces import HttpSession
 from ai_server.agent_loop.agent_loop_ollama_connection import AgentLoopOllamaConnection
 from ai_server.agent_loop.messages import AgentReply
 from ai_server.agent_loop.agent_callable_set import AgentCallableSet
+from ai_server.utils.processing import DEFAULT_PROCESSING_UPDATE_INTERVAL_SECONDS, ProcessingUpdateCallback
+from ai_server.utils.processing import await_with_processing_updates, emit_processing_update
 
 
 MODEL_FAILURE_REPLY = "Model się zesrał"
@@ -24,9 +26,13 @@ class AgentLoop:
         session: HttpSession | None = None,
         ollama_connection: AgentLoopOllamaConnection | None = None,
         context_message_observer: Callable[[dict[str, Any]], None] | None = None,
+        processing_update_callback: ProcessingUpdateCallback | None = None,
+        processing_update_interval_seconds: float = DEFAULT_PROCESSING_UPDATE_INTERVAL_SECONDS,
     ) -> None:
         if session is not None and ollama_connection is not None:
             raise ValueError("session and ollama_connection cannot both be provided")
+        if processing_update_interval_seconds <= 0:
+            raise ValueError("processing_update_interval_seconds must be positive")
         self._config = config
         self._system_prompt = system_prompt
         self._tools = tools
@@ -35,6 +41,8 @@ class AgentLoop:
         self._ollama_connection = ollama_connection or AgentLoopOllamaConnection(base_url=config.ollama_url, session=session)
         self._owns_ollama_connection = ollama_connection is None
         self._context_message_observer = context_message_observer
+        self._processing_update_callback = processing_update_callback
+        self._processing_update_interval_seconds = processing_update_interval_seconds
         self._eval_count = 0
         self._turn_number = 0
         self._instance_id = f"{id(self):x}"
@@ -121,7 +129,12 @@ class AgentLoop:
                         continue
 
                     try:
-                        result = await self._tools.call_tool(tool_name, arguments)
+                        result = await await_with_processing_updates(
+                            self._tools.call_tool(tool_name, arguments),
+                            callback=self._processing_update_callback,
+                            logger=self._logger,
+                            interval_seconds=self._processing_update_interval_seconds,
+                        )
                     except ValueError as exc:
                         repair_attempts += 1
                         self._logger.warning(
@@ -161,6 +174,7 @@ class AgentLoop:
             self._context_message_observer(message)
 
     async def _send_chat_request(self) -> dict[str, Any]:
+        await emit_processing_update(self._processing_update_callback, self._logger)
         payload: dict[str, Any] = {
             "model": self._config.model,
             "messages": self._messages,

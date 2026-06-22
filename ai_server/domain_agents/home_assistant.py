@@ -71,6 +71,7 @@ class HomeAssistantDomainAgent:
         fallback_backoff_seconds: float = 300.0,
         ollama_connection: AgentLoopOllamaConnection | None = None,
         loop_factory: Callable[..., AgentLoop] = AgentLoop,
+        processing_update_interval_seconds: float = 5.0,
     ) -> None:
         self._model = model
         self._ollama_url = ollama_url
@@ -80,6 +81,7 @@ class HomeAssistantDomainAgent:
         self._owns_ollama_connection = ollama_connection is None
         self._connection = connection
         self._loop_factory = loop_factory
+        self._processing_update_interval_seconds = processing_update_interval_seconds
         self._logger = logging.getLogger(f"{__name__}.HomeAssistantDomainAgent[{model}]")
 
     async def run_task(
@@ -125,6 +127,8 @@ class HomeAssistantDomainAgent:
             system_prompt=system_prompt,
             tools=toolset,
             ollama_connection=self._ollama_connection,
+            processing_update_callback=conversation.processing_update_callback,
+            processing_update_interval_seconds=self._processing_update_interval_seconds,
         ) as loop:
             reply = await loop.send_user_message(json.dumps(payload, ensure_ascii=False))
         logger.debug("Home Assistant DSA raw reply=%r end_conversation=%s", reply.reply_text, reply.end_conversation)

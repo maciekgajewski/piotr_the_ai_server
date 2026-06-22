@@ -209,7 +209,7 @@ class FakeLoopFactory:
         self.tools = None
         self.loop = None
 
-    def factory(self, config, system_prompt, tools, ollama_connection):
+    def factory(self, config, system_prompt, tools, ollama_connection, **kwargs):
         self.config = config
         self.tools = tools
         self.loop = FakeLoop(self.reply_text)

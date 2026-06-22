@@ -179,7 +179,7 @@ class FakeAgentLoop:
         self.tools = None
         self.messages = []
 
-    def factory(self, *, config, system_prompt, tools, ollama_connection=None):
+    def factory(self, *, config, system_prompt, tools, ollama_connection=None, **kwargs):
         self.config = config
         self.system_prompt = system_prompt
         self.tools = tools

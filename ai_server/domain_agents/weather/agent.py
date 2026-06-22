@@ -41,6 +41,7 @@ class WeatherDomainAgent:
         session: ClientSession | None = None,
         ollama_connection: AgentLoopOllamaConnection | None = None,
         loop_factory: Callable[..., AgentLoop] = AgentLoop,
+        processing_update_interval_seconds: float = 5.0,
     ) -> None:
         self._model = model
         self._ollama_url = ollama_url
@@ -55,6 +56,7 @@ class WeatherDomainAgent:
         self._ollama_connection = ollama_connection or AgentLoopOllamaConnection(base_url=ollama_url, session=session)
         self._owns_ollama_connection = ollama_connection is None
         self._loop_factory = loop_factory
+        self._processing_update_interval_seconds = processing_update_interval_seconds
         self._logger = logging.getLogger(f"{__name__}.WeatherDomainAgent[{model}:{location or 'no-location'}]")
 
     async def run_task(
@@ -101,6 +103,8 @@ class WeatherDomainAgent:
             system_prompt=WEATHER_AGENT_SYSTEM_PROMPT,
             tools=toolset,
             ollama_connection=self._ollama_connection,
+            processing_update_callback=conversation.processing_update_callback,
+            processing_update_interval_seconds=self._processing_update_interval_seconds,
         ) as loop:
             reply = await loop.send_user_message(json.dumps(payload, ensure_ascii=False))
         logger.debug("Weather DSA raw reply=%r end_conversation=%s", reply.reply_text, reply.end_conversation)

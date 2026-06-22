@@ -11,7 +11,7 @@ from ai_server.orchestrator import OrchestratorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.ai_tools.calculator import CalculatorTool
 from ai_server.ai_tools.home_assistant import HomeAssistantTool
-from ai_server.config import AgentConfig, ServerConfig
+from ai_server.config import AgentConfig, ProcessingUpdatesConfig, ServerConfig
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
 from ai_server.domain_agents.weather import WeatherDomainAgent
@@ -128,6 +128,7 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             "http://ollama:11434",
             home_assistant_connection=home_assistant_connection,
             server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
+            processing_updates=ProcessingUpdatesConfig(interval_seconds=2.5),
             cache_dir=Path("/tmp/piotr-test-cache"),
         )
 
@@ -137,9 +138,11 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert agent._clarification_model == "gpt-oss:20b-cloud"
             assert agent._ollama._base_url == "http://ollama:11434"
             assert agent._server_config == ServerConfig(timezone="Europe/Warsaw", location="Wrocław")
+            assert agent._processing_update_interval_seconds == 2.5
             assert agent._domain_agents["home_assistant"]._model == "qwen3:8b"
             assert agent._domain_agents["home_assistant"]._fallback_model == "qwen3:4b"
             assert agent._domain_agents["home_assistant"]._fallback_backoff_seconds == 120
+            assert agent._domain_agents["home_assistant"]._processing_update_interval_seconds == 2.5
             assert isinstance(agent._domain_agents["time"], CurrentTimeDomainAgent)
             assert agent._domain_agents["time"]._timezone == "Europe/Warsaw"
             assert agent._domain_agents["time"]._location == "Wrocław"
@@ -147,15 +150,18 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert agent._domain_agents["wikipedia"]._languages == ("pl", "en")
             assert agent._domain_agents["wikipedia"]._model == "gpt-oss:20b-cloud"
             assert agent._domain_agents["wikipedia"]._fallback_model == "qwen3:4b-instruct-fallback"
+            assert agent._domain_agents["wikipedia"]._processing_update_interval_seconds == 2.5
             assert isinstance(agent._domain_agents["weather"], WeatherDomainAgent)
             assert agent._domain_agents["weather"]._model == "gpt-oss:20b-cloud"
             assert agent._domain_agents["weather"]._fallback_model == "qwen3:4b-instruct-fallback"
             assert agent._domain_agents["weather"]._location == "Wrocław"
+            assert agent._domain_agents["weather"]._processing_update_interval_seconds == 2.5
             assert isinstance(agent._domain_agents["media_player"], MediaPlayerDomainAgent)
             assert agent._domain_agents["media_player"]._model == "gpt-oss:20b-cloud"
             assert agent._domain_agents["media_player"]._fallback_model == "qwen3:4b-instruct-fallback"
             assert agent._domain_agents["media_player"]._default_music_media_id == "Liked Songs"
             assert agent._domain_agents["media_player"]._default_music_media_type == "playlist"
+            assert agent._domain_agents["media_player"]._processing_update_interval_seconds == 2.5
         finally:
             await agent.close()
 

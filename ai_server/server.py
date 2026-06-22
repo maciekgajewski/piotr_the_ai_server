@@ -80,6 +80,7 @@ async def run_server(config: Config, ollama_url: str) -> None:
             ollama_url,
             home_assistant_connection=home_assistant_connection,
             server_config=config.server,
+            processing_updates=config.processing_updates,
             cache_dir=config.cache_dir,
         )
         microphone_manager = await init_mics(
@@ -92,6 +93,7 @@ async def run_server(config: Config, ollama_url: str) -> None:
             default_user=config.default_user,
             user_settings=config.users,
             user_settings_provider=user_settings_provider,
+            processing_update_spoken_cues=config.processing_updates.spoken_cues,
         )
         app = create_app(config, agent, user_settings_provider=user_settings_provider)
         runner = web.AppRunner(app)
