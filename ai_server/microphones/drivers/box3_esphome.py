@@ -111,11 +111,22 @@ class Box3EsphomeMicrophone:
 
     async def wait_for_event(self) -> AudioEvent:
         await self._ensure_connected()
+        self._logger.debug(
+            "waiting for ESPHome voice assistant event state=%s",
+            self._voice_assistant_state(),
+        )
         return await self._events.get()
 
     async def send_output_event(self, event: MicrophoneOutputEvent) -> None:
         if isinstance(event, AudioStart):
-            self._logger.debug("sending audio start event to ESPHome satellite")
+            self._logger.debug(
+                "sending audio start event to ESPHome satellite rate=%s width=%s channels=%s volume=%s state=%s",
+                event.rate,
+                event.width,
+                event.channels,
+                event.volume,
+                self._voice_assistant_state(),
+            )
             await self._start_playback(event)
             return
         if isinstance(event, AudioChunk):
@@ -124,29 +135,45 @@ class Box3EsphomeMicrophone:
             self._playback_stream.write(event.data)
             return
         if isinstance(event, AudioEnd):
-            self._logger.debug("sending audio end event to ESPHome satellite")
+            self._logger.debug(
+                "sending audio end event to ESPHome satellite state=%s",
+                self._voice_assistant_state(),
+            )
             await self._finish_playback()
             return
         if isinstance(event, MessageEndCue):
-            self._logger.debug("requesting ESPHome satellite message-end cue")
+            self._logger.debug(
+                "requesting ESPHome satellite message-end cue state=%s",
+                self._voice_assistant_state(),
+            )
             await self._execute_api_service(PLAY_MESSAGE_END_CUE_SERVICE)
             return
         if isinstance(event, StartWakeWordListening):
-            self._logger.debug("requesting ESPHome satellite wake-word listening")
+            self._logger.debug(
+                "requesting ESPHome satellite wake-word listening state=%s",
+                self._voice_assistant_state(),
+            )
             await self._start_wake_word_listening()
             return
         if isinstance(event, StartFollowUpListening):
-            self._logger.debug("requesting ESPHome satellite follow-up listening")
+            self._logger.debug(
+                "requesting ESPHome satellite follow-up listening state=%s",
+                self._voice_assistant_state(),
+            )
             await self._finish_voice_assistant_run()
             await self._execute_api_service(START_FOLLOW_UP_LISTENING_SERVICE)
             return
         if isinstance(event, ConversationTimeoutCue):
-            self._logger.debug("requesting ESPHome satellite conversation-timeout cue")
+            self._logger.debug(
+                "requesting ESPHome satellite conversation-timeout cue state=%s",
+                self._voice_assistant_state(),
+            )
             await self._execute_api_service(PLAY_CONVERSATION_TIMEOUT_CUE_SERVICE)
             return
         raise ValueError(f"unsupported microphone output event: {type(event).__name__}")
 
     async def close(self) -> None:
+        self._logger.debug("closing ESPHome microphone state=%s", self._voice_assistant_state())
         await self._finish_playback()
         if self._unsubscribe is not None:
             self._unsubscribe()
@@ -157,6 +184,7 @@ class Box3EsphomeMicrophone:
 
     async def _ensure_connected(self) -> None:
         if self._client is not None:
+            self._logger.debug("reusing ESPHome satellite connection state=%s", self._voice_assistant_state())
             return
 
         _require_aioesphomeapi()
@@ -188,20 +216,31 @@ class Box3EsphomeMicrophone:
 
     def _subscribe_voice_assistant(self) -> None:
         if self._unsubscribe is not None:
+            self._logger.debug(
+                "ESPHome satellite voice assistant already subscribed state=%s",
+                self._voice_assistant_state(),
+            )
             return
         self._unsubscribe = self._client.subscribe_voice_assistant(
             handle_start=self._handle_start,
             handle_audio=self._handle_audio,
             handle_stop=self._handle_stop,
         )
-        self._logger.debug("subscribed to ESPHome satellite voice assistant")
+        self._logger.debug("subscribed to ESPHome satellite voice assistant state=%s", self._voice_assistant_state())
 
     def _unsubscribe_voice_assistant(self) -> None:
         if self._unsubscribe is None:
+            self._logger.debug(
+                "ESPHome satellite voice assistant already unsubscribed state=%s",
+                self._voice_assistant_state(),
+            )
             return
         self._unsubscribe()
         self._unsubscribe = None
-        self._logger.debug("unsubscribed from ESPHome satellite voice assistant")
+        self._logger.debug(
+            "unsubscribed from ESPHome satellite voice assistant state=%s",
+            self._voice_assistant_state(),
+        )
 
     async def _start_playback(self, event: AudioStart) -> None:
         if event.rate is None or event.width is None or event.channels is None:
@@ -227,7 +266,7 @@ class Box3EsphomeMicrophone:
                 self._client.media_player_command(key, volume=event.volume)
                 await asyncio.sleep(0.1)
             self._client.media_player_command(key, media_url=url, announcement=True)
-            self._logger.debug("playback stream started url=%s", url)
+            self._logger.debug("playback stream started url=%s state=%s", url, self._voice_assistant_state())
         except _expected_unavailable_errors() as error:
             if self._playback_stream is not None:
                 self._playback_stream.close()
@@ -237,10 +276,17 @@ class Box3EsphomeMicrophone:
 
     async def _finish_playback(self) -> None:
         if self._playback_stream is None:
+            self._logger.debug("no playback stream to finish state=%s", self._voice_assistant_state())
             return
 
         playback_stream = self._playback_stream
         self._playback_stream = None
+        self._logger.debug(
+            "finishing playback stream queued_chunks=%s queued_bytes=%s state=%s",
+            playback_stream.queued_chunks,
+            playback_stream.queued_bytes,
+            self._voice_assistant_state(),
+        )
         playback_stream.finish()
         request_seen = await asyncio.to_thread(
             playback_stream.wait_for_request,
@@ -311,6 +357,11 @@ class Box3EsphomeMicrophone:
         self._stream_done.clear()
         self._stream_started.set()
         self._events.put_nowait(AudioStart(wake_word=wake_word_phrase))
+        self._logger.debug(
+            "ESPHome voice assistant stream state initialized state=%s queue_size=%s",
+            self._voice_assistant_state(),
+            self._events.qsize(),
+        )
         self._logger.info(
             "voice assistant stream started conversation_id=%s wake_word=%r flags=%s audio_settings=%s "
             "post_speech_ignore_seconds=%.2f",
@@ -393,6 +444,11 @@ class Box3EsphomeMicrophone:
         return True
 
     async def _handle_stop(self, _aborted: bool) -> None:
+        self._logger.debug(
+            "ESPHome voice assistant stop callback aborted=%s state=%s",
+            _aborted,
+            self._voice_assistant_state(),
+        )
         self._logger.info(
             "voice assistant stream stop aborted=%s chunks=%s bytes=%s",
             _aborted,
@@ -402,6 +458,7 @@ class Box3EsphomeMicrophone:
         self._stream_done.set()
         self._voice_assistant_run_active = False
         self._finish_audio_stream()
+        self._logger.debug("ESPHome voice assistant stop handled state=%s", self._voice_assistant_state())
 
     def _drop_late_audio_chunk(self) -> None:
         self._late_audio_chunk_count += 1
@@ -415,6 +472,11 @@ class Box3EsphomeMicrophone:
         _require_aioesphomeapi()
 
         event = getattr(aioesphomeapi.VoiceAssistantEventType, event_name)
+        self._logger.debug(
+            "sending ESPHome voice assistant event=%s state=%s",
+            event_name,
+            self._voice_assistant_state(),
+        )
         self._client.send_voice_assistant_event(event, None)
 
     async def _execute_api_service(self, service_name: str) -> None:
@@ -433,14 +495,16 @@ class Box3EsphomeMicrophone:
         raise RuntimeError(f"ESPHome satellite API service not found: {service_name}")
 
     async def _start_wake_word_listening(self) -> None:
+        self._logger.debug("starting ESPHome wake-word re-arm state=%s", self._voice_assistant_state())
         await self._finish_voice_assistant_run()
         if self._client is not None:
             self._unsubscribe_voice_assistant()
             self._subscribe_voice_assistant()
-            self._logger.debug("ESPHome satellite wake-word listening armed")
+            self._logger.debug("ESPHome satellite wake-word listening armed state=%s", self._voice_assistant_state())
 
     async def _finish_voice_assistant_run(self) -> None:
         await self._ensure_connected()
+        self._logger.debug("finishing ESPHome voice assistant run requested state=%s", self._voice_assistant_state())
         if self._voice_assistant_run_active:
             try:
                 self._send_run_end_once()
@@ -448,16 +512,29 @@ class Box3EsphomeMicrophone:
                 await self._mark_disconnected()
                 raise MicrophoneUnavailable(f"address={self.playback_target.address} error={error}") from error
             self._voice_assistant_run_active = False
+            self._logger.debug(
+                "ESPHome voice assistant run marked inactive; waiting before re-arm delay_seconds=%.2f state=%s",
+                VOICE_ASSISTANT_REARM_DELAY_SECONDS,
+                self._voice_assistant_state(),
+            )
             await asyncio.sleep(VOICE_ASSISTANT_REARM_DELAY_SECONDS)
+            self._logger.debug(
+                "ESPHome voice assistant run finish delay elapsed state=%s",
+                self._voice_assistant_state(),
+            )
+        else:
+            self._logger.debug("ESPHome voice assistant run already inactive state=%s", self._voice_assistant_state())
 
     def _send_run_end_once(self) -> None:
         if self._run_end_sent:
+            self._logger.debug("ESPHome voice assistant run-end already sent state=%s", self._voice_assistant_state())
             return
         self._send_voice_assistant_event("VOICE_ASSISTANT_RUN_END")
         self._run_end_sent = True
-        self._logger.debug("sent VOICE_ASSISTANT_RUN_END")
+        self._logger.debug("sent VOICE_ASSISTANT_RUN_END state=%s", self._voice_assistant_state())
 
     async def _mark_disconnected(self) -> None:
+        self._logger.debug("marking ESPHome satellite disconnected state=%s", self._voice_assistant_state())
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
@@ -469,14 +546,34 @@ class Box3EsphomeMicrophone:
 
     def _finish_audio_stream(self) -> None:
         if self._audio_ended:
+            self._logger.debug("ESPHome audio stream already finished state=%s", self._voice_assistant_state())
             return
+        self._logger.debug("finishing ESPHome audio stream state=%s", self._voice_assistant_state())
         self._audio_ended = True
         if not self._speech_started:
             self._pending_audio_chunks.clear()
         if not self._stream_done.is_set():
             self._send_voice_assistant_event("VOICE_ASSISTANT_STT_VAD_END")
-            self._logger.debug("sent VOICE_ASSISTANT_STT_VAD_END")
+            self._logger.debug("sent VOICE_ASSISTANT_STT_VAD_END state=%s", self._voice_assistant_state())
         self._events.put_nowait(AudioEnd())
+        self._logger.debug(
+            "queued ESPHome audio end event state=%s queue_size=%s",
+            self._voice_assistant_state(),
+            self._events.qsize(),
+        )
+
+    def _voice_assistant_state(self) -> str:
+        return (
+            f"connected={self._client is not None} "
+            f"subscribed={self._unsubscribe is not None} "
+            f"run_active={self._voice_assistant_run_active} "
+            f"run_end_sent={self._run_end_sent} "
+            f"stream_done={self._stream_done.is_set()} "
+            f"audio_ended={self._audio_ended} "
+            f"speech_started={self._speech_started} "
+            f"chunks={self._audio_chunk_count} "
+            f"bytes={self._byte_count}"
+        )
 
     async def _wait_for_end_of_speech(self, capture_seconds: float) -> None:
         stream_done_task = asyncio.create_task(self._stream_done.wait())
