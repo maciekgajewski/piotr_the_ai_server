@@ -4,9 +4,10 @@ import asyncio
 import json
 import logging
 import re
+import socket
 from typing import Any
 
-from aiohttp import ClientSession, WSMsgType
+from aiohttp import ClientConnectorDNSError, ClientSession, WSMsgType
 
 from ai_server.home_assistant.interfaces import (
     DEFAULT_CONTROLLABLE_DOMAINS,
@@ -31,6 +32,7 @@ INVENTORY_NOT_READY = {"error": "home_assistant_inventory_not_ready"}
 CONNECTION_UNAVAILABLE = {"error": "home_assistant_connection_unavailable"}
 RECONNECT_INITIAL_DELAY_SECONDS = 1.0
 RECONNECT_MAX_DELAY_SECONDS = 30.0
+RECOVERABLE_WS_MESSAGE_TYPES = frozenset((WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR))
 GLOBAL_SCOPE_TERMS = (
     "all",
     "every",
@@ -53,6 +55,17 @@ GLOBAL_SCOPE_TERMS = (
 )
 MEDIA_PLAYER_DOMAIN = "media_player"
 MUSIC_ASSISTANT_PLATFORM = "music_assistant"
+
+
+class _RecoverableHomeAssistantWebSocketMessage(RuntimeError):
+    def __init__(self, message_type: WSMsgType, detail: str = "") -> None:
+        self.message_type = message_type
+        self.message_type_label = _ws_message_type_label(message_type)
+        self.detail = detail
+        message = f"Home Assistant WebSocket ended with message_type={self.message_type_label}"
+        if detail:
+            message = f"{message} detail={detail}"
+        super().__init__(message)
 
 
 class HomeAssistantConnection:
@@ -558,6 +571,22 @@ Scope rules:
                     "Home Assistant inventory refresh timed out; will retry interval_seconds=%s",
                     self._options.inventory_refresh_seconds,
                 )
+            except _RecoverableHomeAssistantWebSocketMessage as exc:
+                self._logger.warning(
+                    "Home Assistant inventory refresh websocket ended; will retry interval_seconds=%s message_type=%s detail=%s",
+                    self._options.inventory_refresh_seconds,
+                    exc.message_type_label,
+                    exc.detail or "none",
+                )
+            except ClientConnectorDNSError as exc:
+                if _is_dns_resolution_error(exc):
+                    self._logger.warning(
+                        "Home Assistant inventory refresh could not resolve host; will retry interval_seconds=%s detail=%s",
+                        self._options.inventory_refresh_seconds,
+                        _dns_resolution_error_detail(exc),
+                    )
+                else:
+                    self._logger.exception("failed to refresh Home Assistant inventory")
             except Exception:
                 self._logger.exception("failed to refresh Home Assistant inventory")
             await asyncio.sleep(self._options.inventory_refresh_seconds)
@@ -601,6 +630,26 @@ Scope rules:
                 delay = RECONNECT_INITIAL_DELAY_SECONDS
             except asyncio.CancelledError:
                 raise
+            except _RecoverableHomeAssistantWebSocketMessage as exc:
+                self._logger.warning(
+                    "Home Assistant state subscription websocket ended; reconnecting in %ss message_type=%s detail=%s",
+                    delay,
+                    exc.message_type_label,
+                    exc.detail or "none",
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, RECONNECT_MAX_DELAY_SECONDS)
+            except ClientConnectorDNSError as exc:
+                if _is_dns_resolution_error(exc):
+                    self._logger.warning(
+                        "Home Assistant state subscription could not resolve host; reconnecting in %ss detail=%s",
+                        delay,
+                        _dns_resolution_error_detail(exc),
+                    )
+                else:
+                    self._logger.exception("Home Assistant state subscription failed; reconnecting in %ss", delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, RECONNECT_MAX_DELAY_SECONDS)
             except Exception:
                 self._logger.exception("Home Assistant state subscription failed; reconnecting in %ss", delay)
                 await asyncio.sleep(delay)
@@ -822,12 +871,39 @@ class _HomeAssistantWebSocket:
 
 
 def _parse_ws_text_message(message) -> dict[str, Any]:
+    if message.type in RECOVERABLE_WS_MESSAGE_TYPES:
+        raise _RecoverableHomeAssistantWebSocketMessage(message.type, _ws_message_detail(message))
     if message.type != WSMsgType.TEXT:
         raise ValueError(f"unexpected Home Assistant WebSocket message type: {message.type}")
     body = json.loads(message.data)
     if not isinstance(body, dict):
         raise ValueError("Home Assistant WebSocket message must be an object")
     return body
+
+
+def _ws_message_type_label(message_type: WSMsgType) -> str:
+    return f"{message_type.name}({int(message_type)})"
+
+
+def _ws_message_detail(message) -> str:
+    data = getattr(message, "data", None)
+    if data is None:
+        return ""
+    if isinstance(data, BaseException):
+        return f"{type(data).__name__}: {data}"
+    return str(data)
+
+
+def _is_dns_resolution_error(exc: ClientConnectorDNSError) -> bool:
+    return isinstance(exc.os_error, socket.gaierror)
+
+
+def _dns_resolution_error_detail(exc: ClientConnectorDNSError) -> str:
+    os_error = exc.os_error
+    errno = getattr(os_error, "errno", None)
+    if errno is None:
+        return f"{type(os_error).__name__}: {os_error}"
+    return f"{type(os_error).__name__}[errno={errno}]: {os_error}"
 
 
 def _build_inventory(

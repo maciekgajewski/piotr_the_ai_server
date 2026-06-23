@@ -1,8 +1,10 @@
 import asyncio
 import logging
 import locale
+import socket
 
 import pytest
+from aiohttp import ClientConnectorDNSError, WSMsgType
 
 from ai_server.agent_loop import AgentReply
 from ai_server.ai_tools import create_tools
@@ -16,7 +18,12 @@ from ai_server.ai_tools.web_search import WebSearchTool
 from ai_server.ai_tools.wikipedia import WikipediaTool
 from ai_server.config import AgentConfig, ProcessingUpdatesConfig
 from ai_server.home_assistant import HomeAssistantConnection, HomeAssistantServiceCall, parse_home_assistant_options
-from ai_server.home_assistant.connection import _build_inventory, _call_home_assistant_service
+from ai_server.home_assistant.connection import (
+    _RecoverableHomeAssistantWebSocketMessage,
+    _build_inventory,
+    _call_home_assistant_service,
+    _parse_ws_text_message,
+)
 from ai_server.home_assistant.interfaces import HomeAssistantOptions
 from ai_server.interfaces import Conversation
 from ai_server.messages import TextMessage, text_message_to_events
@@ -466,6 +473,134 @@ def test_home_assistant_registry_refresh_timeout_logs_warning_without_traceback(
     assert len(records) == 1
     assert records[0].levelno == logging.WARNING
     assert records[0].exc_info is None
+
+
+def test_home_assistant_registry_refresh_dns_error_logs_warning_without_traceback(caplog) -> None:
+    connection = HomeAssistantConnection(
+        HomeAssistantOptions(
+            url="http://homeassistant.local:8123",
+            token="secret-token",
+            controllable_domains=("climate", "light"),
+            inventory_refresh_seconds=0.0,
+            inventory_summary_seconds=300.0,
+        )
+    )
+
+    async def fake_refresh_inventory() -> None:
+        connection._closed = True
+        raise ClientConnectorDNSError(None, socket.gaierror(-2, "Name or service not known"))
+
+    connection.refresh_inventory = fake_refresh_inventory
+
+    with caplog.at_level(logging.WARNING, logger=connection._logger.name):
+        asyncio.run(connection._registry_refresh_loop())
+
+    records = [
+        record
+        for record in caplog.records
+        if record.message
+        == "Home Assistant inventory refresh could not resolve host; will retry interval_seconds=0.0 detail=gaierror[errno=-2]: [Errno -2] Name or service not known"
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
+
+
+@pytest.mark.parametrize("message_type", (WSMsgType.ERROR, WSMsgType.CLOSED, WSMsgType.CLOSE))
+def test_home_assistant_recoverable_websocket_messages_raise_reconnect_signal(message_type: WSMsgType) -> None:
+    class FakeMessage:
+        type = message_type
+        data = RuntimeError("No PONG received") if message_type is WSMsgType.ERROR else None
+
+    with pytest.raises(_RecoverableHomeAssistantWebSocketMessage) as exc_info:
+        _parse_ws_text_message(FakeMessage())
+
+    assert exc_info.value.message_type == message_type
+    assert exc_info.value.message_type_label == f"{message_type.name}({int(message_type)})"
+    if message_type is WSMsgType.ERROR:
+        assert exc_info.value.detail == "RuntimeError: No PONG received"
+    else:
+        assert exc_info.value.detail == ""
+
+
+def test_home_assistant_state_subscription_recoverable_websocket_message_logs_warning_without_traceback(
+    monkeypatch,
+    caplog,
+) -> None:
+    connection = HomeAssistantConnection(
+        HomeAssistantOptions(
+            url="http://ha.local:8123",
+            token="secret-token",
+            controllable_domains=("climate", "light"),
+            inventory_refresh_seconds=30.0,
+            inventory_summary_seconds=300.0,
+        )
+    )
+    sleeps = []
+
+    async def fake_run_state_subscription() -> None:
+        connection._closed = True
+        raise _RecoverableHomeAssistantWebSocketMessage(WSMsgType.ERROR, "RuntimeError: No PONG received")
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(connection, "_run_state_subscription", fake_run_state_subscription)
+    monkeypatch.setattr("ai_server.home_assistant.connection.asyncio.sleep", fake_sleep)
+
+    with caplog.at_level(logging.WARNING, logger=connection._logger.name):
+        asyncio.run(connection._state_subscription_loop())
+
+    records = [
+        record
+        for record in caplog.records
+        if record.message
+        == "Home Assistant state subscription websocket ended; reconnecting in 1.0s message_type=ERROR(258) detail=RuntimeError: No PONG received"
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
+    assert sleeps == [1.0]
+
+
+def test_home_assistant_state_subscription_dns_error_logs_warning_without_traceback(
+    monkeypatch,
+    caplog,
+) -> None:
+    connection = HomeAssistantConnection(
+        HomeAssistantOptions(
+            url="http://homeassistant.local:8123",
+            token="secret-token",
+            controllable_domains=("climate", "light"),
+            inventory_refresh_seconds=30.0,
+            inventory_summary_seconds=300.0,
+        )
+    )
+    sleeps = []
+
+    async def fake_run_state_subscription() -> None:
+        connection._closed = True
+        raise ClientConnectorDNSError(None, socket.gaierror(-2, "Name or service not known"))
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(connection, "_run_state_subscription", fake_run_state_subscription)
+    monkeypatch.setattr("ai_server.home_assistant.connection.asyncio.sleep", fake_sleep)
+
+    with caplog.at_level(logging.WARNING, logger=connection._logger.name):
+        asyncio.run(connection._state_subscription_loop())
+
+    records = [
+        record
+        for record in caplog.records
+        if record.message
+        == "Home Assistant state subscription could not resolve host; reconnecting in 1.0s detail=gaierror[errno=-2]: [Errno -2] Name or service not known"
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
+    assert sleeps == [1.0]
 
 
 def test_home_assistant_common_properties_intersect_device_capabilities() -> None:
