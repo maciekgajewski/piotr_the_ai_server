@@ -553,6 +553,11 @@ Scope rules:
                 await self.refresh_inventory()
             except asyncio.CancelledError:
                 raise
+            except TimeoutError:
+                self._logger.warning(
+                    "Home Assistant inventory refresh timed out; will retry interval_seconds=%s",
+                    self._options.inventory_refresh_seconds,
+                )
             except Exception:
                 self._logger.exception("failed to refresh Home Assistant inventory")
             await asyncio.sleep(self._options.inventory_refresh_seconds)

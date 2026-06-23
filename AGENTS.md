@@ -35,6 +35,11 @@ Rules:
 - If class uses logger, give it a instance member variable, _logger, with a prefix that identifies class type and the instance.
 - Put reusable code in the utils/ module. When planning, check the module manifest for useful tools before reinventing them.
 
+# Error handling
+
+When in doubt, kill the process. Use asserts to verify invariants and assumptions.
+Catch only exceptions we know how to handle.
+
 # DSA and Orchestrator behavior development
 
 - There are behavior tests in orchestrator_and_dsa_tests/

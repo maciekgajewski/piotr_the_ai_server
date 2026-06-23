@@ -17,6 +17,7 @@ from ai_server.ai_tools.wikipedia import WikipediaTool
 from ai_server.config import AgentConfig, ProcessingUpdatesConfig
 from ai_server.home_assistant import HomeAssistantConnection, HomeAssistantServiceCall, parse_home_assistant_options
 from ai_server.home_assistant.connection import _build_inventory, _call_home_assistant_service
+from ai_server.home_assistant.interfaces import HomeAssistantOptions
 from ai_server.interfaces import Conversation
 from ai_server.messages import TextMessage, text_message_to_events
 from conftest import FakeConversationEndpoint
@@ -435,6 +436,36 @@ def test_home_assistant_connection_updates_cached_state_from_state_changed_event
     device = connection.inventory.devices_by_id["device-ac"]
     assert device.entities[0].state == "cool"
     assert device.entities[0].attributes["temperature"] == 22
+
+
+def test_home_assistant_registry_refresh_timeout_logs_warning_without_traceback(caplog) -> None:
+    connection = HomeAssistantConnection(
+        HomeAssistantOptions(
+            url="http://ha.local:8123",
+            token="secret-token",
+            controllable_domains=("climate", "light"),
+            inventory_refresh_seconds=0.0,
+            inventory_summary_seconds=300.0,
+        )
+    )
+
+    async def fake_refresh_inventory() -> None:
+        connection._closed = True
+        raise TimeoutError
+
+    connection.refresh_inventory = fake_refresh_inventory
+
+    with caplog.at_level(logging.WARNING, logger=connection._logger.name):
+        asyncio.run(connection._registry_refresh_loop())
+
+    records = [
+        record
+        for record in caplog.records
+        if record.message == "Home Assistant inventory refresh timed out; will retry interval_seconds=0.0"
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
 
 
 def test_home_assistant_common_properties_intersect_device_capabilities() -> None:
