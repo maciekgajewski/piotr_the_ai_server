@@ -336,7 +336,11 @@ def _validate_json_value(value: Any, path: str) -> Any:
     if isinstance(value, list):
         return [_validate_json_value(item, f"{path}[{index}]") for index, item in enumerate(value)]
     if isinstance(value, dict):
-        return {_validate_dict_key(key, path): _validate_json_value(item, f"{path}.{key}") for key, item in value.items()}
+        return {
+            _validate_dict_key(key, path): _validate_json_value(item, f"{path}.{key}")
+            for key, item in value.items()
+            if item is not None
+        }
     raise ValueError(f"{path} must be JSON-serializable")
 
 

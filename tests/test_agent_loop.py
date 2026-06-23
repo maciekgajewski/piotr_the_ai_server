@@ -163,6 +163,26 @@ def test_call_tool_rejects_non_json_return_value() -> None:
         asyncio.run(BadReturnTools().call_tool("broken", {}))
 
 
+def test_call_tool_omits_none_fields_from_dictionary_results() -> None:
+    class OptionalReturnTools(AgentCallableSet):
+        @AgentCallableSet.tool
+        async def optional(self) -> dict[str, Any]:
+            return {
+                "kept": "value",
+                "omitted": None,
+                "nested": {"kept": 1, "omitted": None},
+                "items": [None, {"kept": True, "omitted": None}],
+            }
+
+    result = asyncio.run(OptionalReturnTools().call_tool("optional", {}))
+
+    assert result == {
+        "kept": "value",
+        "nested": {"kept": 1},
+        "items": [None, {"kept": True}],
+    }
+
+
 def test_tool_decorator_rejects_non_async_method() -> None:
     with pytest.raises(TypeError, match="async methods"):
 

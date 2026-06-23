@@ -34,6 +34,7 @@ Rules:
 - Do not cram code into __init__.py, it should be minimal, best empty
 - If class uses logger, give it a instance member variable, _logger, with a prefix that identifies class type and the instance.
 - Put reusable code in the utils/ module. When planning, check the module manifest for useful tools before reinventing them.
+- For internal JSON-like dictionaries, omit keys with `None` values. Treat missing keys and null dictionary fields as the same unless an external protocol explicitly requires null.
 
 # Error handling
 
