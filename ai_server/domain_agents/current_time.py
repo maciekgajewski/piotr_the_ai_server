@@ -123,6 +123,11 @@ class CurrentTimeDomainAgent:
         )
         self._logger = logging.getLogger(f"{__name__}.CurrentTimeDomainAgent[{self._timezone}:{location or 'no-location'}]")
 
+    def known_utterances(self) -> dict[str, DomainTask]:
+        return {
+            "Która godzina?": _known_task("time", {"query": "Która godzina?"}),
+        }
+
     async def run_task(
         self,
         conversation: Conversation,
@@ -366,6 +371,17 @@ def _unknown_timezone_result(location: str) -> dict[str, Any]:
         "needs_clarification": True,
         "clarification_question": "Dla jakiego miasta lub strefy czasowej mam podać czas?",
         "entities": [],
+    }
+
+
+def _known_task(domain: str, command: dict[str, Any]) -> DomainTask:
+    return {
+        "id": "t1",
+        "domain": domain,
+        "command": command,
+        "depends_on": [],
+        "status": "ready",
+        "clarification_question": None,
     }
 
 

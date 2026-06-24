@@ -15,7 +15,7 @@ from ai_server.home_assistant.interfaces import HomeAssistantInventory
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import ProcessingUpdate, RequestFollowUp, TextMessage
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
-from ai_server.orchestrator.known_utterances import known_utterance_task
+from ai_server.orchestrator.known_utterances import KnownUtteranceTasks, collect_known_utterance_tasks, known_utterance_task
 from ai_server.utils.processing import ProcessingUpdateCallback, ProcessingUpdateThrottle, await_with_processing_updates
 from ai_server.utils.text import normalize_text
 
@@ -190,6 +190,7 @@ class OrchestratorAgent:
         self._orchestrator_model = orchestrator_model
         self._clarification_model = clarification_model
         self._domain_agents = dict(domain_agents or {})
+        self._known_utterance_tasks = collect_known_utterance_tasks(self._domain_agents)
         self._ollama = ollama_client or OllamaClient(base_url=base_url, session=session)
         self._owns_ollama = owns_ollama_client
         self._server_config = server_config
@@ -294,7 +295,12 @@ class OrchestratorAgent:
             return reply
 
         area_context = _home_assistant_area_context(self._home_assistant_inventory_provider)
-        plan = _short_path_plan(user_input, area_context=area_context, active_context=active_context)
+        plan = _short_path_plan(
+            user_input,
+            known_utterance_tasks=self._known_utterance_tasks,
+            area_context=area_context,
+            active_context=active_context,
+        )
         if plan is None:
             plan = await self._plan_message(
                 user_input=user_input,
@@ -753,12 +759,13 @@ def _elapsed_ms(started_at: float) -> int:
 def _short_path_plan(
     user_input: str,
     *,
+    known_utterance_tasks: KnownUtteranceTasks,
     area_context: dict[str, Any] | None = None,
     active_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if _should_plan_contextual_utterance(user_input, active_context):
         return None
-    task = known_utterance_task(user_input)
+    task = known_utterance_task(user_input, known_utterance_tasks)
     if task is None:
         return None
     if area_context is not None and _task_has_explicit_area(task):

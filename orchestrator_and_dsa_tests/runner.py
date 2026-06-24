@@ -93,6 +93,9 @@ class StubDomainAgent:
         self._used_result_keys: set[str] = set()
         self._traces = traces
 
+    def known_utterances(self) -> dict[str, dict[str, Any]]:
+        return {}
+
     async def run_task(self, conversation: Conversation, task: dict[str, Any], active_context: dict[str, Any]) -> dict[str, Any]:
         del conversation, active_context
         result = copy.deepcopy(self._result_for_task(task["id"]))
@@ -118,6 +121,9 @@ class TracingDomainAgent:
         self._domain = domain
         self._inner = inner
         self._traces = traces
+
+    def known_utterances(self) -> dict[str, dict[str, Any]]:
+        return self._inner.known_utterances()
 
     async def run_task(self, conversation: Conversation, task: dict[str, Any], active_context: dict[str, Any]) -> dict[str, Any]:
         result = await self._inner.run_task(conversation, task, active_context)

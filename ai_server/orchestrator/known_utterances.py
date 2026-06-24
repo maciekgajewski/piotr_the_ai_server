@@ -1,185 +1,40 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
 
-from ai_server.domain_agents.interfaces import DomainTask
-from ai_server.domain_agents.media_player.parser import media_task_from_utterance
-from ai_server.domain_agents.weather.fast_lane import weather_task_from_utterance
-from ai_server.utils.text import normalize_text
-
-
-KNOWN_UTTERANCE_TASKS: dict[str, DomainTask] = {
-    normalize_text("Która godzina?"): {
-        "id": "t1",
-        "domain": "time",
-        "command": {"query": "Która godzina?"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Pogoda?"): {
-        "id": "t1",
-        "domain": "weather",
-        "command": {"tool": "get_weather_now", "query": "Pogoda?"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("jaka jest pogoda"): {
-        "id": "t1",
-        "domain": "weather",
-        "command": {"tool": "get_weather_now", "query": "jaka jest pogoda"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("jaka dziś pogoda"): {
-        "id": "t1",
-        "domain": "weather",
-        "command": {
-            "tool": "get_weather_forecast",
-            "query": "jaka dziś pogoda",
-            "horizon": "today",
-            "granularity": "daily",
-        },
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("jaka jutro pogoda"): {
-        "id": "t1",
-        "domain": "weather",
-        "command": {
-            "tool": "get_weather_forecast",
-            "query": "jaka jutro pogoda",
-            "horizon": "tomorrow",
-            "granularity": "daily",
-        },
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("jaka pogoda na weekend"): {
-        "id": "t1",
-        "domain": "weather",
-        "command": {
-            "tool": "get_weather_forecast",
-            "query": "jaka pogoda na weekend",
-            "horizon": "weekend",
-            "granularity": "daily",
-        },
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Spotify!"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Spotify!"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Graj muzykę"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Graj muzykę"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Grajh muzykę"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Grajh muzykę"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Włącz muzykę"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Włącz muzykę"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Dajcie tu jakąś muzyczkę"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Dajcie tu jakąś muzyczkę"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Cisza"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "stop", "query": "Cisza"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Cicho"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "stop", "query": "Cicho"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Zatrzymaj muzykę"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "stop", "query": "Zatrzymaj muzykę"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Wyłącz muzykę"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "stop", "query": "Wyłącz muzykę"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Co to teraz gra?"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "now_playing", "query": "Co to teraz gra?"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Co to za muzyka?"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "now_playing", "query": "Co to za muzyka?"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-    normalize_text("Kto to gra?"): {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "now_playing", "query": "Kto to gra?"},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    },
-}
+from ai_server.domain_agents.interfaces import DomainAgent, DomainTask
+from ai_server.utils.text import ascii_fold, normalize_text
 
 
-def known_utterance_task(user_input: str) -> DomainTask | None:
-    task = KNOWN_UTTERANCE_TASKS.get(normalize_text(user_input))
-    if task is not None:
-        task = copy.deepcopy(task)
-        command = task.get("command")
-        if isinstance(command, dict) and "query" in command:
-            command["query"] = user_input
-        return task
-    media_task = media_task_from_utterance(user_input)
-    if media_task is not None:
-        return media_task
-    return weather_task_from_utterance(user_input)
+KnownUtteranceTasks = dict[str, DomainTask]
+
+
+def collect_known_utterance_tasks(domain_agents: Mapping[str, DomainAgent]) -> KnownUtteranceTasks:
+    tasks: KnownUtteranceTasks = {}
+    for domain_name, domain_agent in domain_agents.items():
+        for utterance, task in domain_agent.known_utterances().items():
+            if not isinstance(utterance, str) or not utterance.strip():
+                raise ValueError(f"known utterance for {domain_name} must be a non-empty string")
+            if not isinstance(task, dict):
+                raise ValueError(f"known utterance task for {domain_name}.{utterance!r} must be a mapping")
+            key = _known_utterance_key(utterance)
+            if key in tasks:
+                raise ValueError(f"duplicate known utterance after normalization: {utterance!r}")
+            tasks[key] = task
+    return tasks
+
+
+def known_utterance_task(user_input: str, known_utterance_tasks: Mapping[str, DomainTask]) -> DomainTask | None:
+    task = known_utterance_tasks.get(_known_utterance_key(user_input))
+    if task is None:
+        return None
+    task = copy.deepcopy(task)
+    command = task.get("command")
+    if isinstance(command, dict) and "query" in command:
+        command["query"] = user_input
+    return task
+
+
+def _known_utterance_key(value: str) -> str:
+    return ascii_fold(normalize_text(value))

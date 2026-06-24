@@ -82,6 +82,9 @@ class WikipediaDomainAgent:
         self._processing_update_interval_seconds = processing_update_interval_seconds
         self._logger = logging.getLogger(f"{__name__}.WikipediaDomainAgent[{model}:{','.join(languages)}]")
 
+    def known_utterances(self) -> dict[str, DomainTask]:
+        return {}
+
     async def run_task(
         self,
         conversation: Conversation,

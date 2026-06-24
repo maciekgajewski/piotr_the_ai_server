@@ -22,7 +22,7 @@ from ai_server.domain_agents.weather.formatting import format_current_weather
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider, _station_slug
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
 from ai_server.interfaces import Conversation
-from ai_server.orchestrator.known_utterances import known_utterance_task
+from ai_server.orchestrator.known_utterances import collect_known_utterance_tasks, known_utterance_task
 
 
 def test_weather_fast_lane_creates_current_temperature_task() -> None:
@@ -97,8 +97,18 @@ def test_weather_fast_lane_avoids_ambiguous_or_location_queries(utterance: str) 
         ),
     ],
 )
-def test_weather_known_utterances_are_explicit_rich_tasks(utterance: str, expected_command: dict[str, str]) -> None:
-    task = known_utterance_task(utterance)
+def test_weather_known_utterances_are_explicit_rich_tasks(
+    utterance: str,
+    expected_command: dict[str, str],
+    tmp_path: Path,
+) -> None:
+    agent = WeatherDomainAgent(
+        model="qwen3:4b-instruct",
+        location="Wrocław",
+        cache_dir=tmp_path,
+        providers=[],
+    )
+    task = known_utterance_task(utterance, collect_known_utterance_tasks({"weather": agent}))
 
     assert task["domain"] == "weather"
     assert task["command"] == expected_command

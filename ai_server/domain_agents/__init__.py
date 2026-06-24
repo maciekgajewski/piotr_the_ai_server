@@ -94,6 +94,9 @@ class _UnsupportedConfiguredDomainAgent:
     def __init__(self, domain: str) -> None:
         self._domain = domain
 
+    def known_utterances(self) -> dict[str, DomainTask]:
+        return {}
+
     async def run_task(self, conversation, task: DomainTask, active_context: dict[str, Any]) -> dict[str, Any]:
         return {
             "status": "unsupported_domain",

@@ -18,7 +18,7 @@ from ai_server.domain_agents.weather.interfaces import (
     WeatherNowRequest,
     WeatherProvider,
 )
-from ai_server.domain_agents.weather.fast_lane import fast_lane_command_from_task_command
+from ai_server.domain_agents.weather.fast_lane import fast_lane_command_from_task_command, known_weather_utterances
 from ai_server.domain_agents.weather.messages import WEATHER_AGENT_SYSTEM_PROMPT
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
@@ -58,6 +58,9 @@ class WeatherDomainAgent:
         self._loop_factory = loop_factory
         self._processing_update_interval_seconds = processing_update_interval_seconds
         self._logger = logging.getLogger(f"{__name__}.WeatherDomainAgent[{model}:{location or 'no-location'}]")
+
+    def known_utterances(self) -> dict[str, DomainTask]:
+        return known_weather_utterances()
 
     async def run_task(
         self,

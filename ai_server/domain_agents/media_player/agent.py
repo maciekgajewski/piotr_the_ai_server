@@ -62,6 +62,31 @@ class MediaPlayerDomainAgent:
         self._recent_media_by_user: dict[str, MediaSearchItem] = {}
         self._logger = logging.getLogger(f"{__name__}.MediaPlayerDomainAgent[{model}]")
 
+    def known_utterances(self) -> dict[str, DomainTask]:
+        return {
+            "Spotify!": _known_task("start_last", "Spotify!"),
+            "Graj muzykę": _known_task("start_last", "Graj muzykę"),
+            "Grajh muzykę": _known_task("start_last", "Grajh muzykę"),
+            "Włącz muzykę": _known_task("start_last", "Włącz muzykę"),
+            "Dajcie tu jakąś muzyczkę": _known_task("start_last", "Dajcie tu jakąś muzyczkę"),
+            "Cisza": _known_task("stop", "Cisza"),
+            "Cicho": _known_task("stop", "Cicho"),
+            "Zatrzymaj muzykę": _known_task("stop", "Zatrzymaj muzykę"),
+            "Wyłącz muzykę": _known_task("stop", "Wyłącz muzykę"),
+            "Co to teraz gra?": _known_task("now_playing", "Co to teraz gra?"),
+            "Co to za muzyka?": _known_task("now_playing", "Co to za muzyka?"),
+            "Kto to gra?": _known_task("now_playing", "Kto to gra?"),
+            "Daj głośniej": _known_task("volume_delta", "Daj głośniej", volume_delta=DEFAULT_VOLUME_DELTA),
+            "Graj muzykę rockową": _known_task("play_media", "muzykę rockową"),
+            "Graj moje ulubione": _known_task("play_media", "Liked Songs", media_type="playlist"),
+            "Włącz TOK FM w całym domu": _known_task(
+                "play_media",
+                "Włącz TOK FM w całym domu",
+                media_type="radio",
+                all_speakers=True,
+            ),
+        }
+
     async def run_task(
         self,
         conversation: Conversation,
@@ -880,6 +905,18 @@ def _failed_result(text: str) -> dict[str, Any]:
         "needs_clarification": False,
         "clarification_question": None,
         "entities": [],
+    }
+
+
+def _known_task(intent: str, query: str, **command_options: Any) -> DomainTask:
+    command = {"intent": intent, "query": query, **command_options}
+    return {
+        "id": "t1",
+        "domain": "media_player",
+        "command": command,
+        "depends_on": [],
+        "status": "ready",
+        "clarification_question": None,
     }
 
 

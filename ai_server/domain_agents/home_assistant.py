@@ -84,6 +84,9 @@ class HomeAssistantDomainAgent:
         self._processing_update_interval_seconds = processing_update_interval_seconds
         self._logger = logging.getLogger(f"{__name__}.HomeAssistantDomainAgent[{model}]")
 
+    def known_utterances(self) -> dict[str, DomainTask]:
+        return {}
+
     async def run_task(
         self,
         conversation: Conversation,

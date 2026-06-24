@@ -22,14 +22,22 @@ FAST_LANE_QUERIES = {
 }
 
 
+def known_weather_utterances() -> dict[str, DomainTask]:
+    return {query: _weather_task(query, command) for query, command in FAST_LANE_QUERIES.items()}
+
+
 def weather_task_from_utterance(user_input: str) -> DomainTask | None:
     command = fast_lane_command_for_query(user_input)
     if command is None:
         return None
+    return _weather_task(user_input, command)
+
+
+def _weather_task(query: str, command: dict[str, str]) -> DomainTask:
     return {
         "id": "t1",
         "domain": "weather",
-        "command": command,
+        "command": {"query": query, **command},
         "depends_on": [],
         "status": "ready",
         "clarification_question": None,

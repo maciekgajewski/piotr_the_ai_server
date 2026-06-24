@@ -284,7 +284,17 @@ def test_orchestrator_returns_single_verbatim_task_result_without_final_synthesi
 def test_orchestrator_short_path_dispatches_known_time_utterance_without_ollama() -> None:
     ollama = FakeOllamaClient([])
     domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "czternasta zero pięć", "final_reply_mode": "verbatim"}]
+        [{"status": "ok", "text": "czternasta zero pięć", "final_reply_mode": "verbatim"}],
+        known_utterances={
+            "Która godzina?": {
+                "id": "t1",
+                "domain": "time",
+                "command": {"query": "Która godzina?"},
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            },
+        },
     )
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
@@ -313,7 +323,22 @@ def test_orchestrator_short_path_dispatches_known_time_utterance_without_ollama(
 def test_orchestrator_short_path_dispatches_weather_utterance_without_ollama() -> None:
     ollama = FakeOllamaClient([])
     domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "We Wrocławiu jest 16 stopni.", "final_reply_mode": "verbatim"}]
+        [{"status": "ok", "text": "We Wrocławiu jest 16 stopni.", "final_reply_mode": "verbatim"}],
+        known_utterances={
+            "Jaka pogoda na weekend?": {
+                "id": "t1",
+                "domain": "weather",
+                "command": {
+                    "tool": "get_weather_forecast",
+                    "query": "Jaka pogoda na weekend?",
+                    "horizon": "weekend",
+                    "granularity": "daily",
+                },
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            },
+        },
     )
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
@@ -431,8 +456,25 @@ def test_orchestrator_plans_pronoun_temperature_followup_instead_of_weather_shor
     )
 
 
-def test_orchestrator_short_path_dispatches_media_stop_with_wake_word_tail_without_ollama() -> None:
-    ollama = FakeOllamaClient([])
+def test_orchestrator_plans_media_stop_with_extra_tail() -> None:
+    plan = {
+        "kind": "single_task",
+        "confidence": 0.95,
+        "tasks": [
+            {
+                "id": "t1",
+                "domain": "media_player",
+                "command": {"intent": "stop", "query": "Zatrzymaj muzykę. Ok, na pół."},
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            }
+        ],
+        "context_updates": {"salient_entities": [], "active_domain": "media_player"},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    ollama = FakeOllamaClient([json.dumps(plan)])
     domain_agent = RecordingDomainAgent(
         [{"status": "ok", "text": "Zatrzymałem muzykę.", "final_reply_mode": "verbatim"}]
     )
@@ -446,10 +488,79 @@ def test_orchestrator_short_path_dispatches_media_stop_with_wake_word_tail_witho
 
     asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"area": "bedroom"}), endpoint))
 
-    assert ollama.requests == []
+    assert len(ollama.requests) == 1
     assert domain_agent.tasks[0]["domain"] == "media_player"
     assert domain_agent.tasks[0]["command"]["intent"] == "stop"
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Zatrzymałem muzykę.")))
+
+
+def test_orchestrator_plans_composite_after_known_media_phrase_prefix() -> None:
+    plan = {
+        "kind": "multi_task",
+        "confidence": 0.95,
+        "tasks": [
+            {
+                "id": "t1",
+                "domain": "media_player",
+                "command": {"intent": "stop", "query": "Wyłącz muzykę"},
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            },
+            {
+                "id": "t2",
+                "domain": "home_assistant",
+                "command": {
+                    "selection": {
+                        "include": [{"domain": "climate", "scope": "single", "area": "office"}],
+                        "exclude": [],
+                    },
+                    "operation": {
+                        "intent": "turn_off",
+                        "description": "wyłącz klimatyzator",
+                        "parameters": {},
+                    },
+                },
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            },
+        ],
+        "context_updates": {"salient_entities": ["climate.office"], "active_domain": "home_assistant"},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    ollama = FakeOllamaClient([json.dumps(plan), "Zatrzymałem muzykę i wyłączyłem klimatyzację."])
+    media_agent = RecordingDomainAgent(
+        [{"status": "ok", "text": "Zatrzymałem muzykę.", "final_reply_mode": "verbatim"}],
+        known_utterances={
+            "Wyłącz muzykę": {
+                "id": "t1",
+                "domain": "media_player",
+                "command": {"intent": "stop", "query": "Wyłącz muzykę"},
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            },
+        },
+    )
+    home_assistant_agent = RecordingDomainAgent(
+        [{"status": "ok", "text": "Wyłączyłem klimatyzację w biurze.", "final_reply_mode": "verbatim"}]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="qwen3:4b-instruct",
+        domain_agents={"media_player": media_agent, "home_assistant": home_assistant_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="Wyłącz muzykę i wyłącz klimatyzator.")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"area": "office"}), endpoint))
+
+    assert len(ollama.requests) == 2
+    assert media_agent.tasks[0]["domain"] == "media_player"
+    assert home_assistant_agent.tasks[0]["domain"] == "home_assistant"
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Zatrzymałem muzykę i wyłączyłem klimatyzację.")))
 
 
 def test_orchestrator_uses_area_inventory_for_named_media_room_instead_of_short_path() -> None:
@@ -586,7 +697,22 @@ def test_orchestrator_blocks_unknown_planned_area_before_dispatch() -> None:
 def test_orchestrator_short_path_dispatches_tok_fm_without_ollama() -> None:
     ollama = FakeOllamaClient([])
     domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "Włączam TOK FM.", "final_reply_mode": "verbatim"}]
+        [{"status": "ok", "text": "Włączam TOK FM.", "final_reply_mode": "verbatim"}],
+        known_utterances={
+            "Włącz TOK FM w całym domu": {
+                "id": "t1",
+                "domain": "media_player",
+                "command": {
+                    "intent": "play_media",
+                    "query": "Włącz TOK FM w całym domu",
+                    "media_type": "radio",
+                    "all_speakers": True,
+                },
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            },
+        },
     )
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
@@ -1146,9 +1272,13 @@ class FakeOllamaClient:
 
 
 class RecordingDomainAgent:
-    def __init__(self, results: list[dict] | None = None) -> None:
+    def __init__(self, results: list[dict] | None = None, *, known_utterances: dict[str, dict] | None = None) -> None:
         self.tasks = []
         self._results = list(results or [{"status": "ok", "text": "Gotowe."}])
+        self._known_utterances = known_utterances or {}
+
+    def known_utterances(self):
+        return self._known_utterances
 
     async def run_task(self, conversation, task, active_context):
         self.tasks.append(task)

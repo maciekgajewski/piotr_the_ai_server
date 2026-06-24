@@ -54,4 +54,4 @@ cases:
       language: en
       title: John Henry (folklore)
     expected_replies:
-      - contains_all: [John Henry, folk]
+      - contains_all: [John Henry, ludowym]

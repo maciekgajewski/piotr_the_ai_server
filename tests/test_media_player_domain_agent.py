@@ -5,11 +5,16 @@ import logging
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
 from ai_server.domain_agents.media_player.parser import media_task_from_utterance, parse_media_command
 from ai_server.interfaces import Conversation
-from ai_server.orchestrator.known_utterances import known_utterance_task
+from ai_server.orchestrator.known_utterances import collect_known_utterance_tasks, known_utterance_task
 
 
 def test_media_known_utterance_routes_to_media_player() -> None:
-    task = known_utterance_task("Spotify!")
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=FakeMediaConnection(),
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = known_utterance_task("Spotify!", collect_known_utterance_tasks({"media_player": agent}))
 
     assert task["domain"] == "media_player"
     assert task["command"] == {"intent": "start_last", "query": "Spotify!"}
