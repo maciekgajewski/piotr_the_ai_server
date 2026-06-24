@@ -83,11 +83,71 @@ fi
 
 export AI_SERVER_CONFIG
 
+PROJECT_NAME="$(basename "$(pwd -P)")"
+CONTAINER_NAME="${PROJECT_NAME}-ai-server-foreground-$$"
+CONTAINER_ID=""
+LOGS_PID=""
+
+cleanup_container() {
+  local running
+
+  if [[ -n "$LOGS_PID" ]]; then
+    kill "$LOGS_PID" >/dev/null 2>&1 || true
+    wait "$LOGS_PID" >/dev/null 2>&1 || true
+    LOGS_PID=""
+  fi
+
+  if [[ -z "$CONTAINER_ID" ]]; then
+    return
+  fi
+
+  running="$(docker inspect --format '{{.State.Running}}' "$CONTAINER_ID" 2>/dev/null || true)"
+  if [[ "$running" == "true" ]]; then
+    docker stop "$CONTAINER_ID" >/dev/null || true
+  fi
+}
+
+cleanup_and_exit() {
+  local status="$1"
+  trap - EXIT HUP INT TERM
+  cleanup_container
+  exit "$status"
+}
+
 if docker compose version >/dev/null 2>&1; then
-  docker compose --env-file "$SERVICES_CONFIG" -f docker-compose.yml -f docker-compose.ai-server.yml run --rm ai-server "${SERVER_ARGS[@]}"
+  COMPOSE_CMD=(docker compose)
 elif command -v docker-compose >/dev/null 2>&1; then
-  docker-compose --env-file "$SERVICES_CONFIG" -f docker-compose.yml -f docker-compose.ai-server.yml run --rm ai-server "${SERVER_ARGS[@]}"
+  COMPOSE_CMD=(docker-compose)
 else
   echo "Docker Compose is required. Install the Docker Compose plugin or docker-compose." >&2
   exit 1
 fi
+
+trap 'cleanup_and_exit $?' EXIT
+trap 'cleanup_and_exit 129' HUP
+trap 'cleanup_and_exit 130' INT
+trap 'cleanup_and_exit 143' TERM
+
+CONTAINER_ID="$(
+  "${COMPOSE_CMD[@]}" \
+    --env-file "$SERVICES_CONFIG" \
+    -f docker-compose.yml \
+    -f docker-compose.ai-server.yml \
+    run \
+    --rm \
+    --detach \
+    --name "$CONTAINER_NAME" \
+    ai-server \
+    "${SERVER_ARGS[@]}"
+)"
+
+docker logs --follow "$CONTAINER_ID" &
+LOGS_PID="$!"
+
+CONTAINER_STATUS="$(docker wait "$CONTAINER_ID")"
+wait "$LOGS_PID" >/dev/null 2>&1 || true
+LOGS_PID=""
+
+trap - EXIT HUP INT TERM
+cleanup_container
+exit "$CONTAINER_STATUS"
