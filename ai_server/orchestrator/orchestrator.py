@@ -34,6 +34,7 @@ FINAL_REPLY_OPTIONS = {
 }
 MAX_LAST_TURNS = 4
 PLANNING_CONFIDENCE_THRESHOLD = 0.7
+MERGEABLE_MEDIA_PLAYER_INTENTS = {"play_media", "start_last", "transfer_playback"}
 
 PLANNING_SYSTEM_PROMPT_TEMPLATE = """
 You are an orchestration planner for a Polish voice assistant.
@@ -272,6 +273,8 @@ class OrchestratorAgent:
         )
         _resolve_context_references(plan, active_context)
         _canonicalize_plan_areas(plan, area_context)
+        _repair_media_player_replace_outputs(plan, user_input)
+        _merge_split_media_player_area_tasks(plan)
 
         task_results = await self._dispatch_ready_tasks(conversation, plan, active_context)
         self._log_clarification_causing_utterance(conversation, user_input, plan, task_results)
@@ -845,6 +848,82 @@ def _canonicalize_media_player_task_areas(task: dict[str, Any], area_context: di
         command["areas"] = canonical_areas
     else:
         command.pop("areas", None)
+
+
+def _repair_media_player_replace_outputs(plan: dict[str, Any], user_input: str) -> None:
+    normalized_input = normalize_text(user_input)
+    if any(marker in normalized_input for marker in ("tylko", "only", "wylacznie", "wyłącznie")):
+        return
+    for task in plan.get("tasks", []):
+        if not isinstance(task, dict) or task.get("domain") != "media_player":
+            continue
+        command = task.get("command")
+        if isinstance(command, dict):
+            command.pop("replace_outputs", None)
+
+
+def _merge_split_media_player_area_tasks(plan: dict[str, Any]) -> None:
+    tasks = plan.get("tasks")
+    if not isinstance(tasks, list) or len(tasks) < 2:
+        return
+
+    merged_tasks: list[dict[str, Any]] = []
+    merge_targets: dict[tuple[str, str, str, bool, bool], dict[str, Any]] = {}
+    changed = False
+    for task in tasks:
+        merge_key = _media_player_area_merge_key(task)
+        if merge_key is None:
+            merged_tasks.append(task)
+            continue
+        existing_task = merge_targets.get(merge_key)
+        if existing_task is None:
+            merge_targets[merge_key] = task
+            merged_tasks.append(task)
+            continue
+        _merge_media_player_areas(existing_task, task)
+        changed = True
+
+    if not changed:
+        return
+    plan["tasks"] = merged_tasks
+    if len(merged_tasks) == 1 and plan.get("kind") == "multi_task":
+        plan["kind"] = "single_task"
+
+
+def _media_player_area_merge_key(task: dict[str, Any]) -> tuple[str, str, str, bool, bool] | None:
+    if task.get("domain") != "media_player" or task.get("status") != "ready":
+        return None
+    depends_on = task.get("depends_on", [])
+    if depends_on:
+        return None
+    command = task.get("command")
+    if not isinstance(command, dict):
+        return None
+    intent = command.get("intent")
+    if intent not in MERGEABLE_MEDIA_PLAYER_INTENTS:
+        return None
+    areas = command.get("areas")
+    if not isinstance(areas, list) or not areas or any(not isinstance(area, str) or not area for area in areas):
+        return None
+    if command.get("volume_level") is not None or command.get("volume_delta") is not None:
+        return None
+    return (
+        intent,
+        normalize_text(command.get("query", "")) if isinstance(command.get("query", ""), str) else "",
+        normalize_text(command.get("media_type", "")) if isinstance(command.get("media_type", ""), str) else "",
+        command.get("all_speakers") is True,
+        command.get("replace_outputs") is True,
+    )
+
+
+def _merge_media_player_areas(existing_task: dict[str, Any], next_task: dict[str, Any]) -> None:
+    existing_command = existing_task["command"]
+    next_command = next_task["command"]
+    areas = existing_command.setdefault("areas", [])
+    assert isinstance(areas, list)
+    for area in next_command.get("areas", []):
+        if area not in areas:
+            areas.append(area)
 
 
 def _canonical_area_id(area: str, area_context: dict[str, Any]) -> str | None:

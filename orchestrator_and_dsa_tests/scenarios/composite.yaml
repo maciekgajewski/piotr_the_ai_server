@@ -135,6 +135,54 @@ cases:
     expected_replies:
       - contains_all: [Liked Songs macson_g]
 
+  - id: media_work_playlist_multi_room_groups_outputs
+    messages:
+      - Graj muzykę do pracy w salonie, w łazience i w pracowni
+    expected_tasks:
+      - domain: media_player
+        command:
+          intent: play_media
+          query:
+            $any: [Muzyka do pracy, muzyka do pracy]
+          media_type: playlist
+          areas: [living_room, bathroom, office]
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: living_room
+          music_assistant_only: false
+          speakers_only: true
+      - tool: list_media_players
+        arguments:
+          area_name: bathroom
+          music_assistant_only: false
+          speakers_only: true
+      - tool: list_media_players
+        arguments:
+          area_name: office
+          music_assistant_only: false
+          speakers_only: true
+      - tool: music_assistant_search
+        arguments:
+          name: Post Rock Focus
+          media_type: playlist
+          limit: 5
+      - tool: media_player_join
+        arguments:
+          entity_id: media_player.office_2
+          group_members: [media_player.living_room_2, media_player.bathroom_2]
+      - tool: music_assistant_play_media
+        arguments:
+          entity_ids: [media_player.office_2]
+          media_id: spotify:search:post-rock-focus
+          media_type: playlist
+      - tool: media_player_shuffle_set
+        arguments:
+          entity_ids: [media_player.office_2]
+          shuffle: true
+    expected_replies:
+      - contains_all: [Post Rock Focus]
+
   - id: ha_time_combo
     messages:
       - wyłącz klimę w biurze i powiedz która godzina jest teraz w Jacksonville

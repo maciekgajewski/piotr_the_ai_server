@@ -60,6 +60,7 @@ MEDIA_PLAYER_PLANNING_PROMPT = """
 For media_player tasks:
 - For music commands without a named room, omit areas; the media player agent will use conversation.area.
 - For named rooms in media_player areas, output canonical area_id values from conversation.home_assistant_areas when it is present, not the user's inflected phrase.
+- For one media request naming multiple rooms, create one media_player task with all named rooms in areas; do not split one media request into one task per room.
 - Use all_speakers=true only when the user explicitly asks for all speakers/everywhere/whole house/wszystkie głośniki.
 - Use replace_outputs=true only when the user explicitly asks for only that room/player, e.g. "only in the office" or "tylko w biurze".
 - Use intent="transfer_playback" when the user asks to move/transfer currently playing music, e.g. "Przenieś muzykę do salonu", or asks to play generic music only in a specific room, e.g. "Graj muzykę tylko w biurze".
