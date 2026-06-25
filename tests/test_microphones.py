@@ -292,6 +292,67 @@ def test_microphone_manager_sends_transcript_to_agent_and_speaks_reply() -> None
     asyncio.run(run())
 
 
+def test_microphone_manager_rearms_wake_word_after_empty_wake_transcript() -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone(
+            events=[
+                AudioStart(wake_word="Ryszardzie"),
+                AudioChunk(data=b"wake-noise"),
+                AudioEnd(),
+                AudioStart(wake_word="Ryszardzie"),
+                AudioChunk(data=b"audio"),
+                AudioEnd(),
+            ]
+        )
+        stt = FakeStt(
+            session_text_events=[
+                [TextEnd()],
+                [TextFragment(text="cześć"), TextEnd()],
+            ]
+        )
+        tts = FakeTts()
+        agent = FakeAgent()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=stt,
+            tts=tts,
+            agent=agent,
+            follow_up_timeout_seconds=0.1,
+        )
+
+        await manager.start()
+        await asyncio.wait_for(
+            _wait_until(
+                lambda: sum(
+                    isinstance(event, StartWakeWordListening)
+                    for event in microphone.sent_audio_events
+                )
+                >= 3
+            ),
+            timeout=1,
+        )
+        await manager.close()
+
+        assert agent.messages == ["cześć"]
+        assert len(stt.sessions) == 2
+        assert stt.sessions[0].audio_chunks == [AudioChunk(data=b"wake-noise")]
+        assert stt.sessions[0].ended is True
+        assert stt.sessions[1].audio_chunks == [AudioChunk(data=b"audio")]
+        assert stt.sessions[1].ended is True
+        assert tts.synthesized == ["reply:cześć"]
+        assert microphone.sent_audio_events == [
+            StartWakeWordListening(),
+            StartWakeWordListening(),
+            MessageEndCue(),
+            AudioStart(rate=22050, width=2, channels=1, volume=1.0),
+            AudioChunk(data=b"reply-audio"),
+            AudioEnd(),
+            StartWakeWordListening(),
+        ]
+
+    asyncio.run(run())
+
+
 def test_microphone_manager_adds_recognized_user_to_new_conversation() -> None:
     async def run() -> None:
         microphone = FakeMicrophone(

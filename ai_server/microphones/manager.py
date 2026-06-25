@@ -139,8 +139,9 @@ class MicrophoneManager:
                             timeout_seconds=None,
                         )
                         if not captured.captured:
-                            logger.info("wake-word stream had no transcript; ending conversation")
-                            await endpoint.send_to_session(ConversationEnded())
+                            logger.info("wake-word stream had no transcript; re-opening wake-word listening")
+                            pending_event = event
+                            continue
                         pending_event = None
                         continue
                     if isinstance(event, (RequestFollowUp, WaitForNewMessage)):
@@ -158,7 +159,7 @@ class MicrophoneManager:
                         if not captured.captured:
                             logger.info("follow-up timed out; ending conversation")
                             await microphone.send_output_event(ConversationTimeoutCue())
-                            await endpoint.send_to_session(ConversationEnded())
+                            await self._send_conversation_ended(endpoint, event)
                         pending_event = None
                         continue
                     if isinstance(event, MessageBegin):
@@ -413,6 +414,16 @@ class MicrophoneManager:
         for fragment in text_fragments:
             await endpoint.send_to_session(MessageFragment(text=fragment))
         await endpoint.send_to_session(MessageEnd())
+
+    async def _send_conversation_ended(
+        self,
+        endpoint: MicrophoneAgentEndpoint,
+        source_event: RequestFollowUp | WaitForNewMessage,
+    ) -> None:
+        assert isinstance(source_event, (RequestFollowUp, WaitForNewMessage)), (
+            f"cannot send ConversationEnded before active conversation, source={type(source_event).__name__}"
+        )
+        await endpoint.send_to_session(ConversationEnded())
 
     async def _speak_reply(
         self,
