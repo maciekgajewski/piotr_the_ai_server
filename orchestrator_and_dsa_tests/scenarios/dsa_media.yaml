@@ -17,13 +17,25 @@ cases:
           area_name: office
           music_assistant_only: false
           speakers_only: true
+      - tool: list_media_players
+        arguments:
+          area_name: ""
+          music_assistant_only: false
+          speakers_only: true
+      - tool: music_assistant_get_queue
+        arguments:
+          entity_id: media_player.office_2
       - tool: music_assistant_play_media
         arguments:
           entity_ids: [media_player.office_2]
-          media_id: library://playlist/7
+          media_id: spotify:playlist:current-focus
           media_type: playlist
+      - tool: media_player_shuffle_set
+        arguments:
+          entity_ids: [media_player.office_2]
+          shuffle: true
     expected_replies:
-      - contains_all: [ulubione]
+      - contains_all: [Current Focus]
 
   - id: play_media_prefers_ma_duplicate
     task:
@@ -53,6 +65,89 @@ cases:
     expected_replies:
       - contains_all: [hip-hop]
 
+  - id: play_media_whole_home_groups_ma_players
+    task:
+      id: t1
+      domain: media_player
+      command:
+        intent: play_media
+        query: Muzyka do pracy
+        media_type: playlist
+        all_speakers: true
+    expected_result:
+      status: ok
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: ""
+          music_assistant_only: false
+          speakers_only: true
+      - tool: music_assistant_search
+        arguments:
+          name: Post Rock Focus
+          media_type: playlist
+          limit: 5
+      - tool: media_player_join
+        arguments:
+          entity_id: media_player.office_2
+          group_members: [media_player.bathroom_2, media_player.bedroom_2, media_player.living_room_2]
+      - tool: music_assistant_play_media
+        arguments:
+          entity_ids: [media_player.office_2]
+          media_id: spotify:search:post-rock-focus
+          media_type: playlist
+      - tool: media_player_shuffle_set
+        arguments:
+          entity_ids: [media_player.office_2]
+          shuffle: true
+    expected_replies:
+      - contains_all: [Post Rock Focus]
+
+  - id: start_last_multi_room_groups_and_resumes_idle_queue
+    task:
+      id: t1
+      domain: media_player
+      command:
+        intent: start_last
+        query: Włącz muzykę w biurze i w łazience.
+        areas: [office, bathroom]
+    expected_result:
+      status: ok
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: office
+          music_assistant_only: false
+          speakers_only: true
+      - tool: list_media_players
+        arguments:
+          area_name: bathroom
+          music_assistant_only: false
+          speakers_only: true
+      - tool: list_media_players
+        arguments:
+          area_name: ""
+          music_assistant_only: false
+          speakers_only: true
+      - tool: music_assistant_get_queue
+        arguments:
+          entity_id: media_player.office_2
+      - tool: media_player_join
+        arguments:
+          entity_id: media_player.office_2
+          group_members: [media_player.bathroom_2]
+      - tool: music_assistant_play_media
+        arguments:
+          entity_ids: [media_player.office_2]
+          media_id: spotify:playlist:current-focus
+          media_type: playlist
+      - tool: media_player_shuffle_set
+        arguments:
+          entity_ids: [media_player.office_2]
+          shuffle: true
+    expected_replies:
+      - contains_all: [Current Focus]
+
   - id: volume_prefers_direct_entity
     task:
       id: t1
@@ -60,7 +155,7 @@ cases:
       command:
         intent: volume_delta
         query: Daj głośniej
-        volume_delta: 0.1
+        volume_delta: 0.05
     expected_result:
       status: ok
     expected_calls:
@@ -72,6 +167,74 @@ cases:
       - tool: media_player_volume_delta
         arguments:
           entity_ids: [media_player.office]
-          delta: 0.1
+          delta: 0.05
     expected_replies:
       - contains_all: [Głośność]
+
+  - id: volume_down_accepts_bad_planner_set_volume
+    task:
+      id: t1
+      domain: media_player
+      command:
+        intent: set_volume
+        query: Ścisz muzykę.
+        volume_level: 0.5
+    expected_result:
+      status: ok
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: office
+          music_assistant_only: false
+          speakers_only: true
+      - tool: media_player_volume_delta
+        arguments:
+          entity_ids: [media_player.office]
+          delta: -0.05
+    expected_replies:
+      - contains_all: [Głośność]
+
+  - id: tiny_volume_down_uses_two_percent_delta
+    task:
+      id: t1
+      domain: media_player
+      command:
+        intent: volume_delta
+        query: Troszkę ciszej.
+    expected_result:
+      status: ok
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: office
+          music_assistant_only: false
+          speakers_only: true
+      - tool: media_player_volume_delta
+        arguments:
+          entity_ids: [media_player.office]
+          delta: -0.02
+    expected_replies:
+      - contains_all: [Głośność]
+
+  - id: set_volume_accepts_planner_percent_number
+    task:
+      id: t1
+      domain: media_player
+      command:
+        intent: set_volume
+        query: Ustaw głośność na 10.
+        volume_level: 10.0
+    expected_result:
+      status: ok
+    expected_calls:
+      - tool: list_media_players
+        arguments:
+          area_name: office
+          music_assistant_only: false
+          speakers_only: true
+      - tool: media_player_volume_set
+        arguments:
+          entity_ids: [media_player.office]
+          volume_level: 0.1
+    expected_replies:
+      - contains_all: [10 procent]

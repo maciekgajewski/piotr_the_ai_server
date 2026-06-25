@@ -857,6 +857,43 @@ def test_orchestrator_short_path_dispatches_tok_fm_without_ollama() -> None:
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Włączam TOK FM.")))
 
 
+def test_orchestrator_short_path_dispatches_media_volume_up_without_ollama() -> None:
+    ollama = FakeOllamaClient([])
+    domain_agent = RecordingDomainAgent(
+        [{"status": "ok", "text": "Głośność: 40 procent.", "final_reply_mode": "verbatim"}],
+        known_utterances={
+            "Przygłośnij muzykę": {
+                "id": "t1",
+                "domain": "media_player",
+                "command": {
+                    "intent": "volume_delta",
+                    "query": "Przygłośnij muzykę",
+                    "volume_delta": 0.05,
+                },
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            },
+        },
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="qwen3:4b-instruct",
+        domain_agents={"media_player": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="Przygłośnij Muzykę")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"area": "office"}), endpoint))
+
+    assert ollama.requests == []
+    assert domain_agent.tasks[0]["domain"] == "media_player"
+    assert domain_agent.tasks[0]["command"]["intent"] == "volume_delta"
+    assert domain_agent.tasks[0]["command"]["query"] == "Przygłośnij Muzykę"
+    assert domain_agent.tasks[0]["command"]["volume_delta"] == 0.05
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Głośność: 40 procent.")))
+
+
 def test_orchestrator_retries_low_confidence_plan_with_clarification_model() -> None:
     low_confidence_plan = {
         "kind": "chat",
@@ -1283,7 +1320,7 @@ def test_orchestrator_clears_pending_clarification_on_thanks() -> None:
             "task": {
                 "id": "t1",
                 "domain": "media_player",
-                "command": {"intent": "volume_delta", "query": "Przygłośnij muzykę.", "volume_delta": 0.1},
+                "command": {"intent": "volume_delta", "query": "Przygłośnij muzykę.", "volume_delta": 0.05},
                 "depends_on": [],
                 "status": "ready",
                 "clarification_question": None,

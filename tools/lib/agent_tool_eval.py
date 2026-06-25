@@ -271,6 +271,13 @@ class FakeHomeAssistantConnection:
             {"status": "ok", "entity_ids": entity_ids, "shuffle": shuffle},
         )
 
+    async def media_player_join(self, entity_id: str, group_members: list[str]) -> dict[str, Any]:
+        return await self._record_and_reply(
+            "media_player_join",
+            {"entity_id": entity_id, "group_members": group_members},
+            {"status": "ok", "entity_id": entity_id, "group_members": group_members},
+        )
+
     async def media_player_volume_delta(self, entity_ids: list[str], delta: float) -> dict[str, Any]:
         results = []
         for entity_id in entity_ids:
@@ -329,6 +336,24 @@ class FakeHomeAssistantConnection:
                 "album": album,
             },
             {"status": "ok", "entity_ids": entity_ids, "media_id": media_id, "media_type": media_type},
+        )
+
+    async def music_assistant_get_queue(self, entity_id: str) -> dict[str, Any]:
+        return await self._record_and_reply(
+            "music_assistant_get_queue",
+            {"entity_id": entity_id},
+            {
+                "status": "ok",
+                "response": {
+                    entity_id: {
+                        "current_item": {
+                            "uri": "spotify:playlist:current-focus",
+                            "name": "Current Focus",
+                            "media_type": "playlist",
+                        }
+                    }
+                },
+            },
         )
 
     async def _record_and_reply(self, tool: str, arguments: dict[str, Any], default_result: Any) -> Any:

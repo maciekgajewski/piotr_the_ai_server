@@ -64,13 +64,25 @@ cases:
           area_name: office
           music_assistant_only: false
           speakers_only: true
+      - tool: list_media_players
+        arguments:
+          area_name: ""
+          music_assistant_only: false
+          speakers_only: true
+      - tool: music_assistant_get_queue
+        arguments:
+          entity_id: media_player.office_2
       - tool: music_assistant_play_media
         arguments:
           entity_ids: [media_player.office_2]
-          media_id: library://playlist/7
+          media_id: spotify:playlist:current-focus
           media_type: playlist
+      - tool: media_player_shuffle_set
+        arguments:
+          entity_ids: [media_player.office_2]
+          shuffle: true
     expected_replies:
-      - contains_all: [ulubione]
+      - contains_all: [Current Focus]
 
   - id: media_rock_genre_selection
     messages:

@@ -17,3 +17,5 @@ users:
       default_music_media_id: library://playlist/7
       default_music_media_type: playlist
       default_music_name: twoje ulubione
+      playlist_aliases:
+        Muzyka do pracy: Post Rock Focus

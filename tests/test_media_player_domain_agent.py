@@ -20,12 +20,96 @@ def test_media_known_utterance_routes_to_media_player() -> None:
     assert task["command"] == {"intent": "start_last", "query": "Spotify!"}
 
 
+def test_media_known_utterance_routes_volume_up_phrase_to_media_player() -> None:
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=FakeMediaConnection(),
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = known_utterance_task("Przygłośnij Muzykę", collect_known_utterance_tasks({"media_player": agent}))
+
+    assert task["domain"] == "media_player"
+    assert task["command"] == {
+        "intent": "volume_delta",
+        "query": "Przygłośnij Muzykę",
+        "volume_delta": 0.05,
+    }
+
+
+def test_media_known_utterance_routes_volume_down_phrase_to_media_player() -> None:
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=FakeMediaConnection(),
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = known_utterance_task("Ścisz Muzykę", collect_known_utterance_tasks({"media_player": agent}))
+
+    assert task["domain"] == "media_player"
+    assert task["command"] == {
+        "intent": "volume_delta",
+        "query": "Ścisz Muzykę",
+        "volume_delta": -0.05,
+    }
+
+
+def test_media_known_utterance_routes_tiny_volume_phrases_to_media_player() -> None:
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=FakeMediaConnection(),
+        ollama_client=FakeOllamaClient([]),
+    )
+    known_utterances = collect_known_utterance_tasks({"media_player": agent})
+
+    expectations = {
+        "Odrobinkę głośniej": 0.02,
+        "Odrobinkę ciszej": -0.02,
+        "Troszkę głośniej": 0.02,
+        "Troszkę ciszej": -0.02,
+        "Troszeczkę głośniej": 0.02,
+        "Troszeczkęciszej": -0.02,
+    }
+    for utterance, expected_delta in expectations.items():
+        task = known_utterance_task(utterance, known_utterances)
+        assert task["domain"] == "media_player"
+        assert task["command"]["intent"] == "volume_delta"
+        assert task["command"]["query"] == utterance
+        assert task["command"]["volume_delta"] == expected_delta
+
+
 def test_media_simple_short_path_parses_volume_up() -> None:
     task = media_task_from_utterance("Daj głośniej")
 
     assert task["domain"] == "media_player"
     assert task["command"]["intent"] == "volume_delta"
-    assert task["command"]["volume_delta"] == 0.10
+    assert task["command"]["volume_delta"] == 0.05
+
+
+def test_media_parser_infers_volume_delta_details_from_query() -> None:
+    down = parse_media_command({"intent": "set_volume", "query": "Ścisz muzykę.", "volume_level": 0.5})
+    tiny_up = parse_media_command({"intent": "volume_delta", "query": "Odrobinkę głośniej"})
+    tiny_down = parse_media_command({"intent": "volume_delta", "query": "Troszeczkęciszej"})
+    little_down = parse_media_command({"intent": "volume_delta", "query": "Troszkę ciszej."})
+
+    assert down.intent == "volume_delta"
+    assert down.volume_level is None
+    assert down.volume_delta == -0.05
+    assert tiny_up.volume_delta == 0.02
+    assert tiny_down.volume_delta == -0.02
+    assert little_down.volume_delta == -0.02
+
+
+def test_media_parser_normalizes_planner_percent_volume_level() -> None:
+    parsed = parse_media_command({"intent": "set_volume", "query": "Ustaw głośność na 10.", "volume_level": 10.0})
+
+    assert parsed.intent == "set_volume"
+    assert parsed.volume_level == 0.10
+
+
+def test_media_parser_keeps_native_volume_level() -> None:
+    parsed = parse_media_command({"intent": "set_volume", "query": "Ustaw głośność na 30 procent.", "volume_level": 0.30})
+
+    assert parsed.intent == "set_volume"
+    assert parsed.volume_level == 0.30
 
 
 def test_media_simple_short_path_routes_transfer_phrases() -> None:
@@ -60,6 +144,13 @@ def test_media_parser_extracts_query_area_and_all_speakers() -> None:
     only_office = parse_media_command({"query": "Play music only in office"})
     transfer = parse_media_command({"query": "Przenieś muzykę do Salonu"})
     multi_room = parse_media_command({"query": "Graj muzykę w sypialni i łazience"})
+    current_music = parse_media_command(
+        {
+            "intent": "play_media",
+            "query": "Graj tę muzykę na wszystkich głośnikach w domu.",
+            "all_speakers": True,
+        }
+    )
 
     assert room.intent == "play_media"
     assert room.query == "soft jazz"
@@ -74,6 +165,9 @@ def test_media_parser_extracts_query_area_and_all_speakers() -> None:
     assert transfer.areas == ("Salonu",)
     assert multi_room.intent == "start_last"
     assert multi_room.areas == ("sypialni", "łazience")
+    assert current_music.intent == "transfer_playback"
+    assert current_music.query == "Graj tę muzykę na wszystkich głośnikach w domu."
+    assert current_music.all_speakers
 
 
 def test_media_parser_handles_provider_phrase_and_stop_suffix() -> None:
@@ -109,7 +203,7 @@ def test_media_parser_handles_tok_fm_radio_and_whole_home() -> None:
 
 
 def test_media_domain_agent_start_last_uses_default_music_when_queue_and_memory_are_empty() -> None:
-    connection = FakeMediaConnection(player_state="idle")
+    connection = FakeMediaConnection(player_state="idle", queue_response={})
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
@@ -134,7 +228,7 @@ def test_media_domain_agent_start_last_uses_default_music_when_queue_and_memory_
 
 
 def test_media_domain_agent_start_last_uses_conversation_user_media_settings() -> None:
-    connection = FakeMediaConnection(player_state="idle", include_ma_duplicate=True)
+    connection = FakeMediaConnection(player_state="idle", include_ma_duplicate=True, queue_response={})
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
@@ -158,6 +252,7 @@ def test_media_domain_agent_start_last_uses_conversation_user_media_settings() -
     assert connection.calls == [
         ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
         ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_get_queue", {"entity_id": "media_player.office_2"}),
         (
             "music_assistant_play_media",
             {"entity_ids": ["media_player.office_2"], "media_id": "library://playlist/7", "media_type": "playlist"},
@@ -200,7 +295,7 @@ def test_media_domain_agent_executes_simple_volume_without_llm() -> None:
     task = {
         "id": "t1",
         "domain": "media_player",
-        "command": {"intent": "volume_delta", "query": "Daj głośniej", "volume_delta": 0.10},
+        "command": {"intent": "volume_delta", "query": "Daj głośniej", "volume_delta": 0.05},
     }
 
     result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
@@ -210,7 +305,7 @@ def test_media_domain_agent_executes_simple_volume_without_llm() -> None:
     assert ollama.requests == []
     assert connection.calls == [
         ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
-        ("media_player_volume_delta", {"entity_ids": ["media_player.office"], "delta": 0.1}),
+        ("media_player_volume_delta", {"entity_ids": ["media_player.office"], "delta": 0.05}),
     ]
 
 
@@ -224,7 +319,7 @@ def test_media_domain_agent_keeps_volume_on_direct_entity_when_ma_duplicate_exis
     task = {
         "id": "t1",
         "domain": "media_player",
-        "command": {"intent": "volume_delta", "query": "Daj głośniej", "volume_delta": 0.10},
+        "command": {"intent": "volume_delta", "query": "Daj głośniej", "volume_delta": 0.05},
     }
 
     result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
@@ -232,7 +327,30 @@ def test_media_domain_agent_keeps_volume_on_direct_entity_when_ma_duplicate_exis
     assert result["status"] == "ok"
     assert connection.calls == [
         ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
-        ("media_player_volume_delta", {"entity_ids": ["media_player.office"], "delta": 0.1}),
+        ("media_player_volume_delta", {"entity_ids": ["media_player.office"], "delta": 0.05}),
+    ]
+
+
+def test_media_domain_agent_interprets_planner_percent_volume_level() -> None:
+    connection = FakeMediaConnection()
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "set_volume", "query": "Ustaw głośność na 10.", "volume_level": 10.0},
+    }
+
+    result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
+
+    assert result["status"] == "ok"
+    assert result["text"] == "Ustawiłem głośność na 10 procent."
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
+        ("media_player_volume_set", {"entity_ids": ["media_player.office"], "volume_level": 0.10}),
     ]
 
 
@@ -246,7 +364,7 @@ def test_media_domain_agent_does_not_clarify_when_current_area_has_no_speaker() 
     task = {
         "id": "t1",
         "domain": "media_player",
-        "command": {"intent": "volume_delta", "query": "Przygłośnij muzykę", "volume_delta": 0.10},
+        "command": {"intent": "volume_delta", "query": "Przygłośnij muzykę", "volume_delta": 0.05},
     }
 
     result = asyncio.run(agent.run_task(Conversation("c1", {"area": "bedroom"}), task, {}))
@@ -513,6 +631,61 @@ def test_media_domain_agent_uses_llm_to_resolve_inflected_playlist_alias() -> No
     ]
 
 
+def test_media_domain_agent_groups_whole_home_named_media_before_playback() -> None:
+    connection = FakeMediaConnection(
+        include_ma_duplicate=True,
+        global_players=_whole_home_music_assistant_players(),
+    )
+    ollama = FakeOllamaClient(
+        [
+            {
+                "alias": "Muzyka do pracy",
+                "query": "",
+                "media_type": "playlist",
+            }
+        ]
+    )
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=ollama,
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "play_media", "query": "Graj muzykę do pracy w całym domu.", "all_speakers": True},
+    }
+    conversation = Conversation(
+        "c1",
+        {"area": "office", "user": "Maciek"},
+        state={"user_settings": _user_media_settings()},
+    )
+
+    result = asyncio.run(agent.run_task(conversation, task, {}))
+
+    assert result["status"] == "ok"
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_search", {"name": "Post Rock Focus", "media_type": "playlist", "limit": 5}),
+        (
+            "media_player_join",
+            {
+                "entity_id": "media_player.office_2",
+                "group_members": [
+                    "media_player.bedroom_2",
+                    "media_player.living_room_2",
+                    "media_player.bathroom_2",
+                ],
+            },
+        ),
+        (
+            "music_assistant_play_media",
+            {"entity_ids": ["media_player.office_2"], "media_id": "spotify:playlist:soft-jazz", "media_type": "playlist"},
+        ),
+        ("media_player_shuffle_set", {"entity_ids": ["media_player.office_2"], "shuffle": True}),
+    ]
+
+
 def test_media_domain_agent_warns_when_alias_resolver_exhausts_budget(caplog) -> None:
     connection = FakeMediaConnection(include_ma_duplicate=True)
     ollama = FakeOllamaClient(
@@ -557,7 +730,7 @@ def test_media_domain_agent_warns_when_alias_resolver_exhausts_budget(caplog) ->
 
 
 def test_media_domain_agent_start_last_uses_in_memory_recent_media() -> None:
-    connection = FakeMediaConnection(player_state="idle", include_ma_duplicate=True)
+    connection = FakeMediaConnection(player_state="idle", include_ma_duplicate=True, queue_response={})
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
@@ -584,6 +757,7 @@ def test_media_domain_agent_start_last_uses_in_memory_recent_media() -> None:
     assert connection.calls == [
         ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
         ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_get_queue", {"entity_id": "media_player.office_2"}),
         ("music_assistant_play_media", {"entity_ids": ["media_player.office_2"], "media_id": "spotify:playlist:soft-jazz", "media_type": "playlist"}),
         ("media_player_shuffle_set", {"entity_ids": ["media_player.office_2"], "shuffle": True}),
     ]
@@ -694,6 +868,93 @@ def test_media_domain_agent_start_last_with_explicit_target_transfers_active_que
         ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
         ("music_assistant_get_queue", {"entity_id": "media_player.office_2"}),
         ("media_player_join", {"entity_id": "media_player.office_2", "group_members": ["media_player.living_room_2"]}),
+    ]
+
+
+def test_media_domain_agent_relocates_current_music_reference_instead_of_searching() -> None:
+    connection = FakeMediaConnection(
+        player_state="idle",
+        include_ma_duplicate=True,
+        global_players=[
+            {
+                "entity_id": "media_player.office_2",
+                "device_id": "device-office-ma",
+                "name": "Office",
+                "area_id": "office",
+                "area_name": "Office",
+                "state": "playing",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+            {
+                "entity_id": "media_player.bedroom_2",
+                "device_id": "device-bedroom-ma",
+                "name": "Bedroom",
+                "area_id": "bedroom",
+                "area_name": "Bedroom",
+                "state": "idle",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+            {
+                "entity_id": "media_player.living_room_2",
+                "device_id": "device-living-room-ma",
+                "name": "Living Room",
+                "area_id": "living_room",
+                "area_name": "Living Room",
+                "state": "idle",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+            {
+                "entity_id": "media_player.bathroom_2",
+                "device_id": "device-bathroom-ma",
+                "name": "Bathroom",
+                "area_id": "bathroom",
+                "area_name": "Bathroom",
+                "state": "idle",
+                "volume_level": 0.3,
+                "is_music_assistant": True,
+                "is_speaker": True,
+            },
+        ],
+    )
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {
+            "intent": "play_media",
+            "query": "Graj tę muzykę na wszystkich głośnikach w domu.",
+            "all_speakers": True,
+        },
+    }
+
+    result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
+
+    assert result["status"] == "ok"
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_get_queue", {"entity_id": "media_player.office_2"}),
+        (
+            "media_player_join",
+            {
+                "entity_id": "media_player.office_2",
+                "group_members": [
+                    "media_player.bedroom_2",
+                    "media_player.living_room_2",
+                    "media_player.bathroom_2",
+                ],
+            },
+        ),
     ]
 
 
@@ -884,9 +1145,47 @@ def test_media_domain_agent_start_last_with_explicit_target_resumes_when_nothing
     assert connection.calls == [
         ("list_media_players", {"area_name": "living room", "music_assistant_only": False, "speakers_only": True}),
         ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
-        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
-        ("music_assistant_play_media", {"entity_ids": ["media_player.living_room_2"], "media_id": "Liked Songs", "media_type": "playlist"}),
+        ("music_assistant_get_queue", {"entity_id": "media_player.living_room_2"}),
+        (
+            "music_assistant_play_media",
+            {"entity_ids": ["media_player.living_room_2"], "media_id": "spotify:playlist:current-focus", "media_type": "playlist"},
+        ),
         ("media_player_shuffle_set", {"entity_ids": ["media_player.living_room_2"], "shuffle": True}),
+    ]
+
+
+def test_media_domain_agent_start_last_groups_multiple_targets_and_resumes_idle_queue() -> None:
+    connection = FakeMediaConnection(player_state="idle", include_ma_duplicate=True)
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {
+            "intent": "start_last",
+            "query": "Włącz muzykę w biurze i w łazience.",
+            "areas": ["office", "bathroom"],
+        },
+    }
+
+    result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
+
+    assert result["status"] == "ok"
+    assert result["text"] == "Włączam Current Focus na wybranych głośnikach."
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "bathroom", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_get_queue", {"entity_id": "media_player.office_2"}),
+        ("media_player_join", {"entity_id": "media_player.office_2", "group_members": ["media_player.bathroom_2"]}),
+        (
+            "music_assistant_play_media",
+            {"entity_ids": ["media_player.office_2"], "media_id": "spotify:playlist:current-focus", "media_type": "playlist"},
+        ),
+        ("media_player_shuffle_set", {"entity_ids": ["media_player.office_2"], "shuffle": True}),
     ]
 
 
@@ -954,8 +1253,12 @@ class FakeMediaConnection:
             return self.global_players
         if area_name == "bedroom":
             return []
-        entity_id = "media_player.living_room" if area_name == "living room" else "media_player.office"
-        area_id = "living_room" if area_name == "living room" else "office"
+        area_entities = {
+            "living room": ("media_player.living_room", "living_room"),
+            "bathroom": ("media_player.bathroom", "bathroom"),
+            "łazience": ("media_player.bathroom", "bathroom"),
+        }
+        entity_id, area_id = area_entities.get(area_name, ("media_player.office", "office"))
         players = [
             {
                 "entity_id": entity_id,
@@ -988,6 +1291,10 @@ class FakeMediaConnection:
     async def media_player_volume_delta(self, entity_ids: list[str], delta: float):
         self.calls.append(("media_player_volume_delta", {"entity_ids": entity_ids, "delta": delta}))
         return {"status": "ok", "results": [{"entity_id": entity_ids[0], "volume_level": 0.4}]}
+
+    async def media_player_volume_set(self, entity_ids: list[str], volume_level: float):
+        self.calls.append(("media_player_volume_set", {"entity_ids": entity_ids, "volume_level": volume_level}))
+        return {"status": "ok"}
 
     async def media_player_shuffle_set(self, entity_ids: list[str], shuffle: bool):
         self.calls.append(("media_player_shuffle_set", {"entity_ids": entity_ids, "shuffle": shuffle}))
@@ -1091,6 +1398,55 @@ def _user_media_settings() -> dict:
             "playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"},
         }
     }
+
+
+def _whole_home_music_assistant_players() -> list[dict]:
+    return [
+        {
+            "entity_id": "media_player.office_2",
+            "device_id": "device-office-ma",
+            "name": "Office",
+            "area_id": "office",
+            "area_name": "Office",
+            "state": "idle",
+            "volume_level": 0.3,
+            "is_music_assistant": True,
+            "is_speaker": True,
+        },
+        {
+            "entity_id": "media_player.bedroom_2",
+            "device_id": "device-bedroom-ma",
+            "name": "Bedroom",
+            "area_id": "bedroom",
+            "area_name": "Bedroom",
+            "state": "idle",
+            "volume_level": 0.3,
+            "is_music_assistant": True,
+            "is_speaker": True,
+        },
+        {
+            "entity_id": "media_player.living_room_2",
+            "device_id": "device-living-room-ma",
+            "name": "Living Room",
+            "area_id": "living_room",
+            "area_name": "Living Room",
+            "state": "idle",
+            "volume_level": 0.3,
+            "is_music_assistant": True,
+            "is_speaker": True,
+        },
+        {
+            "entity_id": "media_player.bathroom_2",
+            "device_id": "device-bathroom-ma",
+            "name": "Bathroom",
+            "area_id": "bathroom",
+            "area_name": "Bathroom",
+            "state": "idle",
+            "volume_level": 0.3,
+            "is_music_assistant": True,
+            "is_speaker": True,
+        },
+    ]
 
 
 class FakeOllamaClient:

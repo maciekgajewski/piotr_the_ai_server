@@ -18,7 +18,13 @@ from ai_server.domain_agents.media_player.messages import (
     MEDIA_COMPLEX_COMMAND_SYSTEM_PROMPT,
     MEDIA_QUERY_RESOLUTION_SYSTEM_PROMPT,
 )
-from ai_server.domain_agents.media_player.parser import DEFAULT_VOLUME_DELTA, ParsedMediaCommand, ascii_fold, parse_media_command
+from ai_server.domain_agents.media_player.parser import (
+    DEFAULT_VOLUME_DELTA,
+    TINY_VOLUME_DELTA,
+    ParsedMediaCommand,
+    ascii_fold,
+    parse_media_command,
+)
 from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation
@@ -78,6 +84,14 @@ class MediaPlayerDomainAgent:
             "Co to za muzyka?": _known_task("now_playing", "Co to za muzyka?"),
             "Kto to gra?": _known_task("now_playing", "Kto to gra?"),
             "Daj głośniej": _known_task("volume_delta", "Daj głośniej", volume_delta=DEFAULT_VOLUME_DELTA),
+            "Przygłośnij muzykę": _known_task("volume_delta", "Przygłośnij muzykę", volume_delta=DEFAULT_VOLUME_DELTA),
+            "Ścisz muzykę": _known_task("volume_delta", "Ścisz muzykę", volume_delta=-DEFAULT_VOLUME_DELTA),
+            "Odrobinkę głośniej": _known_task("volume_delta", "Odrobinkę głośniej", volume_delta=TINY_VOLUME_DELTA),
+            "Odrobinkę ciszej": _known_task("volume_delta", "Odrobinkę ciszej", volume_delta=-TINY_VOLUME_DELTA),
+            "Troszkę głośniej": _known_task("volume_delta", "Troszkę głośniej", volume_delta=TINY_VOLUME_DELTA),
+            "Troszkę ciszej": _known_task("volume_delta", "Troszkę ciszej", volume_delta=-TINY_VOLUME_DELTA),
+            "Troszeczkę głośniej": _known_task("volume_delta", "Troszeczkę głośniej", volume_delta=TINY_VOLUME_DELTA),
+            "Troszeczkęciszej": _known_task("volume_delta", "Troszeczkęciszej", volume_delta=-TINY_VOLUME_DELTA),
             "Graj muzykę rockową": _known_task("play_media", "muzykę rockową"),
             "Graj moje ulubione": _known_task("play_media", "Liked Songs", media_type="playlist"),
             "Włącz TOK FM w całym domu": _known_task(
@@ -156,14 +170,21 @@ class MediaPlayerDomainAgent:
             media = await self._current_music_assistant_media(targets)
             if media is not None:
                 self._remember_recent_media(conversation, media)
+            if len(targets) > 1:
+                grouped_playback_targets = await self._playback_targets_for_start(conversation, targets)
+                if isinstance(grouped_playback_targets, dict):
+                    return grouped_playback_targets
             return _ok_result("Muzyka już gra.", targets)
 
-        if parsed.replace_outputs or _has_explicit_output_target(parsed):
+        has_explicit_output_target = parsed.replace_outputs or _has_explicit_output_target(parsed)
+        if has_explicit_output_target:
             relocated = await self._relocate_current_queue(conversation, targets, replace_outputs=parsed.replace_outputs)
             if relocated is not None:
                 return relocated
 
-        media = await self._current_music_assistant_media()
+        media = None if has_explicit_output_target else await self._current_music_assistant_media()
+        if media is None:
+            media = await self._current_music_assistant_media(targets)
         if media is None:
             media = self._recent_media(conversation)
         if media is None:
@@ -172,8 +193,11 @@ class MediaPlayerDomainAgent:
                 name=_conversation_media_setting(conversation, "default_music_name", self._default_music_name),
                 media_type=_conversation_media_setting(conversation, "default_music_media_type", self._default_music_media_type),
             )
+        playback_targets = await self._playback_targets_for_start(conversation, targets)
+        if isinstance(playback_targets, dict):
+            return playback_targets
         result = await self._connection.music_assistant_play_media(
-            [target.entity_id for target in targets],
+            [target.entity_id for target in playback_targets],
             media_id=media.media_id,
             media_type=media.media_type,
             artist=media.artist,
@@ -183,7 +207,7 @@ class MediaPlayerDomainAgent:
             return _failed_result("Nie udało się włączyć muzyki ze Spotify.")
         self._remember_recent_media(conversation, media)
         if _should_shuffle_media(media.media_type, ""):
-            await self._shuffle_targets(targets)
+            await self._shuffle_targets(playback_targets)
         return _ok_result(format_started(len(targets), media.name), targets)
 
     async def _stop(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
@@ -231,9 +255,12 @@ class MediaPlayerDomainAgent:
         search_items = await self._search_media(conversation, parsed)
         if not search_items:
             return _failed_result(f"Nie znalazłem muzyki: {parsed.query}.")
+        playback_targets = await self._playback_targets_for_start(conversation, targets)
+        if isinstance(playback_targets, dict):
+            return playback_targets
         for index, search_item in enumerate(search_items):
             result = await self._connection.music_assistant_play_media(
-                [target.entity_id for target in targets],
+                [target.entity_id for target in playback_targets],
                 media_id=search_item.media_id,
                 media_type=search_item.media_type or parsed.media_type,
                 artist=search_item.artist,
@@ -242,7 +269,7 @@ class MediaPlayerDomainAgent:
             if result.get("status") == "ok":
                 self._remember_recent_media(conversation, search_item)
                 if _should_shuffle_media(search_item.media_type, parsed.media_type):
-                    await self._shuffle_targets(targets)
+                    await self._shuffle_targets(playback_targets)
                 return _ok_result(format_playing_media(search_item.name or parsed.query, len(targets)), targets)
             if not _is_unplayable_media_result(result) or index == len(search_items) - 1:
                 return _failed_result("Nie udało się włączyć muzyki.")
@@ -272,6 +299,35 @@ class MediaPlayerDomainAgent:
         if relocated is None:
             return _failed_result("Nie znalazłem grającej muzyki do przeniesienia.")
         return relocated
+
+    async def _playback_targets_for_start(
+        self,
+        conversation: Conversation,
+        targets: list[MediaTarget],
+    ) -> list[MediaTarget] | dict[str, Any]:
+        desired_targets = _dedupe_targets(targets)
+        if len(desired_targets) <= 1:
+            return desired_targets
+        source = _preferred_group_leader(conversation, desired_targets)
+        already_grouped_entity_ids = {source.entity_id, *source.group_members}
+        join_target_ids = [
+            target.entity_id
+            for target in desired_targets
+            if target.entity_id != source.entity_id and target.entity_id not in already_grouped_entity_ids
+        ]
+        if not join_target_ids:
+            return [source]
+        join_result = await self._connection.media_player_join(source.entity_id, join_target_ids)
+        if join_result.get("status") != "ok":
+            self._logger.warning(
+                "Home Assistant media_player join failed before starting named media source_player=%s "
+                "target_entity_ids=%s join_result=%r",
+                source.entity_id,
+                join_target_ids,
+                join_result,
+            )
+            return _failed_result("Nie udało się połączyć głośników.")
+        return [source]
 
     async def _targets(
         self,
@@ -692,6 +748,15 @@ def _prefer_music_assistant_targets(targets: list[MediaTarget]) -> list[MediaTar
 
 def _prefer_direct_media_targets(targets: list[MediaTarget]) -> list[MediaTarget]:
     return _prefer_targets_by_area(targets, prefer_music_assistant=False)
+
+
+def _preferred_group_leader(conversation: Conversation, targets: list[MediaTarget]) -> MediaTarget:
+    if conversation.area:
+        normalized_area = ascii_fold(conversation.area).lower()
+        for target in targets:
+            if normalized_area in {ascii_fold(target.area_id).lower(), ascii_fold(target.area_name).lower()}:
+                return target
+    return targets[0]
 
 
 def _prefer_targets_by_area(targets: list[MediaTarget], *, prefer_music_assistant: bool) -> list[MediaTarget]:

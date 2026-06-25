@@ -9,7 +9,8 @@ from ai_server.domain_agents.interfaces import DomainTask
 from ai_server.utils.text import normalize_text
 
 
-DEFAULT_VOLUME_DELTA = 0.10
+DEFAULT_VOLUME_DELTA = 0.05
+TINY_VOLUME_DELTA = 0.02
 TRIM_CHARACTERS = " \t\r\n?.!,;:'\"“”‘’"
 VALID_INTENTS = {
     "start_last",
@@ -94,19 +95,26 @@ def parse_media_command(command: dict[str, Any], *, force_simple: bool = False) 
     intent = _normalize_intent(_string_or_empty(command.get("intent"))) or _intent_from_query(ascii_query)
     all_speakers = _bool(command.get("all_speakers")) or _has_all_speakers_marker(ascii_query)
     replace_outputs = _bool(command.get("replace_outputs")) or _has_replace_output_marker(ascii_query)
+    current_media_reference = _is_current_media_reference(ascii_query)
     areas = _areas_from_command(command) or _areas_from_query(
         original_query,
         ascii_query,
-        allow_destination_prepositions=intent == "transfer_playback",
+        allow_destination_prepositions=intent == "transfer_playback" or current_media_reference,
     )
     media_type = _normalize_media_type(_string_or_empty(command.get("media_type"))) or _media_type_from_query(ascii_query)
+    query_volume_level = _volume_level_from_query(ascii_query)
     volume_level = _volume_level_from_command(command)
     volume_delta = _volume_delta_from_command(command)
 
+    if intent == "set_volume" and _is_relative_volume_query(ascii_query) and query_volume_level is None:
+        intent = "volume_delta"
+        volume_level = None
     if intent == "set_volume" and volume_level is None:
-        volume_level = _volume_level_from_query(ascii_query)
-    if intent == "volume_delta" and volume_delta is None:
-        volume_delta = -DEFAULT_VOLUME_DELTA if _is_volume_down(ascii_query) else DEFAULT_VOLUME_DELTA
+        volume_level = query_volume_level
+    if intent == "volume_delta" and (_is_relative_volume_query(ascii_query) or volume_delta is None):
+        volume_delta = _volume_delta_from_query(ascii_query)
+    if intent == "play_media" and current_media_reference and (all_speakers or areas or replace_outputs):
+        intent = "transfer_playback"
     if intent == "play_media":
         query = _media_query_from_command(command) or _media_query_from_query(original_query, ascii_query)
         query = _canonical_radio_query(query)
@@ -336,6 +344,27 @@ def _is_transfer_playback_query(ascii_query: str) -> bool:
     return any(marker in ascii_query for marker in ("muzyka", "muzyke", "music", "playback"))
 
 
+def _is_current_media_reference(ascii_query: str) -> bool:
+    return any(
+        marker in ascii_query
+        for marker in (
+            "te muzyke",
+            "ta muzyke",
+            "ta muzyka",
+            "ten utwor",
+            "ten kawalek",
+            "obecna muzyke",
+            "obecna muzyka",
+            "aktualna muzyke",
+            "aktualna muzyka",
+            "current music",
+            "this music",
+            "this track",
+            "current track",
+        )
+    )
+
+
 def _volume_level_from_query(ascii_query: str) -> float | None:
     match = re.search(r"(?:glosnosc|głośność).*?(?:na\s+)?(\d{1,3})", ascii_query)
     if match is None:
@@ -349,7 +378,10 @@ def _volume_level_from_query(ascii_query: str) -> float | None:
 def _volume_level_from_command(command: dict[str, Any]) -> float | None:
     value = command.get("volume_level")
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return _clamp_volume(float(value))
+        volume_level = float(value)
+        if volume_level > 1.0:
+            volume_level = min(volume_level, 100.0) / 100
+        return _clamp_volume(volume_level)
     return None
 
 
@@ -405,6 +437,19 @@ def _is_volume_up(ascii_query: str) -> bool:
 
 def _is_volume_down(ascii_query: str) -> bool:
     return any(marker in ascii_query for marker in ("ciszej", "scisz", "przycisz"))
+
+
+def _is_relative_volume_query(ascii_query: str) -> bool:
+    return _is_volume_up(ascii_query) or _is_volume_down(ascii_query)
+
+
+def _volume_delta_from_query(ascii_query: str) -> float:
+    step = TINY_VOLUME_DELTA if _has_tiny_volume_qualifier(ascii_query) else DEFAULT_VOLUME_DELTA
+    return -step if _is_volume_down(ascii_query) else step
+
+
+def _has_tiny_volume_qualifier(ascii_query: str) -> bool:
+    return any(marker in ascii_query for marker in ("odrobinke", "troszke", "troszeczke"))
 
 
 def _starts_with_play_verb(ascii_query: str) -> bool:
