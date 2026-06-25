@@ -23,6 +23,8 @@ from ai_server.orchestrator import OrchestratorAgent
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
+from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
+from ai_server.domain_agents.system_status.agent import KNOWN_UTTERANCES as SYSTEM_STATUS_KNOWN_UTTERANCES
 from ai_server.domain_agents.weather import CurrentWeather, WeatherDomainAgent, WeatherNowRequest
 from ai_server.domain_agents.wikipedia import WikipediaArticle, WikipediaDomainAgent, WikipediaSearchResult
 from ai_server.interfaces import Conversation, ConversationEndpoint
@@ -94,7 +96,12 @@ class StubDomainAgent:
         self._traces = traces
 
     def known_utterances(self) -> dict[str, dict[str, Any]]:
+        if self._domain == "system_status":
+            return SYSTEM_STATUS_KNOWN_UTTERANCES
         return {}
+
+    def planning_prompt(self) -> str:
+        return planning_prompt_for_domain(self._domain)
 
     async def run_task(self, conversation: Conversation, task: dict[str, Any], active_context: dict[str, Any]) -> dict[str, Any]:
         del conversation, active_context
@@ -124,6 +131,9 @@ class TracingDomainAgent:
 
     def known_utterances(self) -> dict[str, dict[str, Any]]:
         return self._inner.known_utterances()
+
+    def planning_prompt(self) -> str:
+        return self._inner.planning_prompt()
 
     async def run_task(self, conversation: Conversation, task: dict[str, Any], active_context: dict[str, Any]) -> dict[str, Any]:
         result = await self._inner.run_task(conversation, task, active_context)

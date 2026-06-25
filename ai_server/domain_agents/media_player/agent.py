@@ -19,6 +19,7 @@ from ai_server.domain_agents.media_player.messages import (
     MEDIA_QUERY_RESOLUTION_SYSTEM_PROMPT,
 )
 from ai_server.domain_agents.media_player.parser import DEFAULT_VOLUME_DELTA, ParsedMediaCommand, ascii_fold, parse_media_command
+from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient
@@ -86,6 +87,9 @@ class MediaPlayerDomainAgent:
                 all_speakers=True,
             ),
         }
+
+    def planning_prompt(self) -> str:
+        return planning_prompt_for_domain("media_player")
 
     async def run_task(
         self,

@@ -13,6 +13,7 @@ from ai_server.config import Config, LOG_LEVELS, load_config_from_yaml
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 from ai_server.microphones import init_mics
 from ai_server.user_settings import create_user_settings_provider
+from ai_server.utils import JsonFileStore
 from ai_server.websocket_server import create_app
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
@@ -82,6 +83,7 @@ async def run_server(config: Config, ollama_url: str) -> None:
             server_config=config.server,
             processing_updates=config.processing_updates,
             cache_dir=config.cache_dir,
+            data_store=JsonFileStore(config.data_dir),
         )
         microphone_manager = await init_mics(
             config.microphones,

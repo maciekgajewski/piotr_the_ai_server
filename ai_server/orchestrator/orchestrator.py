@@ -35,27 +35,19 @@ FINAL_REPLY_OPTIONS = {
 MAX_LAST_TURNS = 4
 PLANNING_CONFIDENCE_THRESHOLD = 0.7
 
-PLANNING_SYSTEM_PROMPT = """
+PLANNING_SYSTEM_PROMPT_TEMPLATE = """
 You are an orchestration planner for a Polish voice assistant.
 Return only compact valid JSON. No markdown. No explanations.
 
 Split the latest user utterance into domain tasks. Every utterance goes through you, even follow-ups.
 Use active_context as a hint, not a jail: route to a new domain when the utterance asks for one.
 Context naming:
-- conversation.area is the user's Home Assistant area in the house, such as office or kitchen.
+- conversation.area is the user's local room/area context, such as office or kitchen.
 - conversation.server_location is the server's geographic location, such as Wrocław.
 Never treat area as a geographic location.
-For singular or local Home Assistant requests with no named area, prefer conversation.area when it is known.
-When using conversation.area for Home Assistant selection, put it in selector.area, never selector.name.
-If the user names an area/room in the utterance, that named area always overrides conversation.area.
-Polish area aliases: salon means living room; biuro means office; sypialnia means bedroom.
-When conversation.home_assistant_areas is present, use it as the source of truth for Home Assistant areas.
-For named rooms in home_assistant selectors and media_player areas, output canonical area_id values from conversation.home_assistant_areas, not the user's inflected phrase.
-If the user names a room but it is not present in conversation.home_assistant_areas, block the task and ask which room they mean.
-Use scope="all" only when the user explicitly asks for all/every/wszystkie/każde/everywhere/whole house.
-For Home Assistant pronouns such as ją/je/it/them, resolve selection from active_context.salient_entities.
-For Home Assistant context_updates.salient_entities, store stable target references like climate.salon or light.bedroom_lamp, not numbers, temperatures, or generic words.
-After a Home Assistant command targets a device type and area, preserve that target as <domain>.<area> for follow-up turns.
+
+Available task domains: {available_domains}
+Only create tasks for the available task domains. If no available domain fits the user utterance, return kind="chat" with tasks=[].
 
 Return schema:
 {
@@ -64,7 +56,7 @@ Return schema:
   "tasks": [
     {
       "id": "t1",
-      "domain": "home_assistant|media_player|time|wikipedia|weather|general",
+      "domain": "one of the available task domains",
       "command": {},
       "depends_on": [],
       "status": "ready|blocked",
@@ -81,52 +73,7 @@ Return schema:
 The top-level object must contain context_updates outside tasks. The tasks array must contain only task objects, never strings.
 Set confidence from 0.0 to 1.0 for how likely this plan is the correct route and task structure.
 
-For home_assistant tasks, command must use this envelope:
-{
-  "selection": {
-    "include": [{"domain": "light|climate|switch|fan|cover", "scope": "all|single", "name": "optional", "area": "optional"}],
-    "exclude": [{"name": "optional", "domain": "optional", "area": "optional"}]
-  },
-  "operation": {
-    "intent": "turn_on|turn_off|set_temperature|set_hvac_mode|set_brightness_percent|adjust|query_state",
-    "description": "natural language operation description",
-    "parameters": {}
-  }
-}
-
-For time tasks, command should include geo_location or timezone only when the user explicitly asks for a geographic place or timezone.
-For plain questions like "która godzina?", omit geo_location and timezone; the time agent already knows server_location and server_timezone.
-Never copy conversation.area into time.geo_location.
-{"query": "original time question", "geo_location": "optional geographic place", "timezone": "optional"}
-
-For wikipedia tasks, command should be:
-{"intent": "lookup_fact|summary|where_is|coordinates", "topic": "article/search topic", "fact": "birth_year|coordinates|location optional"}
-
-For weather tasks, command should be one of:
-{"tool": "get_weather_now", "query": "original weather question", "location": "optional geographic place", "focus": "temperature optional"}
-{"tool": "get_weather_forecast", "query": "original weather question", "location": "optional geographic place", "horizon": "today|tomorrow|weekend|next_weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday", "granularity": "daily|hourly", "focus": "temperature optional"}
-For plain local weather questions, omit location; the weather agent already knows server_location.
-For weather questions about later today, tonight, evening, rain, or whether something will happen, use get_weather_forecast, not get_weather_now.
-Use focus="temperature" only when the user asks about temperature or degrees.
-Never copy conversation.area into weather.location.
-
-For media_player tasks, command should be:
-{
-  "intent": "start_last|stop|volume_delta|set_volume|play_media|now_playing|transfer_playback",
-  "query": "original user phrase or media search text",
-  "media_type": "track|album|playlist|radio|artist optional",
-  "areas": ["optional named rooms"],
-  "all_speakers": false,
-  "replace_outputs": false,
-  "volume_level": 0.0,
-  "volume_delta": 0.0
-}
-For music commands without a named room, omit areas; the media player agent will use conversation.area.
-Use all_speakers=true only when the user explicitly asks for all speakers/everywhere/whole house/wszystkie głośniki.
-Use replace_outputs=true only when the user explicitly asks for only that room/player, e.g. "only in the office" or "tylko w biurze".
-Use intent="transfer_playback" when the user asks to move/transfer currently playing music, e.g. "Przenieś muzykę do salonu", or asks to play generic music only in a specific room, e.g. "Graj muzykę tylko w biurze".
-For "moje ulubione", use query="Liked Songs" and media_type="playlist".
-For "TOK FM", use domain="media_player", query="TOK FM", and media_type="radio".
+{domain_prompts}
 """
 
 FINAL_REPLY_SYSTEM_PROMPT = """
@@ -190,6 +137,7 @@ class OrchestratorAgent:
         self._orchestrator_model = orchestrator_model
         self._clarification_model = clarification_model
         self._domain_agents = dict(domain_agents or {})
+        self._planning_system_prompt = _build_planning_system_prompt(self._domain_agents)
         self._known_utterance_tasks = collect_known_utterance_tasks(self._domain_agents)
         self._ollama = ollama_client or OllamaClient(base_url=base_url, session=session)
         self._owns_ollama = owns_ollama_client
@@ -463,7 +411,7 @@ class OrchestratorAgent:
                         "keep_alive": "1h",
                         "options": PLANNING_OPTIONS,
                         "messages": [
-                            {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
+                            {"role": "system", "content": self._planning_system_prompt},
                             {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
                         ],
                     }
@@ -473,13 +421,17 @@ class OrchestratorAgent:
                 interval_seconds=self._processing_update_interval_seconds,
             )
             plan = _parse_plan(_assistant_content(response))
+            prompt_tokens, completion_tokens, total_tokens = _response_token_counts(response)
             self._logger.info(
-                "planning output model=%s kind=%s confidence=%s tasks=%s needs_clarification=%s",
+                "planning output model=%s kind=%s confidence=%s tasks=%s needs_clarification=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
                 model,
                 plan["kind"],
                 plan["confidence"],
                 _tasks_summary(plan["tasks"]),
                 plan["needs_clarification"],
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
             )
             return plan
         except Exception:
@@ -940,6 +892,36 @@ def _task_summary(task: dict[str, Any]) -> str:
 
 def _tasks_summary(tasks: list[dict[str, Any]]) -> str:
     return _compact_json([{"id": task.get("id"), "domain": task.get("domain"), "status": task.get("status")} for task in tasks])
+
+
+def _build_planning_system_prompt(domain_agents: Mapping[str, DomainAgent]) -> str:
+    domain_prompts: list[str] = []
+    available_domains: list[str] = []
+    for domain, domain_agent in domain_agents.items():
+        planning_prompt = domain_agent.planning_prompt().strip()
+        if not planning_prompt:
+            continue
+        available_domains.append(domain)
+        domain_prompts.append(planning_prompt)
+
+    available_domains_text = ", ".join(available_domains) if available_domains else "none"
+    domain_prompts_text = "\n\n".join(domain_prompts)
+    return (
+        PLANNING_SYSTEM_PROMPT_TEMPLATE.replace("{available_domains}", available_domains_text)
+        .replace("{domain_prompts}", domain_prompts_text)
+        .strip()
+    )
+
+
+def _response_token_counts(response: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
+    prompt_tokens = _optional_int(response.get("prompt_eval_count"))
+    completion_tokens = _optional_int(response.get("eval_count"))
+    total_tokens = prompt_tokens + completion_tokens if prompt_tokens is not None and completion_tokens is not None else None
+    return prompt_tokens, completion_tokens, total_tokens
+
+
+def _optional_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _result_summary(result: dict[str, Any]) -> str:

@@ -10,6 +10,7 @@ from aiohttp import ClientSession
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask
+from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
 from ai_server.domain_agents.weather.formatting import format_current_weather, format_forecast, weather_to_json
 from ai_server.domain_agents.weather.interfaces import (
     CurrentWeather,
@@ -61,6 +62,9 @@ class WeatherDomainAgent:
 
     def known_utterances(self) -> dict[str, DomainTask]:
         return known_weather_utterances()
+
+    def planning_prompt(self) -> str:
+        return planning_prompt_for_domain("weather")
 
     async def run_task(
         self,

@@ -2,6 +2,70 @@ group: orchestrator
 type: orchestrator
 
 cases:
+  - id: system_status_checkin
+    messages:
+      - Jak się masz?
+    domain_results:
+      system_status:
+        t1:
+          status: ok
+          text: Wszystko działa dobrze, Krzysztofie.
+          final_reply_mode: verbatim
+    expected_tasks:
+      - domain: system_status
+        command:
+          intent: quick_check
+    expected_replies:
+      - contains_all: [działa]
+
+  - id: system_status_casual_co_u_ciebie
+    messages:
+      - Co u ciebie?
+    domain_results:
+      system_status:
+        t1:
+          status: ok
+          text: U mnie spokojnie, system wygląda zdrowo.
+          final_reply_mode: verbatim
+    expected_tasks:
+      - domain: system_status
+        command:
+          intent: quick_check
+    expected_replies:
+      - contains_all: [system]
+
+  - id: system_status_summary
+    messages:
+      - Status systemu
+    domain_results:
+      system_status:
+        t1:
+          status: ok
+          text: System działa, ale dysk zaczyna się zapełniać.
+          final_reply_mode: verbatim
+    expected_tasks:
+      - domain: system_status
+        command:
+          intent: summary
+    expected_replies:
+      - contains_all: [System]
+
+  - id: system_status_full_report
+    messages:
+      - Daj pełny raport
+    domain_results:
+      system_status:
+        t1:
+          status: ok
+          text: Pełny raport systemu jest gotowy.
+          final_reply_mode: verbatim
+    expected_tasks:
+      - domain: system_status
+        command:
+          intent: full_report
+    expected_replies:
+      - contains_all: [raport]
+
   - id: ha_turn_off_current_area
     messages:
       - wyłącz klimatyzację

@@ -11,11 +11,12 @@ from ai_server.agent.interrogator import InterrogatorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.orchestrator import OrchestratorAgent
 
-from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, ProcessingUpdatesConfig, ServerConfig
+from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, DEFAULT_DATA_DIR, ProcessingUpdatesConfig, ServerConfig
 from ai_server.domain_agents import create_domain_agents
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.ollama_client import OllamaClient
+from ai_server.utils import JsonFileStore
 
 
 class Agent(Protocol):
@@ -33,6 +34,7 @@ async def create_agent(
     server_config: ServerConfig = ServerConfig(),
     processing_updates: ProcessingUpdatesConfig = ProcessingUpdatesConfig(),
     cache_dir: Path = Path(DEFAULT_CACHE_DIR).expanduser(),
+    data_store: JsonFileStore | None = None,
 ) -> Agent:
     logger = logging.getLogger(f"{__name__}.factory[{config.type}]")
     logger.info("Creating agent type=%s", config.type)
@@ -96,8 +98,14 @@ async def create_agent(
             server_config=server_config,
             processing_updates=processing_updates,
             cache_dir=cache_dir,
+            data_store=data_store or JsonFileStore(Path(DEFAULT_DATA_DIR).expanduser()),
         )
         logger.info("Loaded %s orchestrator domain agents", len(domain_agents))
+        for domain_name, domain_agent in domain_agents.items():
+            ensure_started = getattr(domain_agent, "ensure_started", None)
+            if ensure_started is not None:
+                logger.debug("Starting orchestrator domain agent domain=%s", domain_name)
+                await ensure_started()
         agent = OrchestratorAgent(
             orchestrator_model=orchestrator_model,
             clarification_model=clarification_model,

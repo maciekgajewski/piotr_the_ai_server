@@ -14,9 +14,11 @@ from ai_server.ai_tools.home_assistant import HomeAssistantTool
 from ai_server.config import AgentConfig, ProcessingUpdatesConfig, ServerConfig
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
+from ai_server.domain_agents.system_status import SystemStatusDomainAgent
 from ai_server.domain_agents.weather import WeatherDomainAgent
 from ai_server.domain_agents.wikipedia import WikipediaDomainAgent
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
+from ai_server.utils import JsonFileStore
 
 
 def test_create_agent_returns_echo_agent() -> None:
@@ -111,6 +113,12 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
                     "time": {},
                     "wikipedia": {},
                     "weather": {},
+                    "system_status": {
+                        "collection_interval_seconds": 2,
+                        "baseline_alpha": 0.2,
+                        "max_short_report_issues": 4,
+                        "home_assistant_entities": ["sensor.piotr_health"],
+                    },
                     "media_player": {},
                 },
                 "home_assistant": {
@@ -130,6 +138,7 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
             processing_updates=ProcessingUpdatesConfig(interval_seconds=2.5),
             cache_dir=Path("/tmp/piotr-test-cache"),
+            data_store=JsonFileStore(Path("/tmp/piotr-test-data")),
         )
 
         try:
@@ -156,6 +165,13 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert agent._domain_agents["weather"]._fallback_model == "qwen3:4b-instruct-fallback"
             assert agent._domain_agents["weather"]._location == "Wrocław"
             assert agent._domain_agents["weather"]._processing_update_interval_seconds == 2.5
+            assert isinstance(agent._domain_agents["system_status"], SystemStatusDomainAgent)
+            assert agent._domain_agents["system_status"]._model == "gpt-oss:20b-cloud"
+            assert agent._domain_agents["system_status"]._fallback_model == "qwen3:4b-instruct-fallback"
+            assert agent._domain_agents["system_status"]._processing_update_interval_seconds == 2.5
+            assert agent._domain_agents["system_status"]._max_short_report_issues == 4
+            assert agent._domain_agents["system_status"]._collector._options.collection_interval_seconds == 2.0
+            assert agent._domain_agents["system_status"]._collector._options.home_assistant_entities == ("sensor.piotr_health",)
             assert isinstance(agent._domain_agents["media_player"], MediaPlayerDomainAgent)
             assert agent._domain_agents["media_player"]._model == "gpt-oss:20b-cloud"
             assert agent._domain_agents["media_player"]._fallback_model == "qwen3:4b-instruct-fallback"

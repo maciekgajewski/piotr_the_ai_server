@@ -1,5 +1,6 @@
 log_level: INFO
 cache_dir: ~/.ai-server/cache/
+data_dir: ~/.ai-server/data/
 
 server:
   timezone: Europe/Warsaw

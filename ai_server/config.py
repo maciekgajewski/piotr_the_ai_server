@@ -24,6 +24,7 @@ DEFAULT_END_SILENCE_SECONDS = 0.9
 DEFAULT_SPEECH_PEAK_THRESHOLD = 500
 DEFAULT_POST_SPEECH_IGNORE_SECONDS = 1.0
 DEFAULT_CACHE_DIR = "~/.ai-server/cache/"
+DEFAULT_DATA_DIR = "~/.ai-server/data/"
 DEFAULT_SPEAKER_RECOGNITION_TIMEOUT_SECONDS = 1.0
 DEFAULT_PROCESSING_UPDATE_INTERVAL_SECONDS = 5.0
 DEFAULT_PROCESSING_UPDATE_SPOKEN_CUES = ("Hmm...", "Myslę....", "momencik...")
@@ -113,6 +114,7 @@ class Config:
     log_level: str = DEFAULT_LOG_LEVEL
     server: ServerConfig = ServerConfig()
     cache_dir: Path = Path(DEFAULT_CACHE_DIR).expanduser()
+    data_dir: Path = Path(DEFAULT_DATA_DIR).expanduser()
     stt: SttConfig = SttConfig()
     tts: TtsConfig = TtsConfig()
     conversation: ConversationConfig = ConversationConfig()
@@ -156,6 +158,7 @@ def load_config_from_yaml(path: str | Path) -> Config:
         log_level=_parse_log_level(raw_config),
         server=_parse_server_config(raw_config.get("server", {})),
         cache_dir=_parse_cache_dir(raw_config.get("cache_dir", DEFAULT_CACHE_DIR)),
+        data_dir=_parse_data_dir(raw_config.get("data_dir", DEFAULT_DATA_DIR)),
         stt=_parse_stt_config(raw_config.get("stt", {})),
         tts=_parse_tts_config(raw_config.get("tts", {})),
         conversation=conversation,
@@ -309,6 +312,12 @@ def _parse_server_config(raw_config: Any) -> ServerConfig:
 def _parse_cache_dir(raw_config: Any) -> Path:
     if not isinstance(raw_config, str) or not raw_config:
         raise ValueError("cache_dir must be a non-empty string")
+    return Path(raw_config).expanduser()
+
+
+def _parse_data_dir(raw_config: Any) -> Path:
+    if not isinstance(raw_config, str) or not raw_config:
+        raise ValueError("data_dir must be a non-empty string")
     return Path(raw_config).expanduser()
 
 

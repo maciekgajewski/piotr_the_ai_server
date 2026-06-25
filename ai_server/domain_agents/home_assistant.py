@@ -7,6 +7,7 @@ from typing import Annotated, Any, Callable
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask
+from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.home_assistant.toolset import HomeAssistantToolSet
 from ai_server.interfaces import Conversation
@@ -86,6 +87,9 @@ class HomeAssistantDomainAgent:
 
     def known_utterances(self) -> dict[str, DomainTask]:
         return {}
+
+    def planning_prompt(self) -> str:
+        return planning_prompt_for_domain("home_assistant")
 
     async def run_task(
         self,

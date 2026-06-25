@@ -5,6 +5,7 @@ import pytest
 from ai_server.config import (
     AgentConfig,
     ConversationConfig,
+    DEFAULT_DATA_DIR,
     MicrophoneDefaultsConfig,
     ProcessingUpdatesConfig,
     ServerConfig,
@@ -47,7 +48,8 @@ agent:
             port=2137,
             path=DEFAULT_WEBSOCKET_PATH,
             follow_up_timeout_seconds=DEFAULT_WEBSOCKET_FOLLOW_UP_TIMEOUT_SECONDS,
-        )
+        ),
+        data_dir=Path(DEFAULT_DATA_DIR).expanduser(),
     )
 
 
@@ -237,6 +239,7 @@ def test_load_config_with_orchestrator_agent_and_server_defaults(tmp_path: Path)
         tmp_path,
         """
 cache_dir: ~/.ai-server/cache/
+data_dir: ~/.ai-server/data/
 server:
   timezone: Europe/Warsaw
   location: Wrocław
@@ -257,6 +260,7 @@ agent:
 
     assert config.server == ServerConfig(timezone="Europe/Warsaw", location="Wrocław")
     assert config.cache_dir == Path("~/.ai-server/cache/").expanduser()
+    assert config.data_dir == Path("~/.ai-server/data/").expanduser()
     assert config.agent == AgentConfig(
         type="orchestrator",
         options={
@@ -584,6 +588,10 @@ agent:
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\ntts:\n  volume: 2",
             "tts.volume must be between",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\ndata_dir: []",
+            "data_dir must be a non-empty string",
         ),
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  devices: nope",

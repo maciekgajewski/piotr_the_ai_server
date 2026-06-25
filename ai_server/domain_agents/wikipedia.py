@@ -11,6 +11,7 @@ from aiohttp import ClientSession, ClientTimeout
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask
+from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
 from ai_server.interfaces import Conversation
 
 
@@ -84,6 +85,9 @@ class WikipediaDomainAgent:
 
     def known_utterances(self) -> dict[str, DomainTask]:
         return {}
+
+    def planning_prompt(self) -> str:
+        return planning_prompt_for_domain("wikipedia")
 
     async def run_task(
         self,

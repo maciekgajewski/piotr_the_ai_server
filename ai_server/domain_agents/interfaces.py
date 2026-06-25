@@ -10,6 +10,9 @@ DomainTask = dict[str, Any]
 
 
 class DomainAgent(Protocol):
+    def planning_prompt(self) -> str:
+        raise NotImplementedError
+
     def known_utterances(self) -> Mapping[str, DomainTask]:
         raise NotImplementedError
 

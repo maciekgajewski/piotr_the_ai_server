@@ -1,5 +1,6 @@
 log_level: INFO
 cache_dir: ~/.ai-server/cache/
+data_dir: ~/.ai-server/data/
 
 server:
   timezone: Europe/Warsaw
@@ -34,6 +35,11 @@ agent:
 #     time: {}
 #     wikipedia: {}
 #     weather: {}
+#     system_status:
+#       collection_interval_seconds: 30
+#       baseline_alpha: 0.01
+#       max_short_report_issues: 3
+#       home_assistant_entities: []
 #     media_player:
 #       default_music_media_id: Liked Songs
 #       default_music_media_type: playlist

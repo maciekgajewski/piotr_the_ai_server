@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -86,6 +87,12 @@ class HomeAssistantConnection:
     @property
     def inventory(self) -> HomeAssistantInventory | None:
         return self._inventory
+
+    def cached_state(self, entity_id: str) -> dict[str, Any] | None:
+        state = self._states_by_entity_id.get(entity_id)
+        if state is None:
+            return None
+        return copy.deepcopy(state)
 
     async def start(self) -> None:
         self._closed = False

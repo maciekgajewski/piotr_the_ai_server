@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from aiohttp import ClientSession, ClientTimeout
 
 from ai_server.domain_agents.interfaces import DomainTask
+from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
 from ai_server.interfaces import Conversation
 from ai_server.utils.text import normalize_text
 
@@ -127,6 +128,9 @@ class CurrentTimeDomainAgent:
         return {
             "Która godzina?": _known_task("time", {"query": "Która godzina?"}),
         }
+
+    def planning_prompt(self) -> str:
+        return planning_prompt_for_domain("time")
 
     async def run_task(
         self,

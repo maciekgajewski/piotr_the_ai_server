@@ -112,6 +112,30 @@ def test_parse_plan_validates_media_player_transfer_command() -> None:
     }
 
 
+def test_parse_plan_allows_system_status_command() -> None:
+    plan = _parse_plan(
+        json.dumps(
+            {
+                "kind": "single_task",
+                "confidence": 0.9,
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "domain": "system_status",
+                        "command": {"intent": "summary", "query": "status systemu"},
+                    }
+                ],
+                "context_updates": {"salient_entities": [], "active_domain": "system_status"},
+                "needs_clarification": False,
+                "clarification_question": None,
+            }
+        )
+    )
+
+    assert plan["tasks"][0]["domain"] == "system_status"
+    assert plan["tasks"][0]["command"] == {"intent": "summary", "query": "status systemu"}
+
+
 def test_parse_plan_ignores_embedded_string_fragments_in_tasks() -> None:
     plan = _parse_plan(
         json.dumps(
@@ -253,6 +277,68 @@ def test_orchestrator_reports_unsupported_domain_to_final_synthesis() -> None:
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Wikipedia nie jest jeszcze podłączona.")))
 
 
+def test_orchestrator_planning_prompt_uses_only_loaded_domain_prompts() -> None:
+    plan = {
+        "kind": "chat",
+        "confidence": 0.95,
+        "tasks": [],
+        "context_updates": {"salient_entities": [], "active_domain": None},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    ollama = FakeOllamaClient([json.dumps(plan), "Cześć."])
+    domain_agent = RecordingDomainAgent(planning_prompt="For time tasks only.")
+    agent = OrchestratorAgent(
+        orchestrator_model="qwen3:4b-instruct",
+        domain_agents={"time": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="co u ciebie?")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={}), endpoint))
+
+    system_prompt = ollama.requests[0]["messages"][0]["content"]
+    assert "Available task domains: time" in system_prompt
+    assert "For time tasks only." in system_prompt
+    assert "system_status" not in system_prompt
+    assert "home_assistant" not in system_prompt
+    assert "general" not in system_prompt
+
+
+def test_orchestrator_planning_output_logs_token_counts(caplog) -> None:
+    plan = {
+        "kind": "chat",
+        "confidence": 0.95,
+        "tasks": [],
+        "context_updates": {"salient_entities": [], "active_domain": None},
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    ollama = FakeOllamaClient(
+        [
+            {
+                "message": {"role": "assistant", "content": json.dumps(plan)},
+                "prompt_eval_count": 123,
+                "eval_count": 12,
+            },
+            "Cześć.",
+        ]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="qwen3:4b-instruct",
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="hej")])
+
+    with caplog.at_level(logging.INFO, logger="ai_server.orchestrator"):
+        asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={}), endpoint))
+
+    assert "planning output model=qwen3:4b-instruct kind=chat confidence=0.95" in caplog.text
+    assert "prompt_tokens=123 completion_tokens=12 total_tokens=135" in caplog.text
+
+
 def test_orchestrator_returns_single_verbatim_task_result_without_final_synthesis() -> None:
     plan = {
         "kind": "single_task",
@@ -318,6 +404,45 @@ def test_orchestrator_short_path_dispatches_known_time_utterance_without_ollama(
         }
     ]
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="czternasta zero pięć")))
+
+
+def test_orchestrator_short_path_dispatches_system_status_check_in_without_ollama() -> None:
+    ollama = FakeOllamaClient([])
+    domain_agent = RecordingDomainAgent(
+        [{"status": "ok", "text": "Wszystko działa dobrze, Krzysztofie.", "final_reply_mode": "verbatim"}],
+        known_utterances={
+            "Jak się masz?": {
+                "id": "t1",
+                "domain": "system_status",
+                "command": {"intent": "quick_check", "query": "Jak się masz?"},
+                "depends_on": [],
+                "status": "ready",
+                "clarification_question": None,
+            },
+        },
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="qwen3:4b-instruct",
+        domain_agents={"system_status": domain_agent},
+        ollama_client=ollama,
+        owns_ollama_client=False,
+    )
+    endpoint = FakeConversationEndpoint([TextMessage(text="Jak się masz?")])
+
+    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), endpoint))
+
+    assert ollama.requests == []
+    assert domain_agent.tasks == [
+        {
+            "id": "t1",
+            "domain": "system_status",
+            "command": {"intent": "quick_check", "query": "Jak się masz?"},
+            "depends_on": [],
+            "status": "ready",
+            "clarification_question": None,
+        }
+    ]
+    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Wszystko działa dobrze, Krzysztofie.")))
 
 
 def test_orchestrator_short_path_dispatches_weather_utterance_without_ollama() -> None:
@@ -1256,7 +1381,7 @@ def _ha_command(intent: str, description: str, parameters=None):
 
 
 class FakeOllamaClient:
-    def __init__(self, contents: list[str | Exception]) -> None:
+    def __init__(self, contents: list[str | dict | Exception]) -> None:
         self._contents = list(contents)
         self.requests = []
 
@@ -1265,6 +1390,8 @@ class FakeOllamaClient:
         content = self._contents.pop(0)
         if isinstance(content, Exception):
             raise content
+        if isinstance(content, dict):
+            return content
         return {"message": {"role": "assistant", "content": content}}
 
     async def close(self) -> None:
@@ -1272,13 +1399,23 @@ class FakeOllamaClient:
 
 
 class RecordingDomainAgent:
-    def __init__(self, results: list[dict] | None = None, *, known_utterances: dict[str, dict] | None = None) -> None:
+    def __init__(
+        self,
+        results: list[dict] | None = None,
+        *,
+        known_utterances: dict[str, dict] | None = None,
+        planning_prompt: str = "For test_domain tasks.",
+    ) -> None:
         self.tasks = []
         self._results = list(results or [{"status": "ok", "text": "Gotowe."}])
         self._known_utterances = known_utterances or {}
+        self._planning_prompt = planning_prompt
 
     def known_utterances(self):
         return self._known_utterances
+
+    def planning_prompt(self):
+        return self._planning_prompt
 
     async def run_task(self, conversation, task, active_context):
         self.tasks.append(task)
