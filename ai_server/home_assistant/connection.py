@@ -8,7 +8,7 @@ import re
 import socket
 from typing import Any
 
-from aiohttp import ClientConnectorDNSError, ClientSession, WSMsgType
+from aiohttp import ClientConnectorDNSError, ClientConnectorError, ClientSession, WSMsgType
 
 from ai_server.home_assistant.interfaces import (
     DEFAULT_CONTROLLABLE_DOMAINS,
@@ -594,6 +594,12 @@ Scope rules:
                     )
                 else:
                     self._logger.exception("failed to refresh Home Assistant inventory")
+            except ClientConnectorError as exc:
+                self._logger.warning(
+                    "Home Assistant inventory refresh connection failed; will retry interval_seconds=%s detail=%s",
+                    self._options.inventory_refresh_seconds,
+                    _connector_error_detail(exc),
+                )
             except Exception:
                 self._logger.exception("failed to refresh Home Assistant inventory")
             await asyncio.sleep(self._options.inventory_refresh_seconds)
@@ -655,6 +661,14 @@ Scope rules:
                     )
                 else:
                     self._logger.exception("Home Assistant state subscription failed; reconnecting in %ss", delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, RECONNECT_MAX_DELAY_SECONDS)
+            except ClientConnectorError as exc:
+                self._logger.warning(
+                    "Home Assistant state subscription connection failed; reconnecting in %ss detail=%s",
+                    delay,
+                    _connector_error_detail(exc),
+                )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, RECONNECT_MAX_DELAY_SECONDS)
             except Exception:
@@ -906,6 +920,10 @@ def _is_dns_resolution_error(exc: ClientConnectorDNSError) -> bool:
 
 
 def _dns_resolution_error_detail(exc: ClientConnectorDNSError) -> str:
+    return _connector_error_detail(exc)
+
+
+def _connector_error_detail(exc: ClientConnectorError) -> str:
     os_error = exc.os_error
     errno = getattr(os_error, "errno", None)
     if errno is None:
