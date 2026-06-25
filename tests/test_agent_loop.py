@@ -207,6 +207,7 @@ def test_agent_loop_returns_final_reply_without_tool_call() -> None:
             FakeResponse(
                 {
                     "done": True,
+                    "prompt_eval_count": 7,
                     "eval_count": 4,
                     "message": {"role": "assistant", "content": "Cześć!"},
                 }
@@ -219,6 +220,9 @@ def test_agent_loop_returns_final_reply_without_tool_call() -> None:
 
     assert reply.reply_text == "Cześć!"
     assert reply.end_conversation is False
+    assert reply.prompt_eval_count == 7
+    assert reply.eval_count == 4
+    assert isinstance(reply.duration_ms, int)
     assert loop.eval_count == 4
     assert session.requests[0]["url"] == "http://127.0.0.1:11434/api/chat"
     assert session.requests[0]["json"]["stream"] is False

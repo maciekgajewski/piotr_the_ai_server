@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -45,6 +46,19 @@ def test_system_status_collector_green_snapshot(monkeypatch, tmp_path):
     assert snapshot["status"] == "ok"
     assert snapshot["issues"] == []
     assert store.load_snapshot()["status"] == "ok"
+
+
+def test_system_status_collector_logs_snapshot_summary(monkeypatch, tmp_path, caplog):
+    _patch_local_metrics(monkeypatch, disk_free=90, inode_free=90, memory_available=80, swap_used=0, load_per_cpu=0.2)
+    collector = SystemStatusCollector(
+        store=SystemStatusStore(JsonFileStore(tmp_path)),
+        options=SystemStatusOptions(temperature_critical_c=10_000, temperature_warning_c=10_000),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="ai_server.domain_agents.system_status"):
+        asyncio.run(collector.collect_once())
+
+    assert "collected system status status=ok issues=0 warnings=0 critical=0" in caplog.text
 
 
 def test_system_status_collector_flags_thresholds(monkeypatch, tmp_path):
@@ -129,6 +143,101 @@ def test_system_status_domain_agent_calls_llm_for_green_reply(tmp_path):
     payload = json.loads(loop_factory.loop.user_message)
     assert payload["conversation"]["user"] == "Krzysztof"
     assert payload["health_status"] == "ok"
+
+
+def test_system_status_domain_agent_uses_fallback_model_for_ok_status(tmp_path):
+    loop_factory = FakeLoopFactory(
+        json.dumps(
+            {
+                "status": "ok",
+                "text": "Wszystko działa dobrze.",
+                "needs_clarification": False,
+                "clarification_question": None,
+                "entities": [],
+            },
+            ensure_ascii=False,
+        )
+    )
+    agent = SystemStatusDomainAgent(
+        model="large",
+        fallback_model="small",
+        collector=FakeCollector(_green_snapshot()),
+        loop_factory=loop_factory.factory,
+        ollama_connection=FakeOllamaConnection(),
+        auto_start=False,
+    )
+
+    asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={}), _task("quick_check"), {}))
+
+    assert loop_factory.config.model == "small"
+    assert loop_factory.config.fallback_model == "large"
+
+
+def test_system_status_domain_agent_uses_main_model_for_warning_status(tmp_path):
+    loop_factory = FakeLoopFactory(
+        json.dumps(
+            {
+                "status": "ok",
+                "text": "Widzę ostrzeżenie.",
+                "needs_clarification": False,
+                "clarification_question": None,
+                "entities": [],
+            },
+            ensure_ascii=False,
+        )
+    )
+    snapshot = _green_snapshot()
+    snapshot["status"] = "warning"
+    snapshot["issues"] = [{"severity": "warning", "code": "load_high", "message": "problem", "details": {}}]
+    agent = SystemStatusDomainAgent(
+        model="large",
+        fallback_model="small",
+        collector=FakeCollector(snapshot),
+        loop_factory=loop_factory.factory,
+        ollama_connection=FakeOllamaConnection(),
+        auto_start=False,
+    )
+
+    asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={}), _task("summary"), {}))
+
+    assert loop_factory.config.model == "large"
+    assert loop_factory.config.fallback_model == "small"
+
+
+def test_system_status_domain_agent_logs_task_and_result(tmp_path, caplog):
+    loop_factory = FakeLoopFactory(
+        json.dumps(
+            {
+                "status": "ok",
+                "text": "Wszystko działa dobrze.",
+                "needs_clarification": False,
+                "clarification_question": None,
+                "entities": [],
+            },
+            ensure_ascii=False,
+        ),
+        prompt_eval_count=123,
+        eval_count=17,
+        duration_ms=456,
+    )
+    agent = SystemStatusDomainAgent(
+        model="qwen3:4b",
+        collector=FakeCollector(_green_snapshot()),
+        loop_factory=loop_factory.factory,
+        ollama_connection=FakeOllamaConnection(),
+        auto_start=False,
+    )
+
+    with caplog.at_level(logging.INFO, logger="ai_server.domain_agents.system_status"):
+        asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={}), _task("quick_check"), {}))
+
+    assert "running system status task conversation_id=c1 task_id=t1 intent=quick_check snapshot_status=ok issue_count=0" in caplog.text
+    assert "system status DSA LLM request conversation_id=c1 task_id=t1 model=qwen3:4b fallback_model=None intent=quick_check" in caplog.text
+    assert (
+        "system status DSA LLM reply conversation_id=c1 task_id=t1 model=qwen3:4b end_conversation=False "
+        "reply_len=129 prompt_tokens=123 completion_tokens=17 total_tokens=140 duration_ms=456"
+    ) in caplog.text
+    assert "system status task result conversation_id=c1 task_id=t1 result_status=ok health_status=ok issue_count=0" in caplog.text
 
 
 def test_system_status_domain_agent_mentions_many_issue_offer_context(tmp_path):
@@ -254,20 +363,45 @@ class FakeCollector:
 
 
 class FakeLoopFactory:
-    def __init__(self, reply_text: str) -> None:
+    def __init__(
+        self,
+        reply_text: str,
+        *,
+        prompt_eval_count: int | None = None,
+        eval_count: int | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
         self._reply_text = reply_text
+        self._prompt_eval_count = prompt_eval_count
+        self._eval_count = eval_count
+        self._duration_ms = duration_ms
         self.loop = None
         self.config = None
 
     def factory(self, **kwargs):
         self.config = kwargs["config"]
-        self.loop = FakeLoop(self._reply_text)
+        self.loop = FakeLoop(
+            self._reply_text,
+            prompt_eval_count=self._prompt_eval_count,
+            eval_count=self._eval_count,
+            duration_ms=self._duration_ms,
+        )
         return self.loop
 
 
 class FakeLoop:
-    def __init__(self, reply_text: str) -> None:
+    def __init__(
+        self,
+        reply_text: str,
+        *,
+        prompt_eval_count: int | None = None,
+        eval_count: int | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
         self._reply_text = reply_text
+        self._prompt_eval_count = prompt_eval_count
+        self._eval_count = eval_count
+        self._duration_ms = duration_ms
         self.user_message = ""
 
     async def __aenter__(self):
@@ -278,7 +412,13 @@ class FakeLoop:
 
     async def send_user_message(self, message: str) -> AgentReply:
         self.user_message = message
-        return AgentReply(reply_text=self._reply_text, end_conversation=False)
+        return AgentReply(
+            reply_text=self._reply_text,
+            end_conversation=False,
+            prompt_eval_count=self._prompt_eval_count,
+            eval_count=self._eval_count,
+            duration_ms=self._duration_ms,
+        )
 
 
 class FakeOllamaConnection:

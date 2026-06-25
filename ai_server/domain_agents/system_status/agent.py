@@ -86,8 +86,10 @@ class SystemStatusDomainAgent:
 
     async def ensure_started(self) -> None:
         if self._auto_start and not self._started:
+            self._logger.info("starting system status collector from DSA")
             await self._collector.start()
             self._started = True
+            self._logger.info("system status collector ready")
 
     def known_utterances(self) -> dict[str, DomainTask]:
         return KNOWN_UTTERANCES
@@ -103,13 +105,29 @@ class SystemStatusDomainAgent:
     ) -> dict[str, Any]:
         await self.ensure_started()
         snapshot = self._collector.latest_snapshot()
-        if self._collector.snapshot_is_stale(snapshot):
+        stale_snapshot = self._collector.snapshot_is_stale(snapshot)
+        if stale_snapshot:
+            self._logger.info(
+                "system status snapshot stale conversation_id=%s task_id=%s; collecting immediately",
+                conversation.conversation_id,
+                task.get("id", "unknown"),
+            )
             snapshot = await self._collector.collect_once()
 
         command = task.get("command", {})
         command = command if isinstance(command, dict) else {}
         intent = command.get("intent") if isinstance(command.get("intent"), str) else "summary"
         issue_count = len(snapshot.get("issues", [])) if isinstance(snapshot.get("issues"), list) else 0
+        task_id = task.get("id", "unknown")
+        self._logger.info(
+            "running system status task conversation_id=%s task_id=%s intent=%s snapshot_status=%s issue_count=%s stale_snapshot=%s",
+            conversation.conversation_id,
+            task_id,
+            intent,
+            snapshot.get("status", "unknown"),
+            issue_count,
+            stale_snapshot,
+        )
         payload = {
             "task": task,
             "active_context": active_context,
@@ -124,15 +142,30 @@ class SystemStatusDomainAgent:
                 "user_settings": conversation.user_settings,
             },
         }
+        health_status = snapshot.get("status", "unknown")
+        selected_model = self._model_for_health_status(health_status)
+        selected_fallback_model = self._fallback_for_selected_model(selected_model)
         loop_config = AgentLoopConfig(
-            model=self._model,
+            model=selected_model,
             ollama_url=self._ollama_url,
-            fallback_model=self._fallback_model,
+            fallback_model=selected_fallback_model,
             fallback_backoff_seconds=self._fallback_backoff_seconds,
             options={"num_predict": 384, "temperature": 0, "num_ctx": 4096},
             keep_alive="1h",
         )
+        llm_payload = json.dumps(payload, ensure_ascii=False)
         self._logger.debug("running System Status DSA task=%s status=%s issue_count=%s", task, snapshot.get("status"), issue_count)
+        self._logger.info(
+            "system status DSA LLM request conversation_id=%s task_id=%s model=%s fallback_model=%s intent=%s payload_len=%s health_status=%s issue_count=%s",
+            conversation.conversation_id,
+            task_id,
+            selected_model,
+            selected_fallback_model,
+            intent,
+            len(llm_payload),
+            health_status,
+            issue_count,
+        )
         async with self._loop_factory(
             config=loop_config,
             system_prompt=SYSTEM_STATUS_SYSTEM_PROMPT,
@@ -141,24 +174,72 @@ class SystemStatusDomainAgent:
             processing_update_callback=conversation.processing_update_callback,
             processing_update_interval_seconds=self._processing_update_interval_seconds,
         ) as loop:
-            reply = await loop.send_user_message(json.dumps(payload, ensure_ascii=False))
+            reply = await loop.send_user_message(llm_payload)
+        total_tokens = (
+            reply.prompt_eval_count + reply.eval_count
+            if reply.prompt_eval_count is not None and reply.eval_count is not None
+            else None
+        )
+        self._logger.info(
+            "system status DSA LLM reply conversation_id=%s task_id=%s model=%s end_conversation=%s reply_len=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s duration_ms=%s",
+            conversation.conversation_id,
+            task_id,
+            selected_model,
+            reply.end_conversation,
+            len(reply.reply_text),
+            reply.prompt_eval_count,
+            reply.eval_count,
+            total_tokens,
+            reply.duration_ms,
+        )
         if reply.end_conversation:
+            self._logger.warning(
+                "system status DSA ended conversation unexpectedly conversation_id=%s task_id=%s",
+                conversation.conversation_id,
+                task_id,
+            )
             return _fallback_result(snapshot)
         try:
             result = _parse_domain_reply(reply.reply_text)
         except ValueError:
-            self._logger.debug("rejecting non-JSON System Status DSA reply=%r", reply.reply_text)
+            self._logger.warning(
+                "rejecting invalid System Status DSA reply conversation_id=%s task_id=%s reply=%r",
+                conversation.conversation_id,
+                task_id,
+                reply.reply_text,
+            )
             return _fallback_result(snapshot)
         result.setdefault("health_status", snapshot.get("status", "unknown"))
         result.setdefault("issue_count", issue_count)
         result.setdefault("snapshot_collected_at", snapshot.get("collected_at"))
         result.setdefault("final_reply_mode", "verbatim")
+        self._logger.info(
+            "system status task result conversation_id=%s task_id=%s result_status=%s health_status=%s issue_count=%s text_len=%s",
+            conversation.conversation_id,
+            task_id,
+            result.get("status"),
+            result.get("health_status"),
+            result.get("issue_count"),
+            len(result.get("text", "")),
+        )
         return result
 
     async def close(self) -> None:
+        self._logger.info("closing system status DSA")
         await self._collector.close()
         if self._owns_ollama_connection:
             await self._ollama_connection.close()
+        self._logger.info("system status DSA closed")
+
+    def _model_for_health_status(self, health_status: Any) -> str:
+        if health_status == "ok" and self._fallback_model is not None:
+            return self._fallback_model
+        return self._model
+
+    def _fallback_for_selected_model(self, selected_model: str) -> str | None:
+        if selected_model == self._fallback_model:
+            return self._model
+        return self._fallback_model
 
 
 def _parse_domain_reply(content: str) -> dict[str, Any]:

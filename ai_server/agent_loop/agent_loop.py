@@ -74,6 +74,10 @@ class AgentLoop:
         self._append_context_message({"role": "user", "content": message})
         tool_calls_this_message = 0
         repair_attempts = 0
+        reply_prompt_eval_count = 0
+        reply_has_prompt_eval_count = False
+        reply_eval_count = 0
+        reply_duration_ms = 0
 
         try:
             while True:
@@ -83,7 +87,13 @@ class AgentLoop:
                 assistant_message = _parse_assistant_message(response)
                 self._append_context_message(assistant_message)
 
-                self._record_eval_count(response, elapsed_ms)
+                eval_count = self._record_eval_count(response, elapsed_ms)
+                prompt_eval_count = _optional_int(response.get("prompt_eval_count"))
+                if prompt_eval_count is not None:
+                    reply_has_prompt_eval_count = True
+                    reply_prompt_eval_count += prompt_eval_count
+                reply_eval_count += eval_count
+                reply_duration_ms += elapsed_ms
                 tool_calls = _extract_tool_calls(assistant_message)
                 if not tool_calls:
                     content = assistant_message.get("content", "")
@@ -96,7 +106,13 @@ class AgentLoop:
                         len(self._messages),
                         self._eval_count,
                     )
-                    return AgentReply(reply_text=content, end_conversation=False)
+                    return AgentReply(
+                        reply_text=content,
+                        end_conversation=False,
+                        prompt_eval_count=reply_prompt_eval_count if reply_has_prompt_eval_count else None,
+                        eval_count=reply_eval_count,
+                        duration_ms=reply_duration_ms,
+                    )
 
                 tool_calls_this_message += len(tool_calls)
                 self._logger.debug(
@@ -202,7 +218,7 @@ class AgentLoop:
             raise ValueError("Ollama chat response did not finish")
         return response
 
-    def _record_eval_count(self, response: dict[str, Any], elapsed_ms: int) -> None:
+    def _record_eval_count(self, response: dict[str, Any], elapsed_ms: int) -> int:
         eval_count = response.get("eval_count", 0)
         if isinstance(eval_count, bool) or not isinstance(eval_count, int):
             raise ValueError("Ollama eval_count must be an integer")
@@ -215,6 +231,11 @@ class AgentLoop:
             elapsed_ms,
             response,
         )
+        return eval_count
+
+
+def _optional_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _parse_assistant_message(response: dict[str, Any]) -> dict[str, Any]:

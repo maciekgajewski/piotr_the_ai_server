@@ -69,18 +69,27 @@ class SystemStatusCollector:
     async def start(self) -> None:
         self._closed = False
         if self._task is None or self._task.done():
+            self._logger.info(
+                "starting system status collector interval_seconds=%s disk_paths=%s ha_entities=%s",
+                self._options.collection_interval_seconds,
+                list(self._options.disk_paths),
+                list(self._options.home_assistant_entities),
+            )
             await self.collect_once()
             self._task = asyncio.create_task(self._collection_loop())
+            self._logger.info("system status collector started")
 
     async def close(self) -> None:
         self._closed = True
         if self._task is not None:
+            self._logger.info("stopping system status collector")
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
         self._task = None
+        self._logger.info("system status collector stopped")
 
     def latest_snapshot(self) -> dict[str, Any]:
         return self._store.load_snapshot()
@@ -93,6 +102,7 @@ class SystemStatusCollector:
         return self._now_factory() - collected_at > self._options.stale_snapshot_seconds
 
     async def collect_once(self) -> dict[str, Any]:
+        started_at = time.perf_counter()
         now = self._now_factory()
         baselines = self._store.load_baselines()
         metrics: dict[str, Any] = {}
@@ -118,6 +128,16 @@ class SystemStatusCollector:
         }
         self._store.store_baselines(baselines)
         self._store.store_snapshot(snapshot)
+        warning_count, critical_count = _issue_counts(issues)
+        self._logger.debug(
+            "collected system status status=%s issues=%s warnings=%s critical=%s baselines=%s duration_ms=%s",
+            health_status,
+            len(issues),
+            warning_count,
+            critical_count,
+            len(baseline_values),
+            int((time.perf_counter() - started_at) * 1000),
+        )
         return snapshot
 
     async def _collection_loop(self) -> None:
@@ -422,6 +442,12 @@ def _overall_status(issues: list[dict[str, Any]]) -> str:
 def _issue_sort_key(issue: dict[str, Any]) -> tuple[int, str]:
     severity_order = {"critical": 0, "warning": 1}
     return (severity_order.get(str(issue.get("severity")), 2), str(issue.get("code", "")))
+
+
+def _issue_counts(issues: list[dict[str, Any]]) -> tuple[int, int]:
+    warning_count = sum(1 for issue in issues if issue.get("severity") == "warning")
+    critical_count = sum(1 for issue in issues if issue.get("severity") == "critical")
+    return warning_count, critical_count
 
 
 def _metric_safe_path(path: str) -> str:
