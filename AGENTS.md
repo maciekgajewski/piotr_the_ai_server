@@ -13,6 +13,7 @@ Rules:
 - If multiple valid approaches exist, present options with tradeoffs, as numbered list
 - Explicitly list assumptions
 - Do not implement until I say "proceed" or "make it so"
+- Don't shy away from churn. Prioritize clean, systematic solutions even if the require more churn and deeper changes.
 
 # File naming
 
