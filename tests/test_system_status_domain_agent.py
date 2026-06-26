@@ -114,6 +114,34 @@ def test_system_status_domain_agent_known_utterances_route_to_status(tmp_path):
     assert task["command"] == {"intent": "quick_check", "query": "Jak się masz?"}
 
 
+def test_system_status_domain_agent_refuses_anonymous_user(tmp_path):
+    loop_factory = FakeLoopFactory("{}")
+    collector = FakeCollector(_green_snapshot())
+    agent = SystemStatusDomainAgent(
+        model="qwen3:4b",
+        collector=collector,
+        loop_factory=loop_factory.factory,
+        ollama_connection=FakeOllamaConnection(),
+        auto_start=True,
+    )
+
+    result = asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={}), _task("quick_check"), {}))
+
+    assert result == {
+        "status": "failed",
+        "text": "Nie mogę sprawdzić statusu systemu bez rozpoznanego użytkownika.",
+        "needs_clarification": False,
+        "clarification_question": None,
+        "entities": [],
+        "final_reply_mode": "verbatim",
+        "health_status": "unknown",
+        "issue_count": 0,
+        "snapshot_collected_at": None,
+    }
+    assert not collector.started
+    assert loop_factory.loop is None
+
+
 def test_system_status_domain_agent_calls_llm_for_green_reply(tmp_path):
     loop_factory = FakeLoopFactory(
         json.dumps(
@@ -167,7 +195,7 @@ def test_system_status_domain_agent_uses_fallback_model_for_ok_status(tmp_path):
         auto_start=False,
     )
 
-    asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={}), _task("quick_check"), {}))
+    asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), _task("quick_check"), {}))
 
     assert loop_factory.config.model == "small"
     assert loop_factory.config.fallback_model == "large"
@@ -198,7 +226,7 @@ def test_system_status_domain_agent_uses_main_model_for_warning_status(tmp_path)
         auto_start=False,
     )
 
-    asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={}), _task("summary"), {}))
+    asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), _task("summary"), {}))
 
     assert loop_factory.config.model == "large"
     assert loop_factory.config.fallback_model == "small"
@@ -229,7 +257,7 @@ def test_system_status_domain_agent_logs_task_and_result(tmp_path, caplog):
     )
 
     with caplog.at_level(logging.INFO, logger="ai_server.domain_agents.system_status"):
-        asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={}), _task("quick_check"), {}))
+        asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), _task("quick_check"), {}))
 
     assert "running system status task conversation_id=c1 task_id=t1 intent=quick_check snapshot_status=ok issue_count=0" in caplog.text
     assert "system status DSA LLM request conversation_id=c1 task_id=t1 model=qwen3:4b fallback_model=None intent=quick_check" in caplog.text
@@ -265,7 +293,7 @@ def test_system_status_domain_agent_mentions_many_issue_offer_context(tmp_path):
         auto_start=False,
     )
 
-    result = asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={}), _task("summary"), {}))
+    result = asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), _task("summary"), {}))
 
     assert "dłuższy raport" in result["text"]
     payload = json.loads(loop_factory.loop.user_message)
@@ -282,7 +310,7 @@ def test_system_status_domain_agent_falls_back_on_llm_failure(tmp_path):
         auto_start=False,
     )
 
-    result = asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={}), _task("quick_check"), {}))
+    result = asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), _task("quick_check"), {}))
 
     assert result["status"] == "ok"
     assert result["health_status"] == "ok"

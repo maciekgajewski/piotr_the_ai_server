@@ -110,6 +110,14 @@ class SystemStatusDomainAgent:
         task: DomainTask,
         active_context: dict[str, Any],
     ) -> dict[str, Any]:
+        if conversation.user is None:
+            task_id = task.get("id", "unknown")
+            self._logger.info(
+                "refusing system status task without identified user conversation_id=%s task_id=%s",
+                conversation.conversation_id,
+                task_id,
+            )
+            return _anonymous_user_refusal()
         await self.ensure_started()
         snapshot = self._collector.latest_snapshot()
         stale_snapshot = self._collector.snapshot_is_stale(snapshot)
@@ -300,4 +308,18 @@ def _fallback_result(snapshot: dict[str, Any]) -> dict[str, Any]:
         "health_status": status or "unknown",
         "issue_count": len(issues) if isinstance(issues, list) else 0,
         "snapshot_collected_at": snapshot.get("collected_at"),
+    }
+
+
+def _anonymous_user_refusal() -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "text": "Nie mogę sprawdzić statusu systemu bez rozpoznanego użytkownika.",
+        "needs_clarification": False,
+        "clarification_question": None,
+        "entities": [],
+        "final_reply_mode": "verbatim",
+        "health_status": "unknown",
+        "issue_count": 0,
+        "snapshot_collected_at": None,
     }

@@ -16,6 +16,7 @@ from pathlib import Path
 from aiohttp import ClientError, ClientSession
 
 from ai_server.ws_client_common import DEFAULT_WEBSOCKET_URL, INTERRUPTED_EXIT_CODE, WebsocketDisconnected
+from ai_server.ws_client_common import WebsocketSessionRejected
 from ai_server.ws_client_common import WaitState, WsClientInterrupted
 from ai_server.ws_client_common import handle_websocket_message, receive_websocket_message, send_session_attributes
 from ai_server.ws_client_common import send_user_text
@@ -109,8 +110,10 @@ async def _run_interactive_chat(
             try:
                 input_session.set_prompt(WAITING_FOR_SERVER_PROMPT)
                 await send_session_attributes(websocket, options.user, options.area)
-                _print_client_message("Connected.")
                 await _run_interactive_connection(websocket, input_session, stop_event)
+                return
+            except WebsocketSessionRejected as exc:
+                _print_client_message(f"Connection rejected: {exc}.")
                 return
             except (WebsocketDisconnected, ClientError, OSError) as exc:
                 connection_prompt = DISCONNECTED_PROMPT

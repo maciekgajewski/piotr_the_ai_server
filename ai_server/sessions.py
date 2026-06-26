@@ -20,7 +20,6 @@ class Session:
     endpoint: CommunicationEndpoint
     attributes: dict[str, str] | None = None
     require_session_attributes: bool = False
-    default_user: str | None = None
     user_settings: dict[str, dict[str, Any]] | None = None
     user_settings_provider: UserSettingsProvider | None = None
 
@@ -63,6 +62,7 @@ class Session:
         event = await self.endpoint.receive()
         assert isinstance(event, SessionAttributes), f"expected SessionAttributes, got {type(event).__name__}"
         self.attributes = _merge_attributes(self.attributes or {}, event.attributes)
+        await self._assert_known_user(self.attributes.get("user"))
         self._logger.info(
             "session attributes user=%r area=%r attributes=%s",
             self.attributes.get("user"),
@@ -74,8 +74,7 @@ class Session:
         event = await self.endpoint.receive()
         assert isinstance(event, NewConversation), f"expected NewConversation, got {type(event).__name__}"
         attributes = _merge_attributes(self.attributes or {}, event.attributes)
-        if not attributes.get("user") and self.default_user:
-            attributes["user"] = self.default_user
+        await self._assert_known_user(attributes.get("user"))
         assert self.user_settings_provider is not None
         settings = await self.user_settings_provider.settings_for_user(attributes.get("user"))
         return Conversation(
@@ -83,6 +82,13 @@ class Session:
             attributes=attributes,
             state={"user_settings": settings},
         )
+
+    async def _assert_known_user(self, user: str | None) -> None:
+        if user is None:
+            return
+        assert self.user_settings_provider is not None
+        user_exists = await self.user_settings_provider.user_exists(user)
+        assert user_exists, f"unknown user: {user}"
 
     async def receive_conversation_event(self) -> ConversationInputEvent:
         event = await self.endpoint.receive()
@@ -106,7 +112,6 @@ class SessionManager:
         attributes: dict[str, str] | None = None,
         require_session_attributes: bool = False,
         session_id: str | None = None,
-        default_user: str | None = None,
         user_settings: dict[str, dict[str, Any]] | None = None,
         user_settings_provider: UserSettingsProvider | None = None,
     ) -> None:
@@ -115,7 +120,6 @@ class SessionManager:
             endpoint=endpoint,
             attributes=attributes,
             require_session_attributes=require_session_attributes,
-            default_user=default_user,
             user_settings=user_settings,
             user_settings_provider=user_settings_provider,
         )

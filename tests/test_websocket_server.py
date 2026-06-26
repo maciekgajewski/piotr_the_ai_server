@@ -15,10 +15,10 @@ from ai_server.chat_client import ChatClientOptions
 from ai_server.config import AgentConfig, Config, WebsocketConfig
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, ProcessingUpdate, RequestFollowUp
-from ai_server.messages import SessionAttributes, TextMessage, WaitForNewConversation, endpoint_event_to_json
+from ai_server.messages import SessionAttributes, SessionRejected, TextMessage, WaitForNewConversation, endpoint_event_from_json, endpoint_event_to_json
 from ai_server.messages import session_event_from_json, session_event_to_json, text_message_to_events
 from ai_server.websocket_server import create_app
-from ai_server.ws_client_common import handle_websocket_message
+from ai_server.ws_client_common import WebsocketSessionRejected, handle_websocket_message
 
 
 class FakeWebsocket:
@@ -84,6 +84,9 @@ class FakeUserSettingsProvider:
     async def settings_for_user(self, user: str | None) -> dict:
         self.users.append(user)
         return {"media": {"playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"}}}
+
+    async def user_exists(self, user: str) -> bool:
+        return user.casefold() == "maciek"
 
 
 def test_websocket_shutdown_closes_active_websockets() -> None:
@@ -229,6 +232,7 @@ def test_batch_websocket_client_drives_interrogator_flow(capsys) -> None:
         config = Config(
             agent=AgentConfig(type="interrogator", options={}),
             websocket=WebsocketConfig(host="127.0.0.1", port=port),
+            users={"Maciek": {}},
         )
         app = create_app(config, InterrogatorAgent())
         runner = web.AppRunner(app)
@@ -292,14 +296,13 @@ def test_websocket_returns_to_new_conversation_without_requested_follow_up() -> 
     asyncio.run(run())
 
 
-def test_websocket_applies_default_user_and_user_settings_to_conversation() -> None:
+def test_websocket_applies_explicit_user_and_user_settings_to_conversation() -> None:
     async def run() -> None:
         port = _unused_port()
         agent = CapturingAgent()
         config = Config(
             agent=AgentConfig(type="capturing", options={}),
             websocket=WebsocketConfig(host="127.0.0.1", port=port),
-            default_user="Maciek",
             users={"Maciek": {"media": {"liked_songs_media_id": "library://playlist/7"}}},
         )
         app = create_app(config, agent)
@@ -311,7 +314,7 @@ def test_websocket_applies_default_user_and_user_settings_to_conversation() -> N
         try:
             async with ClientSession() as session:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={})))
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"user": "Maciek"})))
 
                     assert await _receive_session_event(websocket) == WaitForNewConversation()
 
@@ -331,6 +334,38 @@ def test_websocket_applies_default_user_and_user_settings_to_conversation() -> N
         assert agent.conversations[0].user_settings == {
             "media": {"liked_songs_media_id": "library://playlist/7"}
         }
+
+    asyncio.run(run())
+
+
+def test_websocket_rejects_unknown_session_user() -> None:
+    async def run() -> None:
+        port = _unused_port()
+        agent = CapturingAgent()
+        config = Config(
+            agent=AgentConfig(type="capturing", options={}),
+            websocket=WebsocketConfig(host="127.0.0.1", port=port),
+            users={"Maciek": {"media": {"liked_songs_media_id": "library://playlist/7"}}},
+        )
+        app = create_app(config, agent)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
+        await site.start()
+
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"user": "Unknown"})))
+                    assert await _receive_session_event(websocket) == SessionRejected(reason="unknown user: Unknown")
+                    message = await websocket.receive()
+
+                    assert message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING)
+                    assert websocket.close_code == WSCloseCode.PROTOCOL_ERROR
+        finally:
+            await runner.cleanup()
+
+        assert agent.conversations == []
 
     asyncio.run(run())
 
@@ -420,6 +455,41 @@ def test_batch_websocket_client_does_not_reconnect_after_drop(capsys) -> None:
     assert "Connection lost: websocket closed." in capsys.readouterr().out
 
 
+def test_batch_websocket_client_prints_session_rejection(capsys) -> None:
+    async def run() -> None:
+        port = _unused_port()
+        config = Config(
+            agent=AgentConfig(type="capturing", options={}),
+            websocket=WebsocketConfig(host="127.0.0.1", port=port),
+            users={"Maciek": {}},
+        )
+        app = create_app(config, CapturingAgent())
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
+        await site.start()
+
+        try:
+            await asyncio.wait_for(
+                run_batch_ws_client(
+                    BatchWsClientOptions(
+                        url=f"ws://127.0.0.1:{port}/chat",
+                        user="Unknown",
+                        area=None,
+                        messages=("hello",),
+                    )
+                ),
+                timeout=2,
+            )
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+    output = capsys.readouterr().out
+    assert output == "Connection rejected: unknown user: Unknown.\n"
+
+
 def test_chat_client_help_command_prints_available_commands(capsys) -> None:
     result = chat_client._handle_client_command("/help")
 
@@ -459,6 +529,14 @@ def test_ws_client_routes_processing_update_to_system_printer() -> None:
 
     assert result is None
     assert system_messages == ["processing..."]
+
+
+def test_ws_client_raises_terminal_error_on_session_rejected() -> None:
+    with pytest.raises(WebsocketSessionRejected, match="unknown user: Unknown"):
+        handle_websocket_message(
+            None,
+            FakeWebsocketMessage(session_event_to_json(SessionRejected(reason="unknown user: Unknown"))),
+        )
 
 
 def test_chat_client_suppresses_initial_wait_for_new_conversation_notice(capsys) -> None:
@@ -577,6 +655,73 @@ def test_interactive_chat_uses_connecting_prompt_before_first_connect(monkeypatc
         return input_session.prompts
 
     assert asyncio.run(run()) == [chat_client.CONNECTING_PROMPT]
+
+
+def test_interactive_chat_prints_rejection_and_does_not_reconnect(monkeypatch, capsys) -> None:
+    class FakeClientSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    class FakeInputSession:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def set_prompt(self, prompt: str) -> None:
+            self.prompts.append(prompt)
+
+    class RejectedWebsocket(StrictReceiveWebsocket):
+        def __init__(self) -> None:
+            super().__init__()
+            self.sent: list[str] = []
+            self.closed = False
+
+        async def send_str(self, data: str) -> None:
+            self.sent.append(data)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    connect_calls = 0
+    rejected_websocket = RejectedWebsocket()
+
+    async def fake_connect_interactive(
+        session,
+        options,
+        input_session,
+        stop_event,
+        reconnect_delay,
+        connection_prompt,
+    ):
+        nonlocal connect_calls
+        connect_calls += 1
+        await rejected_websocket.messages.put(
+            FakeWebsocketMessage(session_event_to_json(SessionRejected(reason="unknown user: Unknown")))
+        )
+        return rejected_websocket
+
+    async def run() -> FakeInputSession:
+        input_session = FakeInputSession()
+        monkeypatch.setattr(chat_client, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(chat_client, "_connect_interactive", fake_connect_interactive)
+
+        await chat_client._run_interactive_chat(
+            ChatClientOptions(url="ws://127.0.0.1:2137/chat", user="Unknown", area=None),
+            input_session,
+            asyncio.Event(),
+        )
+        return input_session
+
+    input_session = asyncio.run(run())
+    output = capsys.readouterr().out
+
+    assert connect_calls == 1
+    assert rejected_websocket.closed
+    assert endpoint_event_from_json(rejected_websocket.sent[0]) == SessionAttributes(attributes={"user": "Unknown"})
+    assert output == chat_client._style_client_text("Connection rejected: unknown user: Unknown.") + "\n"
+    assert chat_client.DISCONNECTED_PROMPT not in input_session.prompts
 
 
 def test_chat_client_accepts_area_option() -> None:

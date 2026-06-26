@@ -6,7 +6,6 @@ server:
   timezone: Europe/Warsaw
   location: Wrocław
 
-default_user: Maciek
 users:
   Maciek:
     home_assistant_user_id: 01HY3C67GQ70R6E7M5F9Q6B7CZ

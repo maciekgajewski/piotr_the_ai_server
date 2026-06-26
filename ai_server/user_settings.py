@@ -17,6 +17,10 @@ class UserSettingsProvider(ABC):
     async def settings_for_user(self, user: str | None) -> dict[str, Any]:
         raise NotImplementedError
 
+    @abstractmethod
+    async def user_exists(self, user: str) -> bool:
+        raise NotImplementedError
+
 
 @dataclass
 class ConfigUserSettingsProvider(UserSettingsProvider):
@@ -24,6 +28,9 @@ class ConfigUserSettingsProvider(UserSettingsProvider):
 
     async def settings_for_user(self, user: str | None) -> dict[str, Any]:
         return _strip_internal_settings(_user_settings_for(user, self.user_settings))
+
+    async def user_exists(self, user: str) -> bool:
+        return _user_exists(user, self.user_settings)
 
 
 class HomeAssistantUserSettingsProvider(UserSettingsProvider):
@@ -64,6 +71,9 @@ class HomeAssistantUserSettingsProvider(UserSettingsProvider):
         self._last_good_settings_by_user[user] = copy.deepcopy(ha_settings)
         self._last_success_by_user[user] = datetime.now(UTC)
         return _merge_settings(base_settings, ha_settings)
+
+    async def user_exists(self, user: str) -> bool:
+        return _user_exists(user, self._fallback_settings)
 
     def status(self) -> dict[str, Any]:
         return {
@@ -113,6 +123,13 @@ def _user_settings_for(user: str | None, user_settings: dict[str, dict[str, Any]
                 settings = candidate_settings
                 break
     return copy.deepcopy(settings) if isinstance(settings, dict) else {}
+
+
+def _user_exists(user: str, user_settings: dict[str, dict[str, Any]]) -> bool:
+    if user in user_settings:
+        return True
+    normalized_user = user.casefold()
+    return any(candidate_user.casefold() == normalized_user for candidate_user in user_settings)
 
 
 def _ha_user_ids_by_user(user_settings: dict[str, dict[str, Any]]) -> dict[str, str]:

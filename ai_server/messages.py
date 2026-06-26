@@ -48,6 +48,11 @@ class ProcessingUpdate:
 
 
 @dataclass(frozen=True)
+class SessionRejected:
+    reason: str
+
+
+@dataclass(frozen=True)
 class MessageBegin:
     pass
 
@@ -68,7 +73,14 @@ EndpointToSessionEvent: TypeAlias = (
     SessionAttributes | NewConversation | ConversationEnded | MessageBegin | MessageFragment | MessageEnd
 )
 SessionToEndpointEvent: TypeAlias = (
-    WaitForNewConversation | WaitForNewMessage | RequestFollowUp | ProcessingUpdate | MessageBegin | MessageFragment | MessageEnd
+    WaitForNewConversation
+    | WaitForNewMessage
+    | RequestFollowUp
+    | ProcessingUpdate
+    | SessionRejected
+    | MessageBegin
+    | MessageFragment
+    | MessageEnd
 )
 ProtocolEvent: TypeAlias = EndpointToSessionEvent | SessionToEndpointEvent
 
@@ -152,6 +164,12 @@ def session_event_from_mapping(raw_event: dict[str, Any]) -> SessionToEndpointEv
     if event_type == "processing_update":
         _reject_extra_keys(raw_event, {"type"})
         return ProcessingUpdate()
+    if event_type == "session_rejected":
+        reason = raw_event.get("reason")
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("session_rejected.reason must be a non-empty string")
+        _reject_extra_keys(raw_event, {"type", "reason"})
+        return SessionRejected(reason=reason)
     if event_type == "message_begin":
         _reject_extra_keys(raw_event, {"type"})
         return MessageBegin()
@@ -205,6 +223,8 @@ def session_event_to_mapping(event: SessionToEndpointEvent) -> dict[str, Any]:
         return payload
     if isinstance(event, ProcessingUpdate):
         return {"type": "processing_update"}
+    if isinstance(event, SessionRejected):
+        return {"type": "session_rejected", "reason": event.reason}
     if isinstance(event, MessageBegin):
         return {"type": "message_begin"}
     if isinstance(event, MessageFragment):

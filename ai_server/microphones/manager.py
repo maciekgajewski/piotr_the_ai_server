@@ -46,7 +46,6 @@ class MicrophoneManager:
         agent: Agent,
         follow_up_timeout_seconds: float,
         microphone_follow_up_timeouts: dict[str, float] | None = None,
-        default_user: str | None = None,
         user_settings: dict[str, dict[str, Any]] | None = None,
         user_settings_provider: UserSettingsProvider | None = None,
         speaker_recognition: SpeakerRecognitionClient | None = None,
@@ -58,7 +57,6 @@ class MicrophoneManager:
         self._agent = agent
         self._follow_up_timeout_seconds = follow_up_timeout_seconds
         self._microphone_follow_up_timeouts = dict(microphone_follow_up_timeouts or {})
-        self._default_user = default_user
         self._user_settings = dict(user_settings or {})
         self._user_settings_provider = user_settings_provider
         self._processing_update_spoken_cues = processing_update_spoken_cues
@@ -105,7 +103,6 @@ class MicrophoneManager:
             session_id=session_id,
             endpoint=endpoint,
             attributes=attributes,
-            default_user=self._default_user,
             user_settings=self._user_settings,
             user_settings_provider=self._user_settings_provider,
         )
@@ -563,7 +560,6 @@ async def init_mics(
     speaker_recognition_config: SpeakerRecognitionConfig,
     agent: Agent,
     *,
-    default_user: str | None = None,
     user_settings: dict[str, dict[str, Any]] | None = None,
     user_settings_provider: UserSettingsProvider | None = None,
     processing_update_spoken_cues: tuple[str, ...] = DEFAULT_PROCESSING_UPDATE_CUES,
@@ -583,7 +579,6 @@ async def init_mics(
             mic_config.name: mic_config.follow_up_timeout_seconds
             for mic_config in mic_configs
         },
-        default_user=default_user,
         user_settings=user_settings,
         user_settings_provider=user_settings_provider,
         speaker_recognition=SpeakerRecognitionClient(

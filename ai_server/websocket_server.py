@@ -8,7 +8,7 @@ from aiohttp import ClientConnectionResetError, WSCloseCode, WSMsgType, web
 from ai_server.agent import Agent
 from ai_server.config import Config
 from ai_server.interfaces import CommunicationEndpoint, EndpointClosed
-from ai_server.messages import ConversationEnded, EndpointToSessionEvent, RequestFollowUp, SessionToEndpointEvent
+from ai_server.messages import ConversationEnded, EndpointToSessionEvent, RequestFollowUp, SessionRejected, SessionToEndpointEvent
 from ai_server.messages import endpoint_event_from_json, session_event_to_json
 from ai_server.sessions import SessionManager
 from ai_server.user_settings import UserSettingsProvider
@@ -38,7 +38,7 @@ class WebsocketCommunicationEndpoint(CommunicationEndpoint):
                 event = endpoint_event_from_json(message.data)
             except ValueError as exc:
                 self._logger.warning("closing websocket after invalid protocol event: %s", exc)
-                await self._websocket.close(code=WSCloseCode.PROTOCOL_ERROR, message=str(exc).encode())
+                await _reject_websocket(self._websocket, str(exc))
                 raise EndpointClosed() from exc
 
             self._logger.debug("received websocket event: %s", message.data)
@@ -91,14 +91,13 @@ def create_app(
             await manager.run_session(
                 endpoint,
                 require_session_attributes=True,
-                default_user=config.default_user,
                 user_settings=config.users,
                 user_settings_provider=user_settings_provider,
             )
             return websocket
         except AssertionError as exc:
             connection_logger.warning("websocket protocol violation: %s", exc)
-            await websocket.close(code=WSCloseCode.PROTOCOL_ERROR, message=str(exc).encode())
+            await _reject_websocket(websocket, str(exc))
             return websocket
         finally:
             websockets.discard(websocket)
@@ -142,3 +141,8 @@ def _format_peer(request: web.Request) -> str:
         return f"{peername[0]}:{peername[1]}"
 
     return request.remote or "unknown"
+
+
+async def _reject_websocket(websocket: web.WebSocketResponse, reason: str) -> None:
+    await websocket.send_str(session_event_to_json(SessionRejected(reason=reason)))
+    await websocket.close(code=WSCloseCode.PROTOCOL_ERROR, message=reason.encode())

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from aiohttp import ClientSession
 
 from ai_server.ws_client_common import DEFAULT_WEBSOCKET_URL, INTERRUPTED_EXIT_CODE, WebsocketDisconnected
+from ai_server.ws_client_common import WebsocketSessionRejected
 from ai_server.ws_client_common import WsClientInterrupted
 from ai_server.ws_client_common import handle_websocket_message, receive_websocket_message, send_session_attributes
 from ai_server.ws_client_common import send_user_text
@@ -69,6 +70,8 @@ async def run_batch_ws_client(options: BatchWsClientOptions) -> None:
 
                     if sent_all_messages:
                         return
+            except WebsocketSessionRejected as exc:
+                _print_client_message(f"Connection rejected: {exc}.")
             except WebsocketDisconnected as exc:
                 _print_client_message(f"Connection lost: {exc}.")
 

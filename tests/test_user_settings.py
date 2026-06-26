@@ -32,6 +32,8 @@ def test_config_user_settings_provider_returns_deep_copy_case_insensitively() ->
     assert asyncio.run(provider.settings_for_user("Maciek")) == {
         "media": {"playlist_aliases": {"Work": "Post Rock Focus"}}
     }
+    assert asyncio.run(provider.user_exists("maciek"))
+    assert not asyncio.run(provider.user_exists("Unknown"))
 
 
 def test_home_assistant_user_settings_provider_deep_merges_ha_settings_over_config() -> None:
@@ -115,3 +117,5 @@ def test_home_assistant_user_settings_provider_continues_without_settings_for_un
 
     assert asyncio.run(provider.settings_for_user("Unknown")) == {}
     assert provider.status()["unmapped_users"] == ["Unknown"]
+    assert asyncio.run(provider.user_exists("maciek"))
+    assert not asyncio.run(provider.user_exists("Unknown"))

@@ -122,7 +122,6 @@ class Config:
     speaker_recognition: SpeakerRecognitionConfig = SpeakerRecognitionConfig()
     microphone_defaults: MicrophoneDefaultsConfig = MicrophoneDefaultsConfig()
     microphones: tuple[MicrophoneConfig, ...] = ()
-    default_user: str | None = None
     users: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -135,6 +134,8 @@ def load_config_from_yaml(path: str | Path) -> Config:
         raw_config = {}
     if not isinstance(raw_config, dict):
         raise ValueError("config must be a YAML mapping")
+    if "default_user" in raw_config:
+        raise ValueError("default_user has been removed; identify users explicitly or omit user for anonymous requests")
     if "home_assistant_user_settings" in raw_config:
         raise ValueError("home_assistant_user_settings has moved to users.<user>.home_assistant_user_id")
 
@@ -166,7 +167,6 @@ def load_config_from_yaml(path: str | Path) -> Config:
         speaker_recognition=_parse_speaker_recognition_config(raw_config.get("speaker_recognition", {})),
         microphone_defaults=microphone_defaults,
         microphones=microphones,
-        default_user=_parse_optional_string(raw_config.get("default_user"), "default_user"),
         users=_parse_users_config(raw_config.get("users", {})),
     )
 
@@ -246,14 +246,6 @@ def _parse_speaker_recognition_config(raw_config: Any) -> SpeakerRecognitionConf
         "speaker_recognition.timeout_seconds",
     )
     return SpeakerRecognitionConfig(url=url, timeout_seconds=timeout_seconds)
-
-
-def _parse_optional_string(value: Any, field: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field} must be a non-empty string when provided")
-    return value
 
 
 def _validate_optional_non_empty_string(options: dict[str, Any], key: str, field: str) -> None:

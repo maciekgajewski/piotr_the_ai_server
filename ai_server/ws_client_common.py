@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from aiohttp import WSMsgType
 
 from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, ProcessingUpdate, SessionAttributes
-from ai_server.messages import TextMessage
+from ai_server.messages import SessionRejected, TextMessage
 from ai_server.messages import RequestFollowUp, WaitForNewConversation, WaitForNewMessage
 from ai_server.messages import endpoint_event_to_json, session_event_from_json, text_message_to_events
 
@@ -23,6 +23,10 @@ class WsClientInterrupted(Exception):
 
 class WebsocketDisconnected(Exception):
     """Raised when the websocket connection is closed unexpectedly."""
+
+
+class WebsocketSessionRejected(Exception):
+    """Raised when the server rejects the websocket session."""
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,8 @@ def handle_websocket_message(
         if isinstance(event, ProcessingUpdate):
             print_system_message("processing...")
             return None
+        if isinstance(event, SessionRejected):
+            raise WebsocketSessionRejected(event.reason)
         if isinstance(event, WaitForNewConversation):
             if show_wait_for_new_conversation_message:
                 print_system_message("Conversation ended; waiting for a new conversation.")

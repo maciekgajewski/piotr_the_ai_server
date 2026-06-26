@@ -1,7 +1,7 @@
 import pytest
 
 from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, ProcessingUpdate, RequestFollowUp
-from ai_server.messages import SessionAttributes
+from ai_server.messages import SessionAttributes, SessionRejected
 from ai_server.messages import TextMessage, WaitForNewConversation, endpoint_event_from_json, endpoint_event_to_json
 from ai_server.messages import session_event_from_json, session_event_to_json, text_message_to_events
 
@@ -39,6 +39,15 @@ def test_processing_update_session_event_json_roundtrip() -> None:
     payload = session_event_to_json(event)
 
     assert payload == '{"type": "processing_update"}'
+    assert session_event_from_json(payload) == event
+
+
+def test_session_rejected_session_event_json_roundtrip() -> None:
+    event = SessionRejected(reason="unknown user: Unknown")
+
+    payload = session_event_to_json(event)
+
+    assert payload == '{"type": "session_rejected", "reason": "unknown user: Unknown"}'
     assert session_event_from_json(payload) == event
 
 
