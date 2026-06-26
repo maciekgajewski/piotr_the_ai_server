@@ -6,7 +6,7 @@ import unicodedata
 from typing import Annotated, Any, Callable
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
-from ai_server.domain_agents.interfaces import DomainTask
+from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.home_assistant.toolset import HomeAssistantToolSet
 from ai_server.interfaces import Conversation
@@ -115,6 +115,50 @@ class HomeAssistantDomainAgent:
 
     def known_utterances(self) -> dict[str, DomainTask]:
         return {}
+
+    def query_capabilities(self) -> dict[str, QueryCapability]:
+        return {
+            "device_state": QueryCapability(
+                name="Home Assistant device state and configuration",
+                description=(
+                    "Read selected Home Assistant devices, count them, list them, or answer questions about their current "
+                    "state/configuration without changing devices."
+                ),
+                intents=("query_state", "query_configuration"),
+                command_template={
+                    "selection": {
+                        "include": [{"domain": "light|climate|switch|fan|cover", "scope": "single|all", "name": "optional", "area": "optional"}],
+                        "exclude": [{"name": "optional", "domain": "optional", "area": "optional"}],
+                    },
+                    "operation": {
+                        "intent": "query_state|query_configuration",
+                        "description": "original read-only Home Assistant question",
+                        "parameters": {"query_type": "count|list|state|configuration optional"},
+                    },
+                },
+                examples=(
+                    {
+                        "utterance": "ile klimatyzatorów jest w domu?",
+                        "command": {
+                            "selection": {"include": [{"domain": "climate", "scope": "all"}], "exclude": []},
+                            "operation": {
+                                "intent": "query_state",
+                                "description": "ile klimatyzatorów jest w domu?",
+                                "parameters": {"query_type": "count"},
+                            },
+                        },
+                    },
+                ),
+            )
+        }
+
+    def query_capabilities_prompt(self) -> str:
+        return (
+            "- For Home Assistant state/configuration questions, select the same devices an action would target, "
+            "but set operation.intent to query_state or query_configuration and do not request a property change.\n"
+            "- Use query_type=count for questions asking ile/how many, query_type=list for which/list questions, "
+            "and query_type=state for current on/off/mode/status questions."
+        )
 
     def planning_prompt(self) -> str:
         return PLANNING_PROMPT
@@ -273,6 +317,8 @@ async def _execute_home_assistant_task(
     if selected_devices["status"] != "ok":
         return selected_devices
     devices = selected_devices["devices"]
+    if _is_query_intent(operation):
+        return _query_devices_result(operation, devices)
     if not devices:
         return _clarification_result("Które urządzenie mam zmienić?")
 
@@ -394,6 +440,82 @@ def _property_request(operation: dict[str, Any], devices: list[dict[str, str]]) 
             return _clarification_result("Na jaką jasność mam ustawić światło?")
         return {"status": "ok", "property_name": "brightness_percent", "value": brightness}
     return _clarification_result("Jaką dokładnie zmianę mam wykonać?")
+
+
+def _is_query_intent(operation: dict[str, Any]) -> bool:
+    return _string_or_empty(operation.get("intent")) in {"query_state", "query_configuration"}
+
+
+def _query_devices_result(operation: dict[str, Any], devices: list[dict[str, str]]) -> dict[str, Any]:
+    query_type = _query_type(operation)
+    if query_type == "count":
+        text = _device_count_text(devices)
+    elif query_type == "list":
+        text = _device_list_text(devices)
+    else:
+        text = _device_summary_text(devices)
+    return {
+        "status": "ok",
+        "text": text,
+        "needs_clarification": False,
+        "clarification_question": None,
+        "entities": _entity_refs(devices),
+        "final_reply_mode": "verbatim",
+    }
+
+
+def _query_type(operation: dict[str, Any]) -> str:
+    parameters = operation.get("parameters", {})
+    if isinstance(parameters, dict):
+        query_type = _string_or_empty(parameters.get("query_type"))
+        if query_type in {"count", "list", "state", "configuration"}:
+            return query_type
+    description = _normalize_lookup(_string_or_empty(operation.get("description")))
+    if any(marker in description for marker in ("ile", "how many", "count")):
+        return "count"
+    if any(marker in description for marker in ("jakie", "ktore", "które", "lista", "list")):
+        return "list"
+    return "state"
+
+
+def _device_count_text(devices: list[dict[str, str]]) -> str:
+    if not devices:
+        return "Nie znalazłem pasujących urządzeń w Home Assistant."
+    device_type = devices[0].get("type", "")
+    if device_type == "climate":
+        return f"W domu są {_polish_count(len(devices), 'klimatyzator', 'klimatyzatory', 'klimatyzatorów')}."
+    if device_type == "light":
+        return f"Znalazłem {_polish_count(len(devices), 'światło', 'światła', 'świateł')}."
+    return f"Znalazłem {len(devices)} pasujących urządzeń."
+
+
+def _device_list_text(devices: list[dict[str, str]]) -> str:
+    if not devices:
+        return "Nie znalazłem pasujących urządzeń w Home Assistant."
+    names = ", ".join(_device_display_name(device) for device in devices)
+    return f"Znalazłem: {names}."
+
+
+def _device_summary_text(devices: list[dict[str, str]]) -> str:
+    if not devices:
+        return "Nie znalazłem pasujących urządzeń w Home Assistant."
+    if len(devices) == 1:
+        return f"Znalazłem {_device_display_name(devices[0])}."
+    return _device_list_text(devices)
+
+
+def _device_display_name(device: dict[str, str]) -> str:
+    name = device.get("name", "urządzenie")
+    area_name = device.get("area_name", "")
+    return f"{name} ({area_name})" if area_name else name
+
+
+def _polish_count(count: int, singular: str, paucal: str, plural: str) -> str:
+    if count == 1:
+        return f"{count} {singular}"
+    if count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14}:
+        return f"{count} {paucal}"
+    return f"{count} {plural}"
 
 
 def _property_available(properties: Any, property_name: str, value: Any) -> bool:

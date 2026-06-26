@@ -20,6 +20,7 @@ VALID_INTENTS = {
     "play_media",
     "now_playing",
     "transfer_playback",
+    "query_configuration",
 }
 PLAY_VERBS = ("graj", "zagraj", "wlacz", "włącz", "odtworz", "odtwórz", "pusc", "puść", "play")
 TRANSFER_VERBS = ("przenies", "przenieś", "przenieście", "move", "transfer")
@@ -245,7 +246,7 @@ def _is_simple_command(
     volume_level: float | None,
     volume_delta: float | None,
 ) -> bool:
-    if intent in {"start_last", "stop", "now_playing", "transfer_playback"}:
+    if intent in {"start_last", "stop", "now_playing", "transfer_playback", "query_configuration"}:
         return True
     if intent == "set_volume":
         return volume_level is not None

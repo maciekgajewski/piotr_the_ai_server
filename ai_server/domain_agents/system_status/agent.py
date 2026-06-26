@@ -5,7 +5,7 @@ import logging
 from typing import Any, Callable
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
-from ai_server.domain_agents.interfaces import DomainTask
+from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
 from ai_server.domain_agents.system_status.collector import SystemStatusCollector
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL
@@ -100,6 +100,19 @@ class SystemStatusDomainAgent:
 
     def known_utterances(self) -> dict[str, DomainTask]:
         return KNOWN_UTTERANCES
+
+    def query_capabilities(self) -> dict[str, QueryCapability]:
+        return {
+            "system_health": QueryCapability(
+                name="AI server health snapshot",
+                description="Read the current collected system health, warnings, issues, and configured health baselines.",
+                intents=("quick_check", "summary", "full_report"),
+                command_template={"intent": "quick_check|summary|full_report", "query": "original system status question"},
+            )
+        }
+
+    def query_capabilities_prompt(self) -> str:
+        return ""
 
     def planning_prompt(self) -> str:
         return PLANNING_PROMPT

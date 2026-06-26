@@ -106,6 +106,46 @@ def test_home_assistant_domain_agent_normalizes_hvac_mode_alias_before_availabil
     ]
 
 
+def test_home_assistant_domain_agent_answers_global_device_count_query_without_modification() -> None:
+    FakeHomeAssistantConnection.calls = []
+    fake_loop = FakeAgentLoop({})
+    agent = HomeAssistantDomainAgent(
+        model="qwen3:4b-instruct",
+        ollama_url="http://ollama:11434",
+        connection=FakeHomeAssistantConnection(),
+        loop_factory=fake_loop.factory,
+    )
+    conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office"})
+    task = {
+        "id": "t1",
+        "domain": "home_assistant",
+        "command": {
+            "selection": {
+                "include": [{"domain": "climate", "scope": "all"}],
+                "exclude": [],
+            },
+            "operation": {
+                "intent": "query_state",
+                "description": "ile klimatyzatorów jest w domu?",
+                "parameters": {"query_type": "count"},
+            },
+        },
+        "depends_on": [],
+        "status": "ready",
+        "clarification_question": None,
+    }
+
+    result = asyncio.run(agent.run_task(conversation, task, {}))
+
+    assert result["status"] == "ok"
+    assert result["text"] == "W domu są 3 klimatyzatory."
+    assert result["needs_clarification"] is False
+    assert result["final_reply_mode"] == "verbatim"
+    assert FakeHomeAssistantConnection.calls == [
+        ("find_devices", {"query": "", "device_type": "climate", "area_name": ""}),
+    ]
+
+
 @pytest.mark.parametrize(
     ("reply", "error"),
     [
@@ -129,6 +169,30 @@ class FakeHomeAssistantConnection:
 
     async def find_devices(self, query: str = "", device_type: str = "", area_name: str = ""):
         self.calls.append(("find_devices", {"query": query, "device_type": device_type, "area_name": area_name}))
+        if device_type == "climate" and area_name == "":
+            return [
+                {
+                    "device_id": "study_ac",
+                    "name": "Study air conditioner",
+                    "type": "climate",
+                    "area_id": "office",
+                    "area_name": "Office",
+                },
+                {
+                    "device_id": "living_room_ac",
+                    "name": "Living room air conditioner",
+                    "type": "climate",
+                    "area_id": "living_room",
+                    "area_name": "Living room",
+                },
+                {
+                    "device_id": "bedroom_ac",
+                    "name": "Bedroom air conditioner",
+                    "type": "climate",
+                    "area_id": "bedroom",
+                    "area_name": "Bedroom",
+                },
+            ]
         return [
             {
                 "device_id": "living_room_ac",

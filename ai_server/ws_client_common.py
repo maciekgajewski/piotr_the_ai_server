@@ -13,6 +13,7 @@ from ai_server.messages import RequestFollowUp, WaitForNewConversation, WaitForN
 from ai_server.messages import endpoint_event_to_json, session_event_from_json, text_message_to_events
 
 DEFAULT_WEBSOCKET_URL = "ws://127.0.0.1:2137/chat"
+WEBSOCKET_HEARTBEAT_SECONDS = 2.0
 INTERRUPTED_EXIT_CODE = 130
 SystemMessagePrinter = Callable[[str], None]
 

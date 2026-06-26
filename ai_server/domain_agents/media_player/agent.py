@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any
 
-from ai_server.domain_agents.interfaces import DomainTask
+from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
 from ai_server.domain_agents.media_player.formatting import (
     format_now_playing,
     format_playing_media,
@@ -129,6 +129,37 @@ class MediaPlayerDomainAgent:
             ),
         }
 
+    def query_capabilities(self) -> dict[str, QueryCapability]:
+        return {
+            "playback_state": QueryCapability(
+                name="Playback and output state",
+                description="Read what is currently playing and which speakers/areas are active without changing playback.",
+                intents=("now_playing",),
+                command_template={
+                    "intent": "now_playing",
+                    "query": "original playback-state question",
+                    "areas": ["optional named rooms"],
+                    "all_speakers": False,
+                },
+            ),
+            "media_configuration": QueryCapability(
+                name="User media defaults and aliases",
+                description="Read configured default music, liked songs, playlist aliases, and other media preferences for the current user.",
+                intents=("query_configuration",),
+                command_template={
+                    "intent": "query_configuration",
+                    "query": "original media configuration question",
+                    "configuration_scope": "defaults|aliases|liked_songs optional",
+                },
+            ),
+        }
+
+    def query_capabilities_prompt(self) -> str:
+        return (
+            "- For media playback state questions such as what is playing, use intent=now_playing.\n"
+            "- For questions about configured media defaults, liked songs, or playlist aliases, use intent=query_configuration."
+        )
+
     def planning_prompt(self) -> str:
         return PLANNING_PROMPT
 
@@ -179,6 +210,8 @@ class MediaPlayerDomainAgent:
             return await self._play_media(conversation, parsed)
         if parsed.intent == "now_playing":
             return await self._now_playing(conversation, parsed)
+        if parsed.intent == "query_configuration":
+            return _media_configuration_result(conversation, command)
         if parsed.intent == "transfer_playback":
             return await self._transfer_playback(conversation, parsed)
         return _clarification_result("Jaką muzykę albo który głośnik mam obsłużyć?")
@@ -1203,6 +1236,55 @@ def _conversation_media_aliases(conversation: Conversation) -> list[dict[str, st
     return aliases
 
 
+def _media_configuration_result(conversation: Conversation, command: dict[str, Any]) -> dict[str, Any]:
+    media_settings = conversation.user_settings.get("media")
+    media_settings = media_settings if isinstance(media_settings, dict) else {}
+    scope = _string_or_empty(command.get("configuration_scope"))
+    if scope == "aliases":
+        text = _media_aliases_text(media_settings)
+    elif scope == "liked_songs":
+        text = _media_liked_songs_text(media_settings)
+    else:
+        text = _media_defaults_text(media_settings)
+    return _ok_text_result(text)
+
+
+def _media_defaults_text(media_settings: dict[str, Any]) -> str:
+    default_name = _string_or_empty(media_settings.get("default_music_name"))
+    liked_songs_name = _string_or_empty(media_settings.get("liked_songs_name"))
+    parts = []
+    if default_name:
+        parts.append(f"domyślna muzyka: {default_name}")
+    if liked_songs_name:
+        parts.append(f"polubione utwory: {liked_songs_name}")
+    if not parts:
+        return "Nie mam zapisanej konfiguracji domyślnej muzyki dla tego użytkownika."
+    return "Mam zapisaną konfigurację mediów: " + ", ".join(parts) + "."
+
+
+def _media_aliases_text(media_settings: dict[str, Any]) -> str:
+    aliases = []
+    for key, raw_aliases in media_settings.items():
+        if not isinstance(key, str) or not key.endswith("_aliases") or not isinstance(raw_aliases, dict):
+            continue
+        for alias, target in raw_aliases.items():
+            if isinstance(alias, str) and isinstance(target, str):
+                aliases.append(f"{alias} -> {target}")
+    if not aliases:
+        return "Nie mam zapisanych aliasów mediów dla tego użytkownika."
+    return "Zapisane aliasy mediów: " + ", ".join(aliases) + "."
+
+
+def _media_liked_songs_text(media_settings: dict[str, Any]) -> str:
+    liked_songs_name = _string_or_empty(media_settings.get("liked_songs_name"))
+    liked_songs_media_type = _string_or_empty(media_settings.get("liked_songs_media_type"))
+    if not liked_songs_name:
+        return "Nie mam zapisanej playlisty polubionych utworów dla tego użytkownika."
+    if liked_songs_media_type:
+        return f"Polubione utwory są zapisane jako {liked_songs_name} ({liked_songs_media_type})."
+    return f"Polubione utwory są zapisane jako {liked_songs_name}."
+
+
 def _matching_media_alias(aliases: list[dict[str, str]], query: str) -> dict[str, str] | None:
     normalized_query = _normalize_media_lookup(query)
     for alias in aliases:
@@ -1438,6 +1520,17 @@ def _ok_result(text: str, targets: list[MediaTarget]) -> dict[str, Any]:
         "needs_clarification": False,
         "clarification_question": None,
         "entities": [f"media_player.{target.area_id}" for target in targets],
+        "final_reply_mode": "verbatim",
+    }
+
+
+def _ok_text_result(text: str) -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "text": text,
+        "needs_clarification": False,
+        "clarification_question": None,
+        "entities": [],
         "final_reply_mode": "verbatim",
     }
 

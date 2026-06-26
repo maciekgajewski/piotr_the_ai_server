@@ -225,7 +225,13 @@ class _SessionConversationEndpoint(ConversationEndpoint):
                         text_parts.append(event.text)
                         continue
                     if isinstance(event, MessageEnd):
-                        yield TextMessage(text="".join(text_parts))
+                        text = "".join(text_parts)
+                        if not text.strip():
+                            self._logger.info("dropped empty input message")
+                            self._requires_follow_up_request = False
+                            self._closed = True
+                            return
+                        yield TextMessage(text=text)
                         break
                     raise AssertionError(f"unsupported conversation input event: {type(event).__name__}")
             except ConversationEnded:

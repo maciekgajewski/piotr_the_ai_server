@@ -499,6 +499,37 @@ def test_media_domain_agent_uses_conversation_user_liked_songs_without_searching
     ]
 
 
+def test_media_domain_agent_answers_configuration_query_without_service_calls() -> None:
+    connection = FakeMediaConnection(include_ma_duplicate=True)
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "query_configuration", "query": "jaka jest moja domyślna muzyka?"},
+    }
+    conversation = Conversation(
+        "c1",
+        {"area": "office", "user": "Maciek"},
+        state={"user_settings": _user_media_settings()},
+    )
+
+    result = asyncio.run(agent.run_task(conversation, task, {}))
+
+    assert result == {
+        "status": "ok",
+        "text": "Mam zapisaną konfigurację mediów: domyślna muzyka: moje ulubione, polubione utwory: Liked Songs macson_g.",
+        "needs_clarification": False,
+        "clarification_question": None,
+        "entities": [],
+        "final_reply_mode": "verbatim",
+    }
+    assert connection.calls == []
+
+
 def test_media_domain_agent_resolves_user_playlist_alias() -> None:
     connection = FakeMediaConnection(include_ma_duplicate=True)
     agent = MediaPlayerDomainAgent(

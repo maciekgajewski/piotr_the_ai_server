@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from aiohttp import ClientSession
 
 from ai_server.ws_client_common import DEFAULT_WEBSOCKET_URL, INTERRUPTED_EXIT_CODE, WebsocketDisconnected
+from ai_server.ws_client_common import WEBSOCKET_HEARTBEAT_SECONDS
 from ai_server.ws_client_common import WebsocketSessionRejected
 from ai_server.ws_client_common import WsClientInterrupted
 from ai_server.ws_client_common import handle_websocket_message, receive_websocket_message, send_session_attributes
@@ -45,7 +46,7 @@ async def run_batch_ws_client(options: BatchWsClientOptions) -> None:
     stop_event = asyncio.Event()
     _install_stop_handlers(stop_event)
     async with ClientSession() as session:
-        async with session.ws_connect(options.url) as websocket:
+        async with session.ws_connect(options.url, heartbeat=WEBSOCKET_HEARTBEAT_SECONDS) as websocket:
             await send_session_attributes(websocket, options.user, options.area)
             messages = list(options.messages)
             sent_all_messages = not messages

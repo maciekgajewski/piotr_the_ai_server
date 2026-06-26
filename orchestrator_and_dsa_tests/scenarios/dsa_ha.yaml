@@ -72,6 +72,27 @@ cases:
     confirmation:
       contains_all: [wszystkie, klimatyz]
 
+  - id: count_all_climate
+    task:
+      id: t1
+      domain: home_assistant
+      command:
+        selection:
+          include:
+            - domain: climate
+              scope: all
+          exclude: []
+        operation:
+          intent: query_state
+          description: ile klimatyzatorów jest w domu?
+          parameters:
+            query_type: count
+      depends_on: []
+      status: ready
+      clarification_question: null
+    confirmation:
+      contains_all: ["3", klimatyz]
+
   - id: turn_off_office_pracownia_canonical_area
     task:
       id: t1

@@ -405,7 +405,7 @@ class MicrophoneManager:
         endpoint: MicrophoneAgentEndpoint,
         text_fragments: tuple[str, ...],
     ) -> None:
-        if not text_fragments:
+        if not any(fragment.strip() for fragment in text_fragments):
             return
         await endpoint.send_to_session(MessageBegin())
         for fragment in text_fragments:

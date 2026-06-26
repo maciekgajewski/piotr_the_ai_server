@@ -4,7 +4,7 @@ from typing import Any
 from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, DEFAULT_DATA_DIR, ProcessingUpdatesConfig, ServerConfig
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
-from ai_server.domain_agents.interfaces import DomainAgent, DomainTask
+from ai_server.domain_agents.interfaces import DomainAgent, DomainTask, QueryCapability
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
 from ai_server.domain_agents.system_status import SystemStatusCollector, SystemStatusDomainAgent, SystemStatusOptions, SystemStatusStore
 from ai_server.domain_agents.weather import WeatherDomainAgent
@@ -118,6 +118,12 @@ class _UnsupportedConfiguredDomainAgent:
 
     def known_utterances(self) -> dict[str, DomainTask]:
         return {}
+
+    def query_capabilities(self) -> dict[str, QueryCapability]:
+        return {}
+
+    def query_capabilities_prompt(self) -> str:
+        return ""
 
     def planning_prompt(self) -> str:
         return ""
@@ -304,4 +310,4 @@ def _threshold_float(thresholds: dict[str, Any], domain: str, key: str, default:
     return float(value)
 
 
-__all__ = ["DomainAgent", "DomainTask", "create_domain_agents"]
+__all__ = ["DomainAgent", "DomainTask", "QueryCapability", "create_domain_agents"]

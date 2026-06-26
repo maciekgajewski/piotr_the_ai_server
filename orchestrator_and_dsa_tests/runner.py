@@ -116,6 +116,12 @@ class StubDomainAgent:
     def planning_prompt(self) -> str:
         return STUB_PLANNING_PROMPTS.get(self._domain, "")
 
+    def query_capabilities(self) -> dict[str, Any]:
+        return {}
+
+    def query_capabilities_prompt(self) -> str:
+        return ""
+
     async def run_task(self, conversation: Conversation, task: dict[str, Any], active_context: dict[str, Any]) -> dict[str, Any]:
         del conversation, active_context
         result = copy.deepcopy(self._result_for_task(task["id"]))
@@ -147,6 +153,12 @@ class TracingDomainAgent:
 
     def planning_prompt(self) -> str:
         return self._inner.planning_prompt()
+
+    def query_capabilities(self) -> dict[str, Any]:
+        return self._inner.query_capabilities()
+
+    def query_capabilities_prompt(self) -> str:
+        return self._inner.query_capabilities_prompt()
 
     async def run_task(self, conversation: Conversation, task: dict[str, Any], active_context: dict[str, Any]) -> dict[str, Any]:
         result = await self._inner.run_task(conversation, task, active_context)

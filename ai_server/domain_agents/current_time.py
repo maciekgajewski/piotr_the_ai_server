@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiohttp import ClientSession, ClientTimeout
 
-from ai_server.domain_agents.interfaces import DomainTask
+from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
 from ai_server.interfaces import Conversation
 from ai_server.utils.text import normalize_text
 
@@ -137,6 +137,19 @@ class CurrentTimeDomainAgent:
         return {
             "Która godzina?": _known_task("time", {"query": "Która godzina?"}),
         }
+
+    def query_capabilities(self) -> dict[str, QueryCapability]:
+        return {
+            "current_time": QueryCapability(
+                name="Current time and date",
+                description="Read the current time/date for the local server timezone or an explicitly named place/timezone.",
+                intents=("current_time", "current_date"),
+                command_template={"query": "original time/date question", "geo_location": "optional geographic place", "timezone": "optional"},
+            )
+        }
+
+    def query_capabilities_prompt(self) -> str:
+        return ""
 
     def planning_prompt(self) -> str:
         return PLANNING_PROMPT

@@ -451,6 +451,46 @@ def test_microphone_manager_treats_empty_follow_up_as_timeout() -> None:
     asyncio.run(run())
 
 
+def test_microphone_manager_drops_whitespace_only_follow_up_before_agent() -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone(
+            events=[
+                AudioStart(wake_word="Ryszardzie"),
+                AudioChunk(data=b"audio"),
+                AudioEnd(),
+                AudioStart(wake_word="follow_up"),
+                AudioEnd(),
+            ]
+        )
+        stt = FakeStt(
+            session_text_events=[
+                [TextFragment(text="cześć"), TextEnd()],
+                [TextFragment(text="   "), TextEnd()],
+            ]
+        )
+        tts = FakeTts()
+        agent = FakeFollowUpAgent()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=stt,
+            tts=tts,
+            agent=agent,
+            follow_up_timeout_seconds=1,
+        )
+
+        await manager.start()
+        await asyncio.wait_for(
+            _wait_until(lambda: any(isinstance(event, ConversationTimeoutCue) for event in microphone.sent_audio_events)),
+            timeout=1,
+        )
+        await manager.close()
+
+        assert agent.messages == ["cześć"]
+        assert tts.synthesized == ["reply:cześć"]
+
+    asyncio.run(run())
+
+
 def test_microphone_manager_speaks_processing_update_at_reduced_volume(monkeypatch) -> None:
     async def run() -> None:
         monkeypatch.setattr("ai_server.microphones.manager.random.choice", lambda choices: choices[0])

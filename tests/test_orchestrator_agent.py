@@ -6,6 +6,7 @@ import pytest
 
 from ai_server.orchestrator import GENERATION_FAILURE_MESSAGE, OrchestratorAgent, _parse_plan
 from ai_server.config import ServerConfig
+from ai_server.domain_agents import QueryCapability
 from ai_server.home_assistant.interfaces import HomeAssistantArea, HomeAssistantInventory
 from ai_server.interfaces import Conversation
 from ai_server.messages import TextMessage, text_message_to_events
@@ -287,7 +288,19 @@ def test_orchestrator_planning_prompt_uses_only_loaded_domain_prompts() -> None:
         "clarification_question": None,
     }
     ollama = FakeOllamaClient([json.dumps(plan), "Cześć."])
-    domain_agent = RecordingDomainAgent(planning_prompt="For time tasks only.")
+    domain_agent = RecordingDomainAgent(
+        planning_prompt="For time tasks only.",
+        query_capabilities={
+            "current_time": QueryCapability(
+                name="Current time",
+                description="Read the current configured time.",
+                intents=("current_time",),
+                command_template={"query": "original question"},
+                examples=({"utterance": "która godzina?", "command": {"query": "która godzina?"}},),
+            )
+        },
+        query_capabilities_prompt="- Prefer the server timezone for local time questions.",
+    )
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"time": domain_agent},
@@ -301,6 +314,11 @@ def test_orchestrator_planning_prompt_uses_only_loaded_domain_prompts() -> None:
     system_prompt = ollama.requests[0]["messages"][0]["content"]
     assert "Available task domains: time" in system_prompt
     assert "For time tasks only." in system_prompt
+    assert "For time read-only queries:" in system_prompt
+    assert "current_time: Current time - Read the current configured time." in system_prompt
+    assert "intents: current_time" in system_prompt
+    assert '"query": "original question"' in system_prompt
+    assert "Prefer the server timezone for local time questions." in system_prompt
     assert "system_status" not in system_prompt
     assert "home_assistant" not in system_prompt
     assert "general" not in system_prompt
@@ -1504,17 +1522,27 @@ class RecordingDomainAgent:
         *,
         known_utterances: dict[str, dict] | None = None,
         planning_prompt: str = "For test_domain tasks.",
+        query_capabilities: dict | None = None,
+        query_capabilities_prompt: str = "",
     ) -> None:
         self.tasks = []
         self._results = list(results or [{"status": "ok", "text": "Gotowe."}])
         self._known_utterances = known_utterances or {}
         self._planning_prompt = planning_prompt
+        self._query_capabilities = query_capabilities or {}
+        self._query_capabilities_prompt = query_capabilities_prompt
 
     def known_utterances(self):
         return self._known_utterances
 
     def planning_prompt(self):
         return self._planning_prompt
+
+    def query_capabilities(self):
+        return self._query_capabilities
+
+    def query_capabilities_prompt(self):
+        return self._query_capabilities_prompt
 
     async def run_task(self, conversation, task, active_context):
         self.tasks.append(task)

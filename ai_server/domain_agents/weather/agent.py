@@ -9,7 +9,7 @@ from typing import Annotated, Any, Callable
 from aiohttp import ClientSession
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
-from ai_server.domain_agents.interfaces import DomainTask
+from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
 from ai_server.domain_agents.weather.formatting import format_current_weather, format_forecast, weather_to_json
 from ai_server.domain_agents.weather.interfaces import (
     CurrentWeather,
@@ -74,6 +74,24 @@ class WeatherDomainAgent:
 
     def known_utterances(self) -> dict[str, DomainTask]:
         return known_weather_utterances()
+
+    def query_capabilities(self) -> dict[str, QueryCapability]:
+        return {
+            "weather_state": QueryCapability(
+                name="Current weather and forecast",
+                description="Read current weather conditions or forecast state for the default location or an explicitly named place.",
+                intents=("get_weather_now", "get_weather_forecast"),
+                command_template={
+                    "tool": "get_weather_now|get_weather_forecast",
+                    "query": "original weather question",
+                    "location": "optional geographic place",
+                    "focus": "temperature|rain|wind optional",
+                },
+            )
+        }
+
+    def query_capabilities_prompt(self) -> str:
+        return ""
 
     def planning_prompt(self) -> str:
         return PLANNING_PROMPT

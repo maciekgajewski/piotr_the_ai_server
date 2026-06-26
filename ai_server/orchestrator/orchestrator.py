@@ -10,7 +10,7 @@ from aiohttp import ClientSession
 
 from ai_server.agent_loop.agent_callable_set import to_json_value
 from ai_server.config import ServerConfig
-from ai_server.domain_agents import DomainAgent, DomainTask
+from ai_server.domain_agents import DomainAgent, DomainTask, QueryCapability
 from ai_server.home_assistant.interfaces import HomeAssistantInventory
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import ProcessingUpdate, RequestFollowUp, TextMessage
@@ -73,6 +73,13 @@ Return schema:
 }
 The top-level object must contain context_updates outside tasks. The tasks array must contain only task objects, never strings.
 Set confidence from 0.0 to 1.0 for how likely this plan is the correct route and task structure.
+
+Read-only state and configuration queries:
+- Any domain may expose state/configuration query capabilities through its DomainAgent interface.
+- Use these capabilities for questions asking what is available, configured, active, playing, enabled, set, counted, listed, or currently true in that domain.
+- These tasks must not imply a modification; concrete query command shape and semantics are owned by the selected domain.
+
+{query_capabilities}
 
 {domain_prompts}
 """
@@ -976,20 +983,51 @@ def _tasks_summary(tasks: list[dict[str, Any]]) -> str:
 def _build_planning_system_prompt(domain_agents: Mapping[str, DomainAgent]) -> str:
     domain_prompts: list[str] = []
     available_domains: list[str] = []
+    query_capabilities: list[str] = []
     for domain, domain_agent in domain_agents.items():
         planning_prompt = domain_agent.planning_prompt().strip()
         if not planning_prompt:
             continue
         available_domains.append(domain)
         domain_prompts.append(planning_prompt)
+        query_capability_prompt = _format_domain_query_capabilities(domain, domain_agent)
+        if query_capability_prompt:
+            query_capabilities.append(query_capability_prompt)
 
     available_domains_text = ", ".join(available_domains) if available_domains else "none"
     domain_prompts_text = "\n\n".join(domain_prompts)
+    query_capabilities_text = "\n\n".join(query_capabilities) if query_capabilities else "No loaded domain declares read-only query capabilities."
     return (
         PLANNING_SYSTEM_PROMPT_TEMPLATE.replace("{available_domains}", available_domains_text)
+        .replace("{query_capabilities}", query_capabilities_text)
         .replace("{domain_prompts}", domain_prompts_text)
         .strip()
     )
+
+
+def _format_domain_query_capabilities(domain: str, domain_agent: DomainAgent) -> str:
+    capabilities = domain_agent.query_capabilities()
+    prompt_notes = domain_agent.query_capabilities_prompt().strip()
+    if not capabilities and not prompt_notes:
+        return ""
+
+    lines = [f"For {domain} read-only queries:"]
+    for capability_id, capability in capabilities.items():
+        lines.extend(_format_query_capability(capability_id, capability))
+    if prompt_notes:
+        lines.append(prompt_notes)
+    return "\n".join(lines)
+
+
+def _format_query_capability(capability_id: str, capability: QueryCapability) -> list[str]:
+    lines = [f"- {capability_id}: {capability.name} - {capability.description}"]
+    if capability.intents:
+        lines.append(f"  intents: {', '.join(capability.intents)}")
+    if capability.command_template:
+        lines.append(f"  command_template: {_compact_json(capability.command_template)}")
+    for example in capability.examples:
+        lines.append(f"  example: {_compact_json(example)}")
+    return lines
 
 
 def _response_token_counts(response: dict[str, Any]) -> tuple[int | None, int | None, int | None]:

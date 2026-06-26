@@ -8,16 +8,17 @@ import readline
 import signal
 import sys
 import termios
-import threading
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from aiohttp import ClientError, ClientSession
 
 from ai_server.ws_client_common import DEFAULT_WEBSOCKET_URL, INTERRUPTED_EXIT_CODE, WebsocketDisconnected
+from ai_server.ws_client_common import WEBSOCKET_HEARTBEAT_SECONDS
 from ai_server.ws_client_common import WebsocketSessionRejected
-from ai_server.ws_client_common import WaitState, WsClientInterrupted
+from ai_server.ws_client_common import WaitState
 from ai_server.ws_client_common import handle_websocket_message, receive_websocket_message, send_session_attributes
 from ai_server.ws_client_common import send_user_text
 
@@ -42,6 +43,10 @@ class ChatInterrupted(Exception):
 
 class ChatExited(Exception):
     """Raised when the user exits the chat client."""
+
+
+class ChatConnectionLost(Exception):
+    """Raised when an established chat websocket connection is lost."""
 
 
 class _ClientCommandResult:
@@ -110,16 +115,14 @@ async def _run_interactive_chat(
             try:
                 input_session.set_prompt(WAITING_FOR_SERVER_PROMPT)
                 await send_session_attributes(websocket, options.user, options.area)
-                await _run_interactive_connection(websocket, input_session, stop_event)
+                await _run_interactive_connection(websocket, input_session, stop_event, options.url)
                 return
             except WebsocketSessionRejected as exc:
                 _print_client_message(f"Connection rejected: {exc}.")
                 return
             except (WebsocketDisconnected, ClientError, OSError) as exc:
-                connection_prompt = DISCONNECTED_PROMPT
-                input_session.set_prompt(DISCONNECTED_PROMPT)
                 _print_client_message(f"Connection lost: {exc}.")
-                reconnect_delay = min(reconnect_delay * 2, RECONNECT_MAX_DELAY_SECONDS)
+                raise ChatConnectionLost() from exc
             finally:
                 await websocket.close()
 
@@ -135,7 +138,12 @@ async def _connect_interactive(
     while True:
         input_session.set_prompt(connection_prompt)
         _print_client_message(f"Connecting to {options.url} ...")
-        connect_task = asyncio.create_task(asyncio.wait_for(session.ws_connect(options.url), CONNECT_TIMEOUT_SECONDS))
+        connect_task = asyncio.create_task(
+            asyncio.wait_for(
+                session.ws_connect(options.url, heartbeat=WEBSOCKET_HEARTBEAT_SECONDS),
+                CONNECT_TIMEOUT_SECONDS,
+            )
+        )
         line_task = asyncio.create_task(input_session.read_line())
         stop_task = asyncio.create_task(stop_event.wait())
 
@@ -177,52 +185,52 @@ async def _run_interactive_connection(
     websocket,
     input_session: "_InteractiveInputSession",
     stop_event: asyncio.Event,
+    websocket_url: str,
 ) -> None:
-    receive_loop = _WebsocketReceiveLoop(websocket, stop_event)
-    receive_loop.start()
-    try:
-        show_wait_for_new_conversation_message = False
+    show_wait_for_new_conversation_message = False
+    while True:
+        wait_state = await _read_next_wait_state(
+            websocket,
+            stop_event,
+            websocket_url,
+            show_wait_for_new_conversation_message=show_wait_for_new_conversation_message,
+        )
+        show_wait_for_new_conversation_message = True
+        input_session.set_prompt(_prompt_for_wait_state(wait_state))
         while True:
-            wait_state = await _read_next_wait_state(
+            text, wait_state = await _read_next_interactive_text(
                 websocket,
-                receive_loop,
-                show_wait_for_new_conversation_message=show_wait_for_new_conversation_message,
+                stop_event,
+                input_session,
+                wait_state,
+                websocket_url,
             )
-            show_wait_for_new_conversation_message = True
-            input_session.set_prompt(_prompt_for_wait_state(wait_state))
-            while True:
-                text, wait_state = await _read_next_interactive_text(
-                    websocket,
-                    receive_loop,
-                    input_session,
-                    wait_state,
-                )
-                if text is None:
-                    return
-                command_result = _handle_client_command(text)
-                if command_result == _ClientCommandResult.EXIT:
-                    return
-                if command_result == _ClientCommandResult.HANDLED:
-                    input_session.set_prompt(_prompt_for_wait_state(wait_state))
-                    continue
+            if text is None:
+                return
+            command_result = _handle_client_command(text)
+            if command_result == _ClientCommandResult.EXIT:
+                return
+            if command_result == _ClientCommandResult.HANDLED:
+                input_session.set_prompt(_prompt_for_wait_state(wait_state))
+                continue
 
-                input_session.set_prompt(WAITING_FOR_SERVER_PROMPT)
-                await send_user_text(websocket, text, starts_new_conversation=wait_state.starts_new_conversation)
-                break
-    finally:
-        await receive_loop.close()
+            input_session.set_prompt(WAITING_FOR_SERVER_PROMPT)
+            await send_user_text(websocket, text, starts_new_conversation=wait_state.starts_new_conversation)
+            break
 
 
 async def _read_next_wait_state(
     websocket,
-    receive_loop: "_WebsocketReceiveLoop",
+    stop_event: asyncio.Event,
+    websocket_url: str = DEFAULT_WEBSOCKET_URL,
     *,
     show_wait_for_new_conversation_message: bool = True,
 ) -> WaitState:
     while True:
+        message = await _receive_with_liveness(websocket, stop_event, websocket_url)
         wait_state = handle_websocket_message(
             websocket,
-            await receive_loop.receive(),
+            message,
             system_message_printer=_print_client_message,
             show_wait_for_new_conversation_message=show_wait_for_new_conversation_message,
         )
@@ -232,18 +240,24 @@ async def _read_next_wait_state(
 
 async def _read_next_interactive_text(
     websocket,
-    receive_loop: "_WebsocketReceiveLoop",
+    stop_event: asyncio.Event,
     input_session: "_InteractiveInputSession",
     wait_state: WaitState,
+    websocket_url: str = DEFAULT_WEBSOCKET_URL,
 ) -> tuple[str | None, WaitState]:
     while True:
-        receive_task = asyncio.create_task(receive_loop.receive())
+        receive_task = asyncio.create_task(receive_websocket_message(websocket, stop_event))
         line_task = asyncio.create_task(input_session.read_line())
 
-        done, pending = await asyncio.wait(
-            (receive_task, line_task),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        while True:
+            done, pending = await asyncio.wait(
+                (receive_task, line_task),
+                timeout=WEBSOCKET_HEARTBEAT_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if done:
+                break
+            await _probe_websocket(websocket, websocket_url)
         await _cancel_tasks(pending)
 
         if receive_task in done:
@@ -261,6 +275,52 @@ async def _read_next_interactive_text(
 
         if line_task in done:
             return line_task.result(), wait_state
+
+
+async def _receive_with_liveness(websocket, stop_event: asyncio.Event, websocket_url: str):
+    while True:
+        try:
+            return await asyncio.wait_for(
+                receive_websocket_message(websocket, stop_event),
+                timeout=WEBSOCKET_HEARTBEAT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            await _probe_websocket(websocket, websocket_url)
+
+
+async def _probe_websocket(websocket, websocket_url: str) -> None:
+    if websocket.closed:
+        raise WebsocketDisconnected("websocket closed")
+    try:
+        await websocket.ping()
+    except (ClientError, OSError, RuntimeError) as exc:
+        raise WebsocketDisconnected("websocket heartbeat failed") from exc
+    await _probe_websocket_listener(websocket_url)
+    if websocket.closed:
+        raise WebsocketDisconnected("websocket closed")
+
+
+async def _probe_websocket_listener(websocket_url: str) -> None:
+    parsed_url = urlparse(websocket_url)
+    host = parsed_url.hostname
+    if host is None:
+        return
+    port = parsed_url.port
+    if port is None:
+        port = 443 if parsed_url.scheme == "wss" else 80
+
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port, ssl=parsed_url.scheme == "wss"),
+            timeout=1.0,
+        )
+    except (asyncio.TimeoutError, OSError) as exc:
+        raise WebsocketDisconnected("websocket server is unreachable") from exc
+
+    writer.close()
+    with suppress(asyncio.TimeoutError, OSError):
+        await asyncio.wait_for(writer.wait_closed(), timeout=0.1)
+    del reader
 
 
 def _handle_client_command(text: str) -> str:
@@ -381,81 +441,62 @@ class _InteractiveInputSession:
         self._loop = loop
         self._lines: asyncio.Queue[str | None] = asyncio.Queue()
         self._prompt = CONNECTING_PROMPT
-        self._prompt_lock = threading.Lock()
-        self._thread: threading.Thread | None = None
+        self._buffer = b""
+        self._fd: int | None = None
+        self._started = False
 
     def start(self) -> None:
-        if self._thread is not None:
+        if self._started:
             return
-        self._thread = threading.Thread(target=self._read_loop, name="chat-client-readline", daemon=True)
-        self._thread.start()
+        self._started = True
+        try:
+            self._fd = sys.stdin.fileno()
+        except OSError:
+            self._lines.put_nowait(None)
+            return
+        os.set_blocking(self._fd, False)
+        self._loop.add_reader(self._fd, self._read_ready)
 
     def set_prompt(self, prompt: str) -> None:
-        with self._prompt_lock:
-            self._prompt = prompt
-        with suppress(Exception):
-            readline.redisplay()
+        if prompt == self._prompt:
+            return
+        self._prompt = prompt
+        print(_style_client_prompt(prompt), end="", flush=True)
 
     async def read_line(self) -> str | None:
         return await self._lines.get()
 
-    def _read_loop(self) -> None:
-        while True:
-            prompt = self._current_prompt()
-            try:
-                line = input(_style_client_prompt(prompt))
-                print(CLIENT_TEXT_RESET, end="", flush=True)
-            except EOFError:
-                print(CLIENT_TEXT_RESET, flush=True)
-                self._put_line(None)
-                return
-            self._put_line(line)
+    def _read_ready(self) -> None:
+        assert self._fd is not None
+        try:
+            data = os.read(self._fd, 4096)
+        except BlockingIOError:
+            return
+        except OSError:
+            self._close_input()
+            return
+
+        if data == b"":
+            self._close_input()
+            return
+
+        self._buffer += data
+        while b"\n" in self._buffer:
+            raw_line, self._buffer = self._buffer.split(b"\n", 1)
+            line = raw_line.rstrip(b"\r").decode(errors="replace")
+            print(CLIENT_TEXT_RESET, end="", flush=True)
+            self._lines.put_nowait(line)
 
     def _current_prompt(self) -> str:
-        with self._prompt_lock:
-            return self._prompt
+        return self._prompt
 
-    def _put_line(self, line: str | None) -> None:
-        try:
-            self._loop.call_soon_threadsafe(self._lines.put_nowait, line)
-        except RuntimeError:
-            return
-
-
-class _WebsocketReceiveLoop:
-    def __init__(self, websocket, stop_event: asyncio.Event) -> None:
-        self._websocket = websocket
-        self._stop_event = stop_event
-        self._messages: asyncio.Queue = asyncio.Queue()
-        self._task: asyncio.Task | None = None
-
-    def start(self) -> None:
-        if self._task is not None:
-            return
-        self._task = asyncio.create_task(self._run())
-
-    async def receive(self):
-        message = await self._messages.get()
-        if isinstance(message, BaseException):
-            raise message
-        return message
-
-    async def close(self) -> None:
-        if self._task is None:
-            return
-        self._task.cancel()
-        with suppress(asyncio.CancelledError):
-            await self._task
-
-    async def _run(self) -> None:
-        try:
-            while True:
-                message = await receive_websocket_message(self._websocket, self._stop_event)
-                await self._messages.put(message)
-        except WsClientInterrupted:
-            await self._messages.put(ChatInterrupted())
-        except Exception as exc:
-            await self._messages.put(exc)
+    def _close_input(self) -> None:
+        if self._fd is not None:
+            with suppress(ValueError, RuntimeError):
+                self._loop.remove_reader(self._fd)
+            self._fd = None
+        print(CLIENT_TEXT_RESET, flush=True)
+        self._lines.put_nowait(None)
 
 
 def _prompt_for_wait_state(wait_state: WaitState) -> str:
@@ -480,14 +521,19 @@ class _TerminalState:
         except OSError:
             self._fd = None
             self._state = None
+            self._blocking = None
             return
 
         self._state = termios.tcgetattr(self._fd) if sys.stdin.isatty() else None
+        self._blocking = os.get_blocking(self._fd)
 
     def restore(self) -> None:
-        if self._fd is None or self._state is None:
+        if self._fd is None:
             return
-        termios.tcsetattr(self._fd, termios.TCSADRAIN, self._state)
+        if self._blocking is not None:
+            os.set_blocking(self._fd, self._blocking)
+        if self._state is not None:
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._state)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -501,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(run_chat(options))
     except (ChatInterrupted, KeyboardInterrupt):
         return INTERRUPTED_EXIT_CODE
+    except ChatConnectionLost:
+        return 1
     return 0
 
 
