@@ -257,6 +257,13 @@ class FakeHomeAssistantConnection:
             {"status": "ok", "entity_ids": entity_ids},
         )
 
+    async def media_player_play(self, entity_ids: list[str]) -> dict[str, Any]:
+        return await self._record_and_reply(
+            "media_player_play",
+            {"entity_ids": entity_ids},
+            {"status": "ok", "entity_ids": entity_ids},
+        )
+
     async def media_player_volume_set(self, entity_ids: list[str], volume_level: float) -> dict[str, Any]:
         return await self._record_and_reply(
             "media_player_volume_set",

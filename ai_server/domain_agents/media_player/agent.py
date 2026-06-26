@@ -9,11 +9,12 @@ from ai_server.domain_agents.interfaces import DomainTask
 from ai_server.domain_agents.media_player.formatting import (
     format_now_playing,
     format_playing_media,
+    format_resumed,
     format_started,
     format_stopped,
     format_volume_level,
 )
-from ai_server.domain_agents.media_player.interfaces import MediaSearchItem, MediaTarget
+from ai_server.domain_agents.media_player.interfaces import MediaQueueSnapshot, MediaSearchItem, MediaTarget
 from ai_server.domain_agents.media_player.messages import (
     MEDIA_COMPLEX_COMMAND_SYSTEM_PROMPT,
     MEDIA_QUERY_RESOLUTION_SYSTEM_PROMPT,
@@ -229,9 +230,28 @@ class MediaPlayerDomainAgent:
         if media is not None:
             media_source = "playing_queue"
         if media is None:
-            media = await self._current_music_assistant_media(targets, conversation_id=conversation.conversation_id)
-            if media is not None:
-                media_source = "requested_queue"
+            queue_snapshot = await self._current_music_assistant_queue(targets, conversation_id=conversation.conversation_id)
+            if queue_snapshot is not None:
+                playback_targets = await self._playback_targets_for_start(conversation, targets)
+                if isinstance(playback_targets, dict):
+                    return playback_targets
+                self._logger.info(
+                    "media_player resume_queue request conversation_id=%s target_ids=%s queue_entity_id=%s media=%s",
+                    conversation.conversation_id,
+                    _target_ids_text(playback_targets),
+                    queue_snapshot.entity_id,
+                    _media_text(queue_snapshot.media),
+                )
+                result = await self._connection.media_player_play([target.entity_id for target in playback_targets])
+                if result.get("status") != "ok":
+                    return _failed_result("Nie udało się wznowić muzyki.")
+                self._logger.info(
+                    "media_player resume_queue ready conversation_id=%s target_ids=%s queue_entity_id=%s",
+                    conversation.conversation_id,
+                    _target_ids_text(playback_targets),
+                    queue_snapshot.entity_id,
+                )
+                return _ok_result(format_resumed(len(targets)), targets)
         if media is None:
             media = self._recent_media(conversation)
             if media is not None:
@@ -852,6 +872,17 @@ class MediaPlayerDomainAgent:
         *,
         conversation_id: str = "",
     ) -> MediaSearchItem | None:
+        queue_snapshot = await self._current_music_assistant_queue(targets, conversation_id=conversation_id)
+        if queue_snapshot is None:
+            return None
+        return queue_snapshot.media
+
+    async def _current_music_assistant_queue(
+        self,
+        targets: list[MediaTarget] | None = None,
+        *,
+        conversation_id: str = "",
+    ) -> MediaQueueSnapshot | None:
         if targets is None:
             targets = await self._playing_music_assistant_targets()
         for target in targets:
@@ -880,15 +911,17 @@ class MediaPlayerDomainAgent:
                     result.get("status"),
                 )
                 continue
-            media = _media_from_queue_response(result.get("response"), target.entity_id)
-            if media is not None:
+            queue_snapshot = _queue_snapshot_from_response(result.get("response"), target.entity_id)
+            if queue_snapshot is not None:
                 self._logger.info(
-                    "media_player queue current conversation_id=%s target_id=%s media=%s",
+                    "media_player queue current conversation_id=%s target_id=%s items=%s current_index=%s media=%s",
                     conversation_id,
                     target.entity_id,
-                    _media_text(media),
+                    queue_snapshot.item_count,
+                    queue_snapshot.current_index,
+                    _media_text(queue_snapshot.media),
                 )
-                return media
+                return queue_snapshot
         return None
 
     async def _shuffle_targets(self, targets: list[MediaTarget], *, conversation_id: str = "") -> None:
@@ -1215,20 +1248,92 @@ def _should_shuffle_media(*media_types: str) -> bool:
 
 
 def _media_from_queue_response(response: Any, entity_id: str) -> MediaSearchItem | None:
+    queue_snapshot = _queue_snapshot_from_response(response, entity_id)
+    if queue_snapshot is None:
+        return None
+    return queue_snapshot.media
+
+
+def _queue_snapshot_from_response(response: Any, entity_id: str) -> MediaQueueSnapshot | None:
     queue = _queue_mapping(response, entity_id)
     if queue is None:
         return None
+    item_count = _queue_item_count(queue)
+    current_index = _queue_current_index(queue)
+    item = queue.get("current_item")
+    if not isinstance(item, dict) and (item_count is None or item_count <= 0):
+        return None
+    media = _media_from_queue_mapping(queue)
+    if media is None:
+        media = MediaSearchItem(
+            media_id=_first_string(queue.get("queue_id"), entity_id),
+            name=_first_string(queue.get("name"), "kolejkę"),
+            media_type="queue",
+        )
+    return MediaQueueSnapshot(
+        entity_id=entity_id,
+        media=media,
+        item_count=item_count,
+        current_index=current_index,
+    )
+
+
+def _media_from_queue_mapping(queue: dict[str, Any]) -> MediaSearchItem | None:
     item = queue.get("current_item")
     if not isinstance(item, dict):
         return None
-    media_id = _first_string(item.get("uri"), item.get("media_id"), item.get("item_id"), item.get("id"), item.get("name"))
-    name = _first_string(item.get("name"), item.get("title"), media_id)
+    media_item = item.get("media_item") if isinstance(item.get("media_item"), dict) else {}
+    media_id = _first_string(
+        media_item.get("uri"),
+        item.get("uri"),
+        media_item.get("media_id"),
+        item.get("media_id"),
+        media_item.get("item_id"),
+        item.get("item_id"),
+        media_item.get("id"),
+        item.get("id"),
+        item.get("name"),
+        media_item.get("name"),
+    )
+    name = _first_string(item.get("name"), item.get("title"), media_item.get("name"), media_item.get("title"), media_id)
     if not media_id or not name:
         return None
-    media_type = _first_string(item.get("media_type"), item.get("type"))
-    artist = _first_string(item.get("artist"), item.get("artists"), item.get("album_artist"))
-    album = _first_string(item.get("album"), item.get("album_name"))
+    media_type = _first_string(media_item.get("media_type"), item.get("media_type"), media_item.get("type"), item.get("type"))
+    artist = _first_string(
+        media_item.get("artist"),
+        item.get("artist"),
+        media_item.get("artists"),
+        item.get("artists"),
+        media_item.get("album_artist"),
+        item.get("album_artist"),
+    )
+    album_mapping = media_item.get("album") if isinstance(media_item.get("album"), dict) else {}
+    album = _first_string(
+        album_mapping.get("name"),
+        media_item.get("album"),
+        item.get("album"),
+        media_item.get("album_name"),
+        item.get("album_name"),
+    )
     return MediaSearchItem(media_id=media_id, name=name, media_type=media_type, artist=artist, album=album)
+
+
+def _queue_item_count(queue: dict[str, Any]) -> int | None:
+    items = queue.get("items")
+    if isinstance(items, bool):
+        return None
+    if isinstance(items, int):
+        return items
+    if isinstance(items, list):
+        return len(items)
+    return None
+
+
+def _queue_current_index(queue: dict[str, Any]) -> int | None:
+    current_index = queue.get("current_index")
+    if isinstance(current_index, bool) or not isinstance(current_index, int):
+        return None
+    return current_index
 
 
 def _queue_mapping(response: Any, entity_id: str) -> dict[str, Any] | None:
@@ -1237,7 +1342,7 @@ def _queue_mapping(response: Any, entity_id: str) -> dict[str, Any] | None:
     queue = response.get(entity_id)
     if isinstance(queue, dict):
         return queue
-    if isinstance(response.get("current_item"), dict):
+    if isinstance(response.get("current_item"), dict) or isinstance(response.get("items"), (int, list)):
         return response
     return None
 

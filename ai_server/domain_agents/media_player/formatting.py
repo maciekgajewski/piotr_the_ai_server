@@ -28,6 +28,12 @@ def format_started(target_count: int, media_name: str = "muzykę") -> str:
     return f"Włączam {media_name}."
 
 
+def format_resumed(target_count: int) -> str:
+    if target_count > 1:
+        return "Wznawiam muzykę na wybranych głośnikach."
+    return "Wznawiam muzykę."
+
+
 def format_stopped(target_count: int) -> str:
     if target_count > 1:
         return "Zatrzymałem muzykę na wybranych głośnikach."

@@ -22,3 +22,11 @@ class MediaSearchItem:
     media_type: str
     artist: str = ""
     album: str = ""
+
+
+@dataclass(frozen=True)
+class MediaQueueSnapshot:
+    entity_id: str
+    media: MediaSearchItem
+    item_count: int | None = None
+    current_index: int | None = None

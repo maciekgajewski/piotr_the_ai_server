@@ -25,17 +25,11 @@ cases:
       - tool: music_assistant_get_queue
         arguments:
           entity_id: media_player.office_2
-      - tool: music_assistant_play_media
+      - tool: media_player_play
         arguments:
           entity_ids: [media_player.office_2]
-          media_id: spotify:playlist:current-focus
-          media_type: playlist
-      - tool: media_player_shuffle_set
-        arguments:
-          entity_ids: [media_player.office_2]
-          shuffle: true
     expected_replies:
-      - contains_all: [Current Focus]
+      - contains_all: [Wznawiam, muzykę]
 
   - id: play_media_prefers_ma_duplicate
     task:
@@ -136,17 +130,11 @@ cases:
         arguments:
           entity_id: media_player.office_2
           group_members: [media_player.bathroom_2]
-      - tool: music_assistant_play_media
+      - tool: media_player_play
         arguments:
           entity_ids: [media_player.office_2]
-          media_id: spotify:playlist:current-focus
-          media_type: playlist
-      - tool: media_player_shuffle_set
-        arguments:
-          entity_ids: [media_player.office_2]
-          shuffle: true
     expected_replies:
-      - contains_all: [Current Focus]
+      - contains_all: [Wznawiam, muzykę]
 
   - id: volume_prefers_direct_entity
     task:

@@ -1142,15 +1142,59 @@ def test_media_domain_agent_start_last_with_explicit_target_resumes_when_nothing
     result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
 
     assert result["status"] == "ok"
+    assert result["text"] == "Wznawiam muzykę."
     assert connection.calls == [
         ("list_media_players", {"area_name": "living room", "music_assistant_only": False, "speakers_only": True}),
         ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
         ("music_assistant_get_queue", {"entity_id": "media_player.living_room_2"}),
-        (
-            "music_assistant_play_media",
-            {"entity_ids": ["media_player.living_room_2"], "media_id": "spotify:playlist:current-focus", "media_type": "playlist"},
-        ),
-        ("media_player_shuffle_set", {"entity_ids": ["media_player.living_room_2"], "shuffle": True}),
+        ("media_player_play", {"entity_ids": ["media_player.living_room_2"]}),
+    ]
+
+
+def test_media_domain_agent_start_last_resumes_queue_instead_of_replaying_current_track() -> None:
+    connection = FakeMediaConnection(
+        player_state="idle",
+        include_ma_duplicate=True,
+        queue_response={
+            "media_player.office_2": {
+                "queue_id": "RINCON_F0F6C182F5EE01400",
+                "active": True,
+                "name": "Office",
+                "items": 214,
+                "current_index": 3,
+                "current_item": {
+                    "queue_item_id": "c1acbbd754cd47d59ff5fac5a7933dc4",
+                    "name": "Gorm - Hydra",
+                    "media_item": {
+                        "media_type": "track",
+                        "uri": "spotify://track/32KJFQ2VuhTL9r7dEbqfsA",
+                        "name": "Hydra",
+                        "artists": [{"name": "Gorm"}],
+                    },
+                },
+            }
+        },
+    )
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_client=FakeOllamaClient([]),
+    )
+    task = {
+        "id": "t1",
+        "domain": "media_player",
+        "command": {"intent": "start_last", "query": "Wznów muzykę", "areas": ["office"]},
+    }
+
+    result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
+
+    assert result["status"] == "ok"
+    assert result["text"] == "Wznawiam muzykę."
+    assert connection.calls == [
+        ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("music_assistant_get_queue", {"entity_id": "media_player.office_2"}),
+        ("media_player_play", {"entity_ids": ["media_player.office_2"]}),
     ]
 
 
@@ -1174,18 +1218,14 @@ def test_media_domain_agent_start_last_groups_multiple_targets_and_resumes_idle_
     result = asyncio.run(agent.run_task(Conversation("c1", {"area": "office"}), task, {}))
 
     assert result["status"] == "ok"
-    assert result["text"] == "Włączam Current Focus na wybranych głośnikach."
+    assert result["text"] == "Wznawiam muzykę na wybranych głośnikach."
     assert connection.calls == [
         ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
         ("list_media_players", {"area_name": "bathroom", "music_assistant_only": False, "speakers_only": True}),
         ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
         ("music_assistant_get_queue", {"entity_id": "media_player.office_2"}),
         ("media_player_join", {"entity_id": "media_player.office_2", "group_members": ["media_player.bathroom_2"]}),
-        (
-            "music_assistant_play_media",
-            {"entity_ids": ["media_player.office_2"], "media_id": "spotify:playlist:current-focus", "media_type": "playlist"},
-        ),
-        ("media_player_shuffle_set", {"entity_ids": ["media_player.office_2"], "shuffle": True}),
+        ("media_player_play", {"entity_ids": ["media_player.office_2"]}),
     ]
 
 
@@ -1298,6 +1338,10 @@ class FakeMediaConnection:
 
     async def media_player_shuffle_set(self, entity_ids: list[str], shuffle: bool):
         self.calls.append(("media_player_shuffle_set", {"entity_ids": entity_ids, "shuffle": shuffle}))
+        return {"status": "ok"}
+
+    async def media_player_play(self, entity_ids: list[str]):
+        self.calls.append(("media_player_play", {"entity_ids": entity_ids}))
         return {"status": "ok"}
 
     async def media_player_join(self, entity_id: str, group_members: list[str]):
