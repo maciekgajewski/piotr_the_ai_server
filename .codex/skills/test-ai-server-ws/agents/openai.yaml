@@ -1,7 +1,7 @@
 interface:
   display_name: "Test AI Server WS"
-  short_description: "Scripted websocket protocol testing"
-  default_prompt: "Use $test-ai-server-ws to validate the AI server websocket conversation flow."
+  short_description: "Websocket protocol and client checks"
+  default_prompt: "Use $test-ai-server-ws to validate websocket protocol or client disconnect behavior."
 
 policy:
   allow_implicit_invocation: true
