@@ -6,11 +6,18 @@ from typing import Any, Callable
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask
-from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
 from ai_server.domain_agents.system_status.collector import SystemStatusCollector
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL
 
+
+PLANNING_PROMPT = """
+For system_status tasks:
+- Use system_status for explicit system-health questions and casual assistant check-ins such as "jak się masz?", "co u ciebie?", or "jak tam?".
+
+Command shape:
+{"intent": "quick_check|summary|full_report", "query": "original system status or casual check-in phrase"}
+"""
 
 SYSTEM_STATUS_SYSTEM_PROMPT = """
 You are a system-status domain-specific agent for a Polish voice assistant.
@@ -95,7 +102,7 @@ class SystemStatusDomainAgent:
         return KNOWN_UTTERANCES
 
     def planning_prompt(self) -> str:
-        return planning_prompt_for_domain("system_status")
+        return PLANNING_PROMPT
 
     async def run_task(
         self,

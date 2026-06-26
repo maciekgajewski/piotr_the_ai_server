@@ -12,10 +12,19 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from aiohttp import ClientSession, ClientTimeout
 
 from ai_server.domain_agents.interfaces import DomainTask
-from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
 from ai_server.interfaces import Conversation
 from ai_server.utils.text import normalize_text
 
+
+PLANNING_PROMPT = """
+For time tasks:
+- Include geo_location or timezone only when the user explicitly asks for a geographic place or timezone.
+- For plain questions like "która godzina?", omit geo_location and timezone; the time agent already knows server_location and server_timezone.
+- Never copy conversation.area into time.geo_location.
+
+Command shape:
+{"query": "original time question", "geo_location": "optional geographic place", "timezone": "optional"}
+"""
 
 DEFAULT_TIMEZONE = "UTC"
 KNOWN_LOCATION_TIMEZONES = {
@@ -130,7 +139,7 @@ class CurrentTimeDomainAgent:
         }
 
     def planning_prompt(self) -> str:
-        return planning_prompt_for_domain("time")
+        return PLANNING_PROMPT
 
     async def run_task(
         self,

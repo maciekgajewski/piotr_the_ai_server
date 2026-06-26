@@ -20,12 +20,17 @@ import yaml
 
 import agent_tool_eval
 from ai_server.orchestrator import OrchestratorAgent
+from ai_server.domain_agents.current_time import PLANNING_PROMPT as TIME_PLANNING_PROMPT
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
+from ai_server.domain_agents.home_assistant import PLANNING_PROMPT as HOME_ASSISTANT_PLANNING_PROMPT
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
-from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
+from ai_server.domain_agents.media_player.agent import PLANNING_PROMPT as MEDIA_PLAYER_PLANNING_PROMPT
+from ai_server.domain_agents.system_status.agent import PLANNING_PROMPT as SYSTEM_STATUS_PLANNING_PROMPT
 from ai_server.domain_agents.system_status.agent import KNOWN_UTTERANCES as SYSTEM_STATUS_KNOWN_UTTERANCES
 from ai_server.domain_agents.weather import CurrentWeather, WeatherDomainAgent, WeatherNowRequest
+from ai_server.domain_agents.weather.agent import PLANNING_PROMPT as WEATHER_PLANNING_PROMPT
+from ai_server.domain_agents.wikipedia import PLANNING_PROMPT as WIKIPEDIA_PLANNING_PROMPT
 from ai_server.domain_agents.wikipedia import WikipediaArticle, WikipediaDomainAgent, WikipediaSearchResult
 from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.messages import ConversationInputEvent, ConversationOutputEvent, MessageBegin, MessageEnd
@@ -38,6 +43,14 @@ DEFAULT_CONFIG = ROOT / "config.yaml"
 DEFAULT_SCENARIOS_DIR = ROOT / "scenarios"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen3:4b-instruct"
+STUB_PLANNING_PROMPTS = {
+    "home_assistant": HOME_ASSISTANT_PLANNING_PROMPT,
+    "media_player": MEDIA_PLAYER_PLANNING_PROMPT,
+    "system_status": SYSTEM_STATUS_PLANNING_PROMPT,
+    "time": TIME_PLANNING_PROMPT,
+    "weather": WEATHER_PLANNING_PROMPT,
+    "wikipedia": WIKIPEDIA_PLANNING_PROMPT,
+}
 
 
 @dataclass(frozen=True)
@@ -101,7 +114,7 @@ class StubDomainAgent:
         return {}
 
     def planning_prompt(self) -> str:
-        return planning_prompt_for_domain(self._domain)
+        return STUB_PLANNING_PROMPTS.get(self._domain, "")
 
     async def run_task(self, conversation: Conversation, task: dict[str, Any], active_context: dict[str, Any]) -> dict[str, Any]:
         del conversation, active_context

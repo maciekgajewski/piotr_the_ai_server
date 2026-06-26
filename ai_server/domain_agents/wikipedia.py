@@ -11,12 +11,16 @@ from aiohttp import ClientSession, ClientTimeout
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask
-from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
 from ai_server.interfaces import Conversation
 
 
 DEFAULT_LANGUAGES = ("pl", "en")
 USER_AGENT = "piotr-ai-server/1.0 (http://localhost; local-admin@localhost)"
+PLANNING_PROMPT = """
+For wikipedia tasks, command should be:
+{"intent": "lookup_fact|summary|where_is|coordinates", "topic": "article/search topic", "fact": "birth_year|coordinates|location optional"}
+"""
+
 SYSTEM_PROMPT = """
 You are a Wikipedia/Wikidata domain-specific agent for a Polish voice assistant.
 You receive exactly one structured task from the orchestrator.
@@ -87,7 +91,7 @@ class WikipediaDomainAgent:
         return {}
 
     def planning_prompt(self) -> str:
-        return planning_prompt_for_domain("wikipedia")
+        return PLANNING_PROMPT
 
     async def run_task(
         self,

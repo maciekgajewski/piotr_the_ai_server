@@ -10,7 +10,6 @@ from aiohttp import ClientSession
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask
-from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
 from ai_server.domain_agents.weather.formatting import format_current_weather, format_forecast, weather_to_json
 from ai_server.domain_agents.weather.interfaces import (
     CurrentWeather,
@@ -26,6 +25,19 @@ from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeathe
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL
 from ai_server.utils.text import ascii_fold, normalize_text
+
+
+PLANNING_PROMPT = """
+For weather tasks:
+- For plain local weather questions, omit location; the weather agent already knows server_location.
+- For weather questions about later today, tonight, evening, rain, or whether something will happen, use get_weather_forecast, not get_weather_now.
+- Use focus="temperature" only when the user asks about temperature or degrees.
+- Never copy conversation.area into weather.location.
+
+Command shapes:
+{"tool": "get_weather_now", "query": "original weather question", "location": "optional geographic place", "focus": "temperature optional"}
+{"tool": "get_weather_forecast", "query": "original weather question", "location": "optional geographic place", "horizon": "today|tomorrow|weekend|next_weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday", "granularity": "daily|hourly", "focus": "temperature optional"}
+"""
 
 
 class WeatherDomainAgent:
@@ -64,7 +76,7 @@ class WeatherDomainAgent:
         return known_weather_utterances()
 
     def planning_prompt(self) -> str:
-        return planning_prompt_for_domain("weather")
+        return PLANNING_PROMPT
 
     async def run_task(
         self,

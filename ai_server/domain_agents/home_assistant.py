@@ -7,10 +7,38 @@ from typing import Annotated, Any, Callable
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask
-from ai_server.domain_agents.planning_prompts import planning_prompt_for_domain
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.home_assistant.toolset import HomeAssistantToolSet
 from ai_server.interfaces import Conversation
+
+
+PLANNING_PROMPT = """
+For home_assistant tasks:
+- For singular or local Home Assistant requests with no named area, prefer conversation.area when it is known.
+- When using conversation.area for Home Assistant selection, put it in selector.area, never selector.name.
+- If the user names an area/room in the utterance, that named area always overrides conversation.area.
+- Polish area aliases: salon means living room; biuro means office; sypialnia means bedroom.
+- When conversation.home_assistant_areas is present, use it as the source of truth for Home Assistant areas.
+- For named rooms in home_assistant selectors, output canonical area_id values from conversation.home_assistant_areas, not the user's inflected phrase.
+- If the user names a room but it is not present in conversation.home_assistant_areas, block the task and ask which room they mean.
+- Use scope="all" only when the user explicitly asks for all/every/wszystkie/każde/everywhere/whole house.
+- For Home Assistant pronouns such as ją/je/it/them, resolve selection from active_context.salient_entities.
+- For Home Assistant context_updates.salient_entities, store stable target references like climate.salon or light.bedroom_lamp, not numbers, temperatures, or generic words.
+- After a Home Assistant command targets a device type and area, preserve that target as <domain>.<area> for follow-up turns.
+
+Command envelope:
+{
+  "selection": {
+    "include": [{"domain": "light|climate|switch|fan|cover", "scope": "all|single", "name": "optional", "area": "optional"}],
+    "exclude": [{"name": "optional", "domain": "optional", "area": "optional"}]
+  },
+  "operation": {
+    "intent": "turn_on|turn_off|set_temperature|set_hvac_mode|set_brightness_percent|adjust|query_state",
+    "description": "natural language operation description",
+    "parameters": {}
+  }
+}
+"""
 
 
 SYSTEM_PROMPT_TEMPLATE = """
@@ -89,7 +117,7 @@ class HomeAssistantDomainAgent:
         return {}
 
     def planning_prompt(self) -> str:
-        return planning_prompt_for_domain("home_assistant")
+        return PLANNING_PROMPT
 
     async def run_task(
         self,
