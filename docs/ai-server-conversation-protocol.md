@@ -209,7 +209,6 @@ Interactive prompts are:
 - `waiting for new conversation> `
 - `waiting for next message> `
 - `waiting for server> `
-- `disconnected; reconnecting> `
 
 Interactive chat suppresses the initial `WaitForNewConversation` status line because that event means
 the server is ready, not that a conversation has ended. Later client and system status lines are printed

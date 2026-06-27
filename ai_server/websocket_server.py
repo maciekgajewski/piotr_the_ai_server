@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from aiohttp import ClientConnectionResetError, WSCloseCode, WSMsgType, web
@@ -19,19 +20,42 @@ class WebsocketCommunicationEndpoint(CommunicationEndpoint):
         self._websocket = websocket
         self._follow_up_timeout_seconds = follow_up_timeout_seconds
         self._next_receive_timeout_seconds: float | None = None
+        self._events: asyncio.Queue[EndpointToSessionEvent | BaseException] = asyncio.Queue()
+        self._receive_task = asyncio.create_task(self._receive_loop())
         self._logger = logging.getLogger(f"{__name__}.WebsocketCommunicationEndpoint[{peer}]")
 
     async def receive(self) -> EndpointToSessionEvent:
         try:
             if self._next_receive_timeout_seconds is None:
-                message = await self._websocket.receive()
+                event = await self._events.get()
             else:
                 timeout_seconds = self._next_receive_timeout_seconds
                 self._next_receive_timeout_seconds = None
-                message = await asyncio.wait_for(self._websocket.receive(), timeout=timeout_seconds)
+                event = await asyncio.wait_for(self._events.get(), timeout=timeout_seconds)
         except asyncio.TimeoutError:
             self._logger.info("follow-up timed out; ending conversation")
             return ConversationEnded()
+
+        if isinstance(event, BaseException):
+            raise event
+        return event
+
+    async def close(self) -> None:
+        self._receive_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._receive_task
+
+    async def _receive_loop(self) -> None:
+        try:
+            while True:
+                await self._events.put(await self._receive_event())
+        except EndpointClosed as exc:
+            await self._events.put(exc)
+        except Exception as exc:
+            await self._events.put(exc)
+
+    async def _receive_event(self) -> EndpointToSessionEvent:
+        message = await self._websocket.receive()
 
         if message.type == WSMsgType.TEXT:
             try:
@@ -82,6 +106,7 @@ def create_app(
         connection_logger = logging.getLogger(f"{__name__}.WebsocketServer[{peer}]")
         connection_logger.info("accepted websocket connection %s", request.path)
 
+        endpoint = None
         try:
             endpoint = WebsocketCommunicationEndpoint(
                 websocket,
@@ -100,6 +125,8 @@ def create_app(
             await _reject_websocket(websocket, str(exc))
             return websocket
         finally:
+            if endpoint is not None:
+                await endpoint.close()
             websockets.discard(websocket)
 
     async def close_websockets(_app: web.Application) -> None:

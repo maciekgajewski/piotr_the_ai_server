@@ -18,7 +18,7 @@ from aiohttp import ClientError, ClientSession
 from ai_server.ws_client_common import DEFAULT_WEBSOCKET_URL, INTERRUPTED_EXIT_CODE, WebsocketDisconnected
 from ai_server.ws_client_common import WEBSOCKET_HEARTBEAT_SECONDS
 from ai_server.ws_client_common import WebsocketSessionRejected
-from ai_server.ws_client_common import WaitState
+from ai_server.ws_client_common import WaitState, WsClientInterrupted
 from ai_server.ws_client_common import handle_websocket_message, receive_websocket_message, send_session_attributes
 from ai_server.ws_client_common import send_user_text
 
@@ -26,10 +26,11 @@ WAITING_FOR_NEW_CONVERSATION_PROMPT = "waiting for new conversation> "
 WAITING_FOR_NEXT_MESSAGE_PROMPT = "waiting for next message> "
 WAITING_FOR_SERVER_PROMPT = "waiting for server> "
 CONNECTING_PROMPT = "connecting> "
-DISCONNECTED_PROMPT = "disconnected; reconnecting> "
-RECONNECT_INITIAL_DELAY_SECONDS = 0.5
-RECONNECT_MAX_DELAY_SECONDS = 5.0
 CONNECT_TIMEOUT_SECONDS = 5.0
+WEBSOCKET_LIVENESS_CHECK_SECONDS = 2.0
+WEBSOCKET_LISTENER_PROBE_TIMEOUT_SECONDS = 1.0
+WEBSOCKET_LISTENER_CLOSE_TIMEOUT_SECONDS = 0.1
+WEBSOCKET_CLOSE_TIMEOUT_SECONDS = 1.0
 CLIENT_TEXT_STYLE = "\033[3;90m"
 CLIENT_TEXT_RESET = "\033[0m"
 CHAT_HISTORY_ENV_VAR = "PIOTR_CHAT_HISTORY"
@@ -47,6 +48,10 @@ class ChatExited(Exception):
 
 class ChatConnectionLost(Exception):
     """Raised when an established chat websocket connection is lost."""
+
+
+class ChatConnectionFailed(Exception):
+    """Raised when the chat websocket connection cannot be established."""
 
 
 class _ClientCommandResult:
@@ -93,38 +98,29 @@ async def _run_interactive_chat(
     input_session: "_InteractiveInputSession",
     stop_event: asyncio.Event,
 ) -> None:
-    reconnect_delay = RECONNECT_INITIAL_DELAY_SECONDS
-    connection_prompt = CONNECTING_PROMPT
-
     async with ClientSession() as session:
-        while True:
-            input_session.set_prompt(connection_prompt)
-            try:
-                websocket = await _connect_interactive(
-                    session,
-                    options,
-                    input_session,
-                    stop_event,
-                    reconnect_delay,
-                    connection_prompt,
-                )
-            except ChatExited:
-                return
-            reconnect_delay = RECONNECT_INITIAL_DELAY_SECONDS
+        input_session.set_prompt(CONNECTING_PROMPT)
+        try:
+            websocket = await _connect_interactive(session, options, input_session, stop_event)
+        except ChatExited:
+            return
+        except (asyncio.TimeoutError, ClientError, OSError) as exc:
+            _print_client_message(f"Connection failed: {exc}.")
+            raise ChatConnectionFailed() from exc
 
-            try:
-                input_session.set_prompt(WAITING_FOR_SERVER_PROMPT)
-                await send_session_attributes(websocket, options.user, options.area)
-                await _run_interactive_connection(websocket, input_session, stop_event, options.url)
-                return
-            except WebsocketSessionRejected as exc:
-                _print_client_message(f"Connection rejected: {exc}.")
-                return
-            except (WebsocketDisconnected, ClientError, OSError) as exc:
-                _print_client_message(f"Connection lost: {exc}.")
-                raise ChatConnectionLost() from exc
-            finally:
-                await websocket.close()
+        try:
+            input_session.set_prompt(WAITING_FOR_SERVER_PROMPT)
+            await send_session_attributes(websocket, options.user, options.area)
+            await _run_interactive_connection(websocket, input_session, stop_event, options.url)
+            return
+        except WebsocketSessionRejected as exc:
+            _print_client_message(f"Connection rejected: {exc}.")
+            return
+        except (WebsocketDisconnected, ClientError, OSError) as exc:
+            _print_client_message(f"Connection lost: {exc}.")
+            raise ChatConnectionLost() from exc
+        finally:
+            await _close_websocket(websocket)
 
 
 async def _connect_interactive(
@@ -132,60 +128,48 @@ async def _connect_interactive(
     options: ChatClientOptions,
     input_session: "_InteractiveInputSession",
     stop_event: asyncio.Event,
-    reconnect_delay: float,
-    connection_prompt: str,
 ):
-    while True:
-        input_session.set_prompt(connection_prompt)
-        _print_client_message(f"Connecting to {options.url} ...")
-        connect_task = asyncio.create_task(
-            asyncio.wait_for(
-                session.ws_connect(options.url, heartbeat=WEBSOCKET_HEARTBEAT_SECONDS),
-                CONNECT_TIMEOUT_SECONDS,
+    _print_client_message(f"Connecting to {options.url} ...")
+    connect_task = asyncio.create_task(
+        asyncio.wait_for(
+            session.ws_connect(options.url, heartbeat=WEBSOCKET_HEARTBEAT_SECONDS),
+            CONNECT_TIMEOUT_SECONDS,
+        )
+    )
+    line_task = asyncio.create_task(input_session.read_line())
+    stop_task = asyncio.create_task(stop_event.wait())
+
+    try:
+        while True:
+            done, pending = await asyncio.wait(
+                (connect_task, line_task, stop_task),
+                return_when=asyncio.FIRST_COMPLETED,
             )
-        )
-        line_task = asyncio.create_task(input_session.read_line())
-        stop_task = asyncio.create_task(stop_event.wait())
 
-        done, pending = await asyncio.wait(
-            (connect_task, line_task, stop_task),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+            if stop_task in done:
+                raise ChatInterrupted()
 
-        if stop_task in done:
-            await _cancel_tasks(pending)
-            raise ChatInterrupted()
-
-        if connect_task in done:
-            await _cancel_tasks(pending)
-            if line_task in done and _handle_offline_line(line_task.result()):
-                with suppress(Exception):
-                    websocket = connect_task.result()
-                    await websocket.close()
-                raise ChatExited()
-
-            try:
-                return connect_task.result()
-            except (asyncio.TimeoutError, ClientError, OSError) as exc:
-                connection_prompt = DISCONNECTED_PROMPT
-                input_session.set_prompt(connection_prompt)
-                _print_client_message(f"Connection failed: {exc}. Retrying in {reconnect_delay:.1f}s.")
-                if await _sleep_or_handle_offline_input(input_session, stop_event, reconnect_delay):
+            if connect_task in done:
+                if line_task in done and _handle_offline_line(line_task.result()):
+                    with suppress(Exception):
+                        websocket = connect_task.result()
+                        await _close_websocket(websocket)
                     raise ChatExited()
-                reconnect_delay = min(reconnect_delay * 2, RECONNECT_MAX_DELAY_SECONDS)
-                continue
+                return connect_task.result()
 
-        await _cancel_tasks(pending)
-        line = line_task.result()
-        if _handle_offline_line(line):
-            raise ChatExited()
+            assert line_task in done
+            if _handle_offline_line(line_task.result()):
+                raise ChatExited()
+            line_task = asyncio.create_task(input_session.read_line())
+    finally:
+        await _cancel_tasks(tuple(task for task in (connect_task, line_task, stop_task) if not task.done()))
 
 
 async def _run_interactive_connection(
     websocket,
     input_session: "_InteractiveInputSession",
     stop_event: asyncio.Event,
-    websocket_url: str,
+    websocket_url: str = DEFAULT_WEBSOCKET_URL,
 ) -> None:
     show_wait_for_new_conversation_message = False
     while True:
@@ -245,56 +229,65 @@ async def _read_next_interactive_text(
     wait_state: WaitState,
     websocket_url: str = DEFAULT_WEBSOCKET_URL,
 ) -> tuple[str | None, WaitState]:
-    while True:
-        receive_task = asyncio.create_task(receive_websocket_message(websocket, stop_event))
-        line_task = asyncio.create_task(input_session.read_line())
-
+    receive_task = asyncio.create_task(receive_websocket_message(websocket, stop_event))
+    line_task = asyncio.create_task(input_session.read_line())
+    try:
         while True:
             done, pending = await asyncio.wait(
                 (receive_task, line_task),
-                timeout=WEBSOCKET_HEARTBEAT_SECONDS,
+                timeout=WEBSOCKET_LIVENESS_CHECK_SECONDS,
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            if done:
-                break
-            await _probe_websocket(websocket, websocket_url)
-        await _cancel_tasks(pending)
+            if not done:
+                await _probe_websocket(websocket, websocket_url)
+                continue
 
-        if receive_task in done:
-            next_wait_state = handle_websocket_message(
-                websocket,
-                receive_task.result(),
-                system_message_printer=_print_client_message,
-            )
-            if next_wait_state is not None:
-                wait_state = next_wait_state
-                input_session.set_prompt(_prompt_for_wait_state(wait_state))
-            if line_task in done:
-                return line_task.result(), wait_state
-            continue
+            if receive_task in done:
+                next_wait_state = handle_websocket_message(
+                    websocket,
+                    _receive_task_result(receive_task),
+                    system_message_printer=_print_client_message,
+                )
+                if next_wait_state is not None:
+                    wait_state = next_wait_state
+                    input_session.set_prompt(_prompt_for_wait_state(wait_state))
+                if line_task in done:
+                    return line_task.result(), wait_state
+                receive_task = asyncio.create_task(receive_websocket_message(websocket, stop_event))
+                continue
 
-        if line_task in done:
+            assert line_task in done
             return line_task.result(), wait_state
+    finally:
+        await _cancel_tasks(tuple(task for task in (receive_task, line_task) if not task.done()))
 
 
 async def _receive_with_liveness(websocket, stop_event: asyncio.Event, websocket_url: str):
-    while True:
-        try:
-            return await asyncio.wait_for(
-                receive_websocket_message(websocket, stop_event),
-                timeout=WEBSOCKET_HEARTBEAT_SECONDS,
+    receive_task = asyncio.create_task(receive_websocket_message(websocket, stop_event))
+    try:
+        while True:
+            done, _pending = await asyncio.wait(
+                (receive_task,),
+                timeout=WEBSOCKET_LIVENESS_CHECK_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
             )
-        except asyncio.TimeoutError:
+            if receive_task in done:
+                return _receive_task_result(receive_task)
             await _probe_websocket(websocket, websocket_url)
+    finally:
+        await _cancel_tasks((receive_task,) if not receive_task.done() else ())
+
+
+def _receive_task_result(receive_task: asyncio.Task):
+    try:
+        return receive_task.result()
+    except WsClientInterrupted as exc:
+        raise ChatInterrupted() from exc
 
 
 async def _probe_websocket(websocket, websocket_url: str) -> None:
     if websocket.closed:
         raise WebsocketDisconnected("websocket closed")
-    try:
-        await websocket.ping()
-    except (ClientError, OSError, RuntimeError) as exc:
-        raise WebsocketDisconnected("websocket heartbeat failed") from exc
     await _probe_websocket_listener(websocket_url)
     if websocket.closed:
         raise WebsocketDisconnected("websocket closed")
@@ -312,14 +305,14 @@ async def _probe_websocket_listener(websocket_url: str) -> None:
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port, ssl=parsed_url.scheme == "wss"),
-            timeout=1.0,
+            timeout=WEBSOCKET_LISTENER_PROBE_TIMEOUT_SECONDS,
         )
     except (asyncio.TimeoutError, OSError) as exc:
         raise WebsocketDisconnected("websocket server is unreachable") from exc
 
     writer.close()
     with suppress(asyncio.TimeoutError, OSError):
-        await asyncio.wait_for(writer.wait_closed(), timeout=0.1)
+        await asyncio.wait_for(writer.wait_closed(), timeout=WEBSOCKET_LISTENER_CLOSE_TIMEOUT_SECONDS)
     del reader
 
 
@@ -358,28 +351,6 @@ def _handle_offline_line(line: str | None) -> bool:
     return False
 
 
-async def _sleep_or_handle_offline_input(
-    input_session: "_InteractiveInputSession",
-    stop_event: asyncio.Event,
-    delay_seconds: float,
-) -> bool:
-    sleep_task = asyncio.create_task(asyncio.sleep(delay_seconds))
-    line_task = asyncio.create_task(input_session.read_line())
-    stop_task = asyncio.create_task(stop_event.wait())
-
-    done, pending = await asyncio.wait(
-        (sleep_task, line_task, stop_task),
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    await _cancel_tasks(pending)
-
-    if stop_task in done:
-        raise ChatInterrupted()
-    if line_task in done:
-        return _handle_offline_line(line_task.result())
-    return False
-
-
 async def _cancel_tasks(tasks) -> None:
     for task in tasks:
         if not task.done():
@@ -387,6 +358,13 @@ async def _cancel_tasks(tasks) -> None:
     for task in tasks:
         with suppress(asyncio.CancelledError, Exception):
             await task
+
+
+async def _close_websocket(websocket) -> None:
+    if websocket.closed:
+        return
+    with suppress(asyncio.TimeoutError, Exception):
+        await asyncio.wait_for(websocket.close(), timeout=WEBSOCKET_CLOSE_TIMEOUT_SECONDS)
 
 
 def _configure_readline() -> None:
@@ -547,7 +525,7 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(run_chat(options))
     except (ChatInterrupted, KeyboardInterrupt):
         return INTERRUPTED_EXIT_CODE
-    except ChatConnectionLost:
+    except (ChatConnectionFailed, ChatConnectionLost):
         return 1
     return 0
 
