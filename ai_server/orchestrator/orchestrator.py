@@ -471,7 +471,7 @@ class OrchestratorAgent:
             fallback_model = self._orchestrator_model
             if model != fallback_model:
                 self._logger.warning(
-                    "clarification with model=%s failed, retrying fallback_model=%s",
+                    "clarification with clarification_model=%s failed, retrying orchestrator_model=%s",
                     model,
                     fallback_model,
                     exc_info=True,

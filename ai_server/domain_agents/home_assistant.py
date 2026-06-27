@@ -200,6 +200,19 @@ class HomeAssistantDomainAgent:
                 "user_settings": conversation.user_settings,
             },
         }
+        operation = _operation_summary(task)
+        selection_count = _selection_include_count(task)
+        logger.info(
+            "home_assistant DSA LLM request conversation_id=%s task_id=%s cloud_model=%s local_model=%s "
+            "operation=%s selection_count=%s payload_len=%s",
+            conversation.conversation_id,
+            task_id,
+            self._model,
+            self._fallback_model,
+            operation,
+            selection_count,
+            len(json.dumps(payload, ensure_ascii=False)),
+        )
         logger.debug("running Home Assistant DSA task=%s active_context=%s", task, active_context)
         async with self._loop_factory(
             config=loop_config,
@@ -210,8 +223,28 @@ class HomeAssistantDomainAgent:
             processing_update_interval_seconds=self._processing_update_interval_seconds,
         ) as loop:
             reply = await loop.send_user_message(json.dumps(payload, ensure_ascii=False))
+        prompt_tokens = getattr(reply, "prompt_eval_count", None)
+        completion_tokens = getattr(reply, "eval_count", None)
+        duration_ms = getattr(reply, "duration_ms", None)
+        logger.info(
+            "home_assistant DSA LLM reply conversation_id=%s task_id=%s cloud_model=%s local_model=%s "
+            "end_conversation=%s reply_len=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s duration_ms=%s "
+            "tool_executed=%s",
+            conversation.conversation_id,
+            task_id,
+            self._model,
+            self._fallback_model,
+            reply.end_conversation,
+            len(reply.reply_text),
+            prompt_tokens,
+            completion_tokens,
+            _token_total(prompt_tokens, completion_tokens),
+            duration_ms,
+            toolset.last_execution_result is not None,
+        )
         logger.debug("Home Assistant DSA raw reply=%r end_conversation=%s", reply.reply_text, reply.end_conversation)
         if reply.end_conversation:
+            logger.info("home_assistant DSA failed conversation_id=%s task_id=%s reason=end_conversation", conversation.conversation_id, task_id)
             return {
                 "status": "failed",
                 "text": "Nie mogę teraz wykonać polecenia Home Assistant.",
@@ -221,15 +254,37 @@ class HomeAssistantDomainAgent:
             }
         execution_result = toolset.last_execution_result
         if execution_result is None and _task_requires_home_assistant_action(task):
-            logger.debug("Home Assistant DSA model returned without execute_home_assistant_task; executing stored task fallback")
+            logger.info(
+                "home_assistant DSA model returned without execute_home_assistant_task; executing stored task fallback "
+                "conversation_id=%s task_id=%s operation=%s",
+                conversation.conversation_id,
+                task_id,
+                operation,
+            )
             execution_result = await toolset.execute_home_assistant_task()
         try:
             parsed_reply = _parse_domain_reply(reply.reply_text)
-        except ValueError:
+        except ValueError as exc:
             if execution_result is not None:
+                logger.info(
+                    "home_assistant DSA using tool execution result after invalid model reply "
+                    "conversation_id=%s task_id=%s status=%s parse_error=%s",
+                    conversation.conversation_id,
+                    task_id,
+                    execution_result.get("status"),
+                    exc,
+                )
                 logger.debug("using Home Assistant execution result after non-JSON DSA reply=%r", reply.reply_text)
                 return execution_result
-            logger.debug("rejecting non-JSON Home Assistant DSA text reply with no executed command=%r", reply.reply_text)
+            logger.warning(
+                "home_assistant DSA failed invalid model reply with no executed command conversation_id=%s task_id=%s "
+                "parse_error=%s reply=%r",
+                conversation.conversation_id,
+                task_id,
+                exc,
+                _abbreviate(reply.reply_text),
+            )
+            logger.debug("rejecting invalid Home Assistant DSA text reply with no executed command=%r", reply.reply_text)
             return {
                 "status": "failed",
                 "text": "Nie mogę teraz wykonać polecenia Home Assistant.",
@@ -238,7 +293,19 @@ class HomeAssistantDomainAgent:
                 "entities": [],
             }
         if execution_result is not None:
+            logger.info(
+                "home_assistant DSA completed from tool execution result conversation_id=%s task_id=%s status=%s",
+                conversation.conversation_id,
+                task_id,
+                execution_result.get("status"),
+            )
             return execution_result
+        logger.info(
+            "home_assistant DSA completed from model final JSON conversation_id=%s task_id=%s status=%s",
+            conversation.conversation_id,
+            task_id,
+            parsed_reply.get("status"),
+        )
         return parsed_reply
 
     async def close(self) -> None:
@@ -282,7 +349,9 @@ class HomeAssistantDomainToolSet(AgentCallableSet):
         execution_hints: Annotated[list[Any] | None, "Optional execution hints from the user message. The server-stored task is authoritative."] = None,
     ) -> dict[str, Any]:
         del task, task_id, conversation, execution_hints
+        self._logger.info("execute_home_assistant_task started operation=%s", _operation_summary(self._task))
         self._last_execution_result = await _execute_home_assistant_task(self._tools, self._task, self._active_context)
+        self._logger.info("execute_home_assistant_task completed status=%s", self._last_execution_result.get("status"))
         self._logger.debug("execute_home_assistant_task result=%s", self._last_execution_result)
         return self._last_execution_result
 
@@ -297,6 +366,44 @@ def _task_request_text(task: DomainTask) -> str:
         if isinstance(description, str) and description:
             return description
     return json.dumps(task, ensure_ascii=False)
+
+
+def _operation_summary(task: DomainTask) -> str:
+    command = task.get("command")
+    if not isinstance(command, dict):
+        return "unknown"
+    operation = command.get("operation")
+    if not isinstance(operation, dict):
+        return "unknown"
+    intent = operation.get("intent")
+    description = operation.get("description")
+    intent_text = intent if isinstance(intent, str) and intent else "unknown"
+    if not isinstance(description, str) or not description:
+        return intent_text
+    return f"{intent_text}:{_abbreviate(description, 80)}"
+
+
+def _selection_include_count(task: DomainTask) -> int:
+    command = task.get("command")
+    if not isinstance(command, dict):
+        return 0
+    selection = command.get("selection")
+    if not isinstance(selection, dict):
+        return 0
+    include = selection.get("include")
+    return len(include) if isinstance(include, list) else 0
+
+
+def _token_total(prompt_tokens: int | None, completion_tokens: int | None) -> int | None:
+    if prompt_tokens is None or completion_tokens is None:
+        return None
+    return prompt_tokens + completion_tokens
+
+
+def _abbreviate(text: str, limit: int = 300) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
 
 
 async def _execute_home_assistant_task(

@@ -27,9 +27,9 @@ agent:
 # agent:
 #   type: orchestrator
 #   orchestrator_model: qwen3:4b-instruct
-#   model: gpt-oss:20b-cloud
+#   cloud_model: gpt-oss:20b-cloud
 #   clarification_model: gpt-oss:20b-cloud
-#   fallback_model: qwen3:4b-instruct
+#   local_model: qwen3:4b-instruct
 #   domain_agents:
 #     time: {}
 #     wikipedia: {}

@@ -245,7 +245,7 @@ websocket:
 agent:
   type: orchestrator
   orchestrator_model: qwen3:4b-instruct
-  model: gpt-oss:20b-cloud
+  cloud_model: gpt-oss:20b-cloud
   domain_agents:
     home_assistant:
       model: qwen3:8b
@@ -262,7 +262,7 @@ agent:
         type="orchestrator",
         options={
             "orchestrator_model": "qwen3:4b-instruct",
-            "model": "gpt-oss:20b-cloud",
+            "cloud_model": "gpt-oss:20b-cloud",
             "domain_agents": {
                 "home_assistant": {"model": "qwen3:8b"},
                 "time": {},
@@ -271,7 +271,7 @@ agent:
     )
 
 
-def test_load_config_with_orchestrator_fallback_model(tmp_path: Path) -> None:
+def test_load_config_with_orchestrator_local_model(tmp_path: Path) -> None:
     config_path = write_config(
         tmp_path,
         """
@@ -280,9 +280,9 @@ websocket:
 agent:
   type: orchestrator
   orchestrator_model: qwen3:4b-instruct
-  model: gpt-oss:20b-cloud
+  cloud_model: gpt-oss:20b-cloud
   clarification_model: gpt-oss:20b-cloud
-  fallback_model: qwen3:4b-instruct
+  local_model: qwen3:4b-instruct
   fallback_backoff_seconds: 120
   domain_agents:
     home_assistant:
@@ -294,9 +294,9 @@ agent:
         type="orchestrator",
         options={
             "orchestrator_model": "qwen3:4b-instruct",
-            "model": "gpt-oss:20b-cloud",
+            "cloud_model": "gpt-oss:20b-cloud",
             "clarification_model": "gpt-oss:20b-cloud",
-            "fallback_model": "qwen3:4b-instruct",
+            "local_model": "qwen3:4b-instruct",
             "fallback_backoff_seconds": 120.0,
             "domain_agents": {
                 "home_assistant": {"fallback_model": "qwen3:8b"},
@@ -535,19 +535,31 @@ agent:
             "agent.model must be a non-empty string for polite_reply",
         ),
         (
-            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  model: main",
+            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  cloud_model: main",
             "agent.orchestrator_model must be a non-empty string for orchestrator",
         ),
         (
-            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small\n  model: main\n  clarification_model: ''",
+            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small\n  model: main",
+            "agent.model has been renamed to agent.cloud_model for orchestrator",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small\n  cloud_model: cloud\n  fallback_model: local",
+            "agent.fallback_model has been renamed to agent.local_model for orchestrator",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small",
+            "agent.cloud_model must be a non-empty string for orchestrator",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small\n  cloud_model: main\n  clarification_model: ''",
             "agent.clarification_model must be a non-empty string when provided",
         ),
         (
-            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small\n  model: main\n  fallback_model: ''",
-            "agent.fallback_model must be a non-empty string when provided",
+            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small\n  cloud_model: main\n  local_model: ''",
+            "agent.local_model must be a non-empty string when provided",
         ),
         (
-            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small\n  model: main\n  fallback_backoff_seconds: 0",
+            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small\n  cloud_model: main\n  fallback_backoff_seconds: 0",
             "agent.fallback_backoff_seconds must be a positive number",
         ),
         ("websocket:\n  port: nope\nagent:\n  type: echo", "websocket.port must be an integer"),

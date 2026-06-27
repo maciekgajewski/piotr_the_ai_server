@@ -8,6 +8,7 @@ import pytest
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, MODEL_FAILURE_REPLY
 from ai_server.agent_loop.agent_loop_ollama_connection import AgentLoopOllamaConnection
+from ai_server.ollama_client import OllamaError
 
 
 class FakeResponse:
@@ -34,6 +35,33 @@ class FakeSession:
     def post(self, url: str, json: dict[str, Any], timeout=None):
         self.requests.append({"url": url, "json": copy.deepcopy(json)})
         return self.responses.pop(0)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class DelayedFakeOllamaClient:
+    def __init__(
+        self,
+        responses: dict[str, dict[str, Any] | BaseException],
+        *,
+        delays: dict[str, float] | None = None,
+    ) -> None:
+        self._responses = responses
+        self._delays = delays or {}
+        self.requests: list[dict[str, Any]] = []
+        self.closed = False
+
+    async def chat(self, payload: dict[str, Any], *, request_timeout_seconds: float | None = None) -> dict[str, Any]:
+        del request_timeout_seconds
+        payload = copy.deepcopy(payload)
+        self.requests.append(payload)
+        model = payload["model"]
+        await asyncio.sleep(self._delays.get(model, 0))
+        response = self._responses[model]
+        if isinstance(response, BaseException):
+            raise response
+        return copy.deepcopy(response)
 
     async def close(self) -> None:
         self.closed = True
@@ -561,6 +589,13 @@ def test_agent_loop_backoff_is_scoped_to_model_pair() -> None:
                     "message": {"role": "assistant", "content": "Main."},
                 }
             ),
+            FakeResponse(
+                {
+                    "done": True,
+                    "eval_count": 3,
+                    "message": {"role": "assistant", "content": "Fallback dla drugiej pary."},
+                }
+            ),
         ]
     )
     connection = AgentLoopOllamaConnection(
@@ -598,6 +633,7 @@ def test_agent_loop_backoff_is_scoped_to_model_pair() -> None:
         "gpt-oss:20b-cloud",
         "qwen3:4b-instruct",
         "gpt-oss:120b-cloud",
+        "qwen3:4b-instruct",
     ]
 
 
@@ -622,6 +658,13 @@ def test_agent_loop_retries_main_model_after_backoff_expires() -> None:
                     "done": True,
                     "eval_count": 2,
                     "message": {"role": "assistant", "content": "Main wrócił."},
+                }
+            ),
+            FakeResponse(
+                {
+                    "done": True,
+                    "eval_count": 3,
+                    "message": {"role": "assistant", "content": "Fallback też działa."},
                 }
             ),
         ]
@@ -649,6 +692,121 @@ def test_agent_loop_retries_main_model_after_backoff_expires() -> None:
         "gpt-oss:20b-cloud",
         "qwen3:4b-instruct",
         "gpt-oss:20b-cloud",
+        "qwen3:4b-instruct",
+    ]
+
+
+def test_agent_loop_racing_fallback_returns_local_when_cloud_misses_grace_window() -> None:
+    ollama_client = DelayedFakeOllamaClient(
+        {
+            "gpt-oss:20b-cloud": {
+                "done": True,
+                "eval_count": 2,
+                "message": {"role": "assistant", "content": "Cloud po czasie."},
+            },
+            "qwen3:4b-instruct": {
+                "done": True,
+                "eval_count": 1,
+                "message": {"role": "assistant", "content": "Lokalna odpowiedź."},
+            },
+        },
+        delays={"gpt-oss:20b-cloud": 0.05, "qwen3:4b-instruct": 0.001},
+    )
+    connection = AgentLoopOllamaConnection(
+        base_url="http://ollama:11434",
+        ollama_client=ollama_client,
+        local_first_cloud_grace_seconds=0.005,
+    )
+    loop = AgentLoop(
+        AgentLoopConfig(
+            model="gpt-oss:20b-cloud",
+            ollama_url="http://ollama:11434",
+            fallback_model="qwen3:4b-instruct",
+        ),
+        "System.",
+        ExampleTools(),
+        ollama_connection=connection,
+    )
+
+    reply = asyncio.run(loop.send_user_message("hej"))
+
+    assert reply.reply_text == "Lokalna odpowiedź."
+    assert sorted(request["model"] for request in ollama_client.requests) == ["gpt-oss:20b-cloud", "qwen3:4b-instruct"]
+
+
+def test_agent_loop_racing_fallback_prefers_cloud_when_it_arrives_inside_grace_window() -> None:
+    ollama_client = DelayedFakeOllamaClient(
+        {
+            "gpt-oss:20b-cloud": {
+                "done": True,
+                "eval_count": 2,
+                "message": {"role": "assistant", "content": "Cloud zdążył."},
+            },
+            "qwen3:4b-instruct": {
+                "done": True,
+                "eval_count": 1,
+                "message": {"role": "assistant", "content": "Lokalna odpowiedź."},
+            },
+        },
+        delays={"gpt-oss:20b-cloud": 0.005, "qwen3:4b-instruct": 0.001},
+    )
+    connection = AgentLoopOllamaConnection(
+        base_url="http://ollama:11434",
+        ollama_client=ollama_client,
+        local_first_cloud_grace_seconds=0.05,
+    )
+    loop = AgentLoop(
+        AgentLoopConfig(
+            model="gpt-oss:20b-cloud",
+            ollama_url="http://ollama:11434",
+            fallback_model="qwen3:4b-instruct",
+        ),
+        "System.",
+        ExampleTools(),
+        ollama_connection=connection,
+    )
+
+    reply = asyncio.run(loop.send_user_message("hej"))
+
+    assert reply.reply_text == "Cloud zdążył."
+    assert sorted(request["model"] for request in ollama_client.requests) == ["gpt-oss:20b-cloud", "qwen3:4b-instruct"]
+
+
+def test_agent_loop_racing_fallback_activates_backoff_when_cloud_errors() -> None:
+    now = 1000.0
+    ollama_client = DelayedFakeOllamaClient(
+        {
+            "gpt-oss:20b-cloud": OllamaError("cloud failed", status=503),
+            "qwen3:4b-instruct": {
+                "done": True,
+                "eval_count": 1,
+                "message": {"role": "assistant", "content": "Lokalnie."},
+            },
+        },
+        delays={"gpt-oss:20b-cloud": 0.001, "qwen3:4b-instruct": 0.005},
+    )
+    connection = AgentLoopOllamaConnection(
+        base_url="http://ollama:11434",
+        ollama_client=ollama_client,
+        now_factory=lambda: now,
+        local_first_cloud_grace_seconds=0.05,
+    )
+    config = AgentLoopConfig(
+        model="gpt-oss:20b-cloud",
+        ollama_url="http://ollama:11434",
+        fallback_model="qwen3:4b-instruct",
+        fallback_backoff_seconds=300,
+    )
+
+    first_reply = asyncio.run(AgentLoop(config, "System.", ExampleTools(), ollama_connection=connection).send_user_message("hej"))
+    second_reply = asyncio.run(AgentLoop(config, "System.", ExampleTools(), ollama_connection=connection).send_user_message("hej znowu"))
+
+    assert first_reply.reply_text == "Lokalnie."
+    assert second_reply.reply_text == "Lokalnie."
+    assert [request["model"] for request in ollama_client.requests] == [
+        "gpt-oss:20b-cloud",
+        "qwen3:4b-instruct",
+        "qwen3:4b-instruct",
     ]
 
 

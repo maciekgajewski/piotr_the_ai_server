@@ -260,9 +260,9 @@ def test_system_status_domain_agent_logs_task_and_result(tmp_path, caplog):
         asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), _task("quick_check"), {}))
 
     assert "running system status task conversation_id=c1 task_id=t1 intent=quick_check snapshot_status=ok issue_count=0" in caplog.text
-    assert "system status DSA LLM request conversation_id=c1 task_id=t1 model=qwen3:4b fallback_model=None intent=quick_check" in caplog.text
+    assert "system status DSA LLM request conversation_id=c1 task_id=t1 cloud_model=qwen3:4b local_model=None intent=quick_check" in caplog.text
     assert (
-        "system status DSA LLM reply conversation_id=c1 task_id=t1 model=qwen3:4b end_conversation=False "
+        "system status DSA LLM reply conversation_id=c1 task_id=t1 cloud_model=qwen3:4b local_model=None end_conversation=False "
         "reply_len=129 prompt_tokens=123 completion_tokens=17 total_tokens=140 duration_ms=456"
     ) in caplog.text
     assert "system status task result conversation_id=c1 task_id=t1 result_status=ok health_status=ok issue_count=0" in caplog.text

@@ -104,9 +104,9 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             type="orchestrator",
             options={
                 "orchestrator_model": "qwen3:4b-instruct",
-                "model": "gpt-oss:20b-cloud",
+                "cloud_model": "gpt-oss:20b-cloud",
                 "clarification_model": "gpt-oss:20b-cloud",
-                "fallback_model": "qwen3:4b-instruct-fallback",
+                "local_model": "qwen3:4b-instruct-fallback",
                 "fallback_backoff_seconds": 120,
                 "domain_agents": {
                     "home_assistant": {"model": "qwen3:8b", "fallback_model": "qwen3:4b"},
@@ -195,8 +195,8 @@ def test_create_agent_home_assistant_domain_agent_inherits_orchestrator_models(m
             type="orchestrator",
             options={
                 "orchestrator_model": "qwen3:4b-instruct",
-                "model": "gpt-oss:20b-cloud",
-                "fallback_model": "qwen3:4b-instruct",
+                "cloud_model": "gpt-oss:20b-cloud",
+                "local_model": "qwen3:4b-instruct",
                 "domain_agents": {
                     "home_assistant": {},
                 },

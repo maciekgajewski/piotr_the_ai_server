@@ -189,11 +189,17 @@ def _parse_agent_config(raw_config: dict[str, Any], home_assistant_config: Any =
         orchestrator_model = options.get("orchestrator_model")
         if not isinstance(orchestrator_model, str) or not orchestrator_model:
             raise ValueError("agent.orchestrator_model must be a non-empty string for orchestrator")
-        model = options.get("model")
-        if not isinstance(model, str) or not model:
-            raise ValueError("agent.model must be a non-empty string for orchestrator")
+        if "model" in options:
+            raise ValueError("agent.model has been renamed to agent.cloud_model for orchestrator")
+        if "fallback_model" in options:
+            raise ValueError("agent.fallback_model has been renamed to agent.local_model for orchestrator")
+        cloud_model = options.get("cloud_model")
+        if not isinstance(cloud_model, str) or not cloud_model:
+            raise ValueError("agent.cloud_model must be a non-empty string for orchestrator")
+        local_model = options.get("local_model")
+        if local_model is not None and (not isinstance(local_model, str) or not local_model):
+            raise ValueError("agent.local_model must be a non-empty string when provided")
         _validate_optional_non_empty_string(options, "clarification_model", "agent.clarification_model")
-        _validate_optional_non_empty_string(options, "fallback_model", "agent.fallback_model")
         if "fallback_backoff_seconds" in options:
             options["fallback_backoff_seconds"] = _parse_optional_positive_float(
                 options.get("fallback_backoff_seconds"),

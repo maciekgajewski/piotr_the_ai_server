@@ -1050,7 +1050,7 @@ class MediaPlayerDomainAgent:
             if self._fallback_model is None or model == self._fallback_model:
                 raise
             self._fallback_until = time.monotonic() + self._fallback_backoff_seconds
-            self._logger.warning("media_player DSA model failed, retrying fallback_model=%s", self._fallback_model, exc_info=True)
+            self._logger.warning("media_player DSA cloud_model failed, retrying local_model=%s", self._fallback_model, exc_info=True)
             return await self._chat_once_with_logging(
                 payload,
                 model=self._fallback_model,
@@ -1066,7 +1066,14 @@ class MediaPlayerDomainAgent:
         purpose: str,
         processing_update_callback: ProcessingUpdateCallback | None,
     ) -> dict[str, Any]:
-        self._logger.info("media_player LLM request purpose=%s model=%s", purpose, model)
+        selected_path = "local" if self._fallback_model is not None and model == self._fallback_model else "cloud"
+        self._logger.info(
+            "media_player LLM request purpose=%s selected_path=%s cloud_model=%s local_model=%s",
+            purpose,
+            selected_path,
+            self._model,
+            self._fallback_model,
+        )
         started_at = time.monotonic()
         response = await await_with_processing_updates(
             self._ollama.chat({**payload, "model": model}),
@@ -1077,9 +1084,10 @@ class MediaPlayerDomainAgent:
         duration_ms = int((time.monotonic() - started_at) * 1000)
         prompt_tokens, completion_tokens, total_tokens = _ollama_token_counts(response)
         self._logger.info(
-            "media_player LLM reply purpose=%s model=%s duration_ms=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+            "media_player LLM reply purpose=%s selected_path=%s served_model=%s duration_ms=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
             purpose,
-            model,
+            selected_path,
+            response.get("model"),
             duration_ms,
             prompt_tokens,
             completion_tokens,

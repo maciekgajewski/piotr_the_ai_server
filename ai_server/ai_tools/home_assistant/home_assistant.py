@@ -36,7 +36,7 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
         self._processing_update_interval_seconds = processing_update_interval_seconds
         self._start_task: asyncio.Task[None] | None = None
         self._logger.debug(
-            "configured HomeAssistantTool agent_loop_model=%s fallback_model=%s ollama_url=%s owns_connection=%s",
+            "configured HomeAssistantTool agent_loop_cloud_model=%s agent_loop_local_model=%s ollama_url=%s owns_connection=%s",
             self._agent_loop_model,
             self._agent_loop_fallback_model,
             self._ollama_url,

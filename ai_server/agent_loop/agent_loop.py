@@ -95,10 +95,39 @@ class AgentLoop:
                 reply_eval_count += eval_count
                 reply_duration_ms += elapsed_ms
                 tool_calls = _extract_tool_calls(assistant_message)
+                content = assistant_message.get("content", "")
+                content_len = len(content) if isinstance(content, str) else 0
+                self._logger.info(
+                    "agent loop LLM reply turn=%s requested_cloud_model=%s served_model=%s prompt_tokens=%s "
+                    "completion_tokens=%s total_tokens=%s duration_ms=%s tool_calls=%s content_len=%s",
+                    self._turn_number,
+                    self._config.model,
+                    response.get("model"),
+                    prompt_eval_count,
+                    eval_count,
+                    _token_total(prompt_eval_count, eval_count),
+                    elapsed_ms,
+                    len(tool_calls),
+                    content_len,
+                )
                 if not tool_calls:
-                    content = assistant_message.get("content", "")
                     if not isinstance(content, str):
                         raise ValueError("assistant message content must be a string")
+                    if _looks_like_tool_call_text(content):
+                        self._logger.warning(
+                            "agent loop model returned tool-call-shaped text instead of tool_calls "
+                            "turn=%s served_model=%s text=%r",
+                            self._turn_number,
+                            response.get("model"),
+                            _abbreviate(content),
+                        )
+                    self._logger.info(
+                        "agent loop final assistant text turn=%s served_model=%s reply_len=%s history_len=%s",
+                        self._turn_number,
+                        response.get("model"),
+                        len(content),
+                        len(self._messages),
+                    )
                     self._logger.debug(
                         "returning final assistant reply reply_len=%s reply=%r history_len=%s eval_count=%s",
                         len(content),
@@ -115,6 +144,13 @@ class AgentLoop:
                     )
 
                 tool_calls_this_message += len(tool_calls)
+                self._logger.info(
+                    "agent loop assistant requested tool calls turn=%s served_model=%s count=%s total_tool_calls=%s",
+                    self._turn_number,
+                    response.get("model"),
+                    len(tool_calls),
+                    tool_calls_this_message,
+                )
                 self._logger.debug(
                     "assistant requested tool calls count=%s total_tool_calls_this_message=%s tool_calls=%s",
                     len(tool_calls),
@@ -206,6 +242,17 @@ class AgentLoop:
             payload["think"] = self._config.think
 
         self._turn_number += 1
+        self._logger.info(
+            "agent loop LLM request turn=%s cloud_model=%s local_model=%s messages=%s tools=%s options=%s keep_alive=%s think=%s",
+            self._turn_number,
+            self._config.model,
+            self._config.fallback_model,
+            len(self._messages),
+            len(self._tool_schemas),
+            self._config.options,
+            self._config.keep_alive,
+            self._config.think,
+        )
         self._logger.debug("turn=%s request=%s", self._turn_number, payload)
         response = await self._ollama_connection.chat(
             payload,
@@ -236,6 +283,31 @@ class AgentLoop:
 
 def _optional_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _token_total(prompt_tokens: int | None, completion_tokens: int) -> int | None:
+    if prompt_tokens is None:
+        return None
+    return prompt_tokens + completion_tokens
+
+
+def _looks_like_tool_call_text(content: str) -> bool:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return False
+    return (
+        isinstance(parsed, dict)
+        and isinstance(parsed.get("name"), str)
+        and isinstance(parsed.get("arguments"), dict)
+        and "status" not in parsed
+    )
+
+
+def _abbreviate(text: str, limit: int = 300) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
 
 
 def _parse_assistant_message(response: dict[str, Any]) -> dict[str, Any]:

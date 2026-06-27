@@ -92,5 +92,6 @@ tools/ai-server.sh --services-config config/services.env --config path/to/cloud-
 ```
 
 For orchestrator configs, keep `agent.orchestrator_model` on a small routing
-model, and set `agent.model`, `agent.clarification_model`, and any per-domain
-agent `model` values that should use cloud inference.
+model, set `agent.cloud_model` to the cloud DSA model, set `agent.local_model`
+to the local fallback model, and use any per-domain agent `model` values only
+when a specific DSA should override the global cloud model.

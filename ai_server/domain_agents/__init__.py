@@ -142,14 +142,14 @@ class _UnsupportedConfiguredDomainAgent:
 
 
 def _domain_agent_model(agent_options: dict[str, Any], domain_options: dict[str, Any], domain: str) -> str:
-    model = domain_options.get("model", agent_options.get("model"))
+    model = domain_options.get("model", agent_options.get("cloud_model"))
     if not isinstance(model, str) or not model:
         raise ValueError(f"agent.domain_agents.{domain}.model must be a non-empty string")
     return model
 
 
 def _domain_agent_fallback_model(agent_options: dict[str, Any], domain_options: dict[str, Any], domain: str) -> str | None:
-    fallback_model = domain_options.get("fallback_model", agent_options.get("fallback_model"))
+    fallback_model = domain_options.get("fallback_model", agent_options.get("local_model"))
     if fallback_model is None:
         return None
     if not isinstance(fallback_model, str) or not fallback_model:

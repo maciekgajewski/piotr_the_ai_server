@@ -109,6 +109,12 @@ class WeatherDomainAgent:
         )
         fast_command = fast_lane_command_from_task_command(command)
         if fast_command is not None:
+            logger.info(
+                "weather DSA using fast-lane conversation_id=%s task_id=%s tool=%s",
+                conversation.conversation_id,
+                task.get("id", "unknown"),
+                fast_command["tool"],
+            )
             return await self._run_fast_lane(fast_command, logger)
 
         toolset = WeatherDomainToolSet(
@@ -134,6 +140,15 @@ class WeatherDomainAgent:
                 "user_settings": conversation.user_settings,
             },
         }
+        logger.info(
+            "weather DSA LLM request conversation_id=%s task_id=%s cloud_model=%s local_model=%s intent=%s payload_len=%s",
+            conversation.conversation_id,
+            task.get("id", "unknown"),
+            self._model,
+            self._fallback_model,
+            _task_intent(task),
+            len(json.dumps(payload, ensure_ascii=False)),
+        )
         logger.debug("running Weather DSA agent loop task=%s active_context=%s", task, active_context)
         async with self._loop_factory(
             config=loop_config,
@@ -144,14 +159,50 @@ class WeatherDomainAgent:
             processing_update_interval_seconds=self._processing_update_interval_seconds,
         ) as loop:
             reply = await loop.send_user_message(json.dumps(payload, ensure_ascii=False))
+        prompt_tokens = getattr(reply, "prompt_eval_count", None)
+        completion_tokens = getattr(reply, "eval_count", None)
+        duration_ms = getattr(reply, "duration_ms", None)
+        logger.info(
+            "weather DSA LLM reply conversation_id=%s task_id=%s cloud_model=%s local_model=%s end_conversation=%s "
+            "reply_len=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s duration_ms=%s",
+            conversation.conversation_id,
+            task.get("id", "unknown"),
+            self._model,
+            self._fallback_model,
+            reply.end_conversation,
+            len(reply.reply_text),
+            prompt_tokens,
+            completion_tokens,
+            _token_total(prompt_tokens, completion_tokens),
+            duration_ms,
+        )
         logger.debug("Weather DSA raw reply=%r end_conversation=%s", reply.reply_text, reply.end_conversation)
         if reply.end_conversation:
+            logger.info(
+                "weather DSA failed conversation_id=%s task_id=%s reason=end_conversation",
+                conversation.conversation_id,
+                task.get("id", "unknown"),
+            )
             return _failed_result("Nie mogę teraz sprawdzić pogody.")
         try:
-            return _parse_domain_reply(reply.reply_text)
-        except ValueError:
-            logger.debug("rejecting non-JSON Weather DSA reply=%r", reply.reply_text)
+            result = _parse_domain_reply(reply.reply_text)
+        except ValueError as exc:
+            logger.warning(
+                "weather DSA failed invalid model reply conversation_id=%s task_id=%s parse_error=%s reply=%r",
+                conversation.conversation_id,
+                task.get("id", "unknown"),
+                exc,
+                _abbreviate(reply.reply_text),
+            )
+            logger.debug("rejecting invalid Weather DSA reply=%r", reply.reply_text)
             return _failed_result("Nie mogę teraz przygotować odpowiedzi pogodowej.")
+        logger.info(
+            "weather DSA completed from model final JSON conversation_id=%s task_id=%s status=%s",
+            conversation.conversation_id,
+            task.get("id", "unknown"),
+            result.get("status"),
+        )
+        return result
 
     async def close(self) -> None:
         if self._owns_providers:
@@ -412,6 +463,29 @@ def _parse_domain_reply(content: str) -> dict[str, Any]:
     parsed["entities"] = entities
     parsed.setdefault("final_reply_mode", "verbatim")
     return parsed
+
+
+def _task_intent(task: DomainTask) -> str:
+    command = task.get("command")
+    if not isinstance(command, dict):
+        return "unknown"
+    intent = command.get("intent")
+    if isinstance(intent, str) and intent:
+        return intent
+    tool = command.get("tool")
+    return tool if isinstance(tool, str) and tool else "unknown"
+
+
+def _token_total(prompt_tokens: int | None, completion_tokens: int | None) -> int | None:
+    if prompt_tokens is None or completion_tokens is None:
+        return None
+    return prompt_tokens + completion_tokens
+
+
+def _abbreviate(text: str, limit: int = 300) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
 
 
 def _sanitize_reply_text(text: str) -> str:

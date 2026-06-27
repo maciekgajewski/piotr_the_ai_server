@@ -184,7 +184,7 @@ class SystemStatusDomainAgent:
         llm_payload = json.dumps(payload, ensure_ascii=False)
         self._logger.debug("running System Status DSA task=%s status=%s issue_count=%s", task, snapshot.get("status"), issue_count)
         self._logger.info(
-            "system status DSA LLM request conversation_id=%s task_id=%s model=%s fallback_model=%s intent=%s payload_len=%s health_status=%s issue_count=%s",
+            "system status DSA LLM request conversation_id=%s task_id=%s cloud_model=%s local_model=%s intent=%s payload_len=%s health_status=%s issue_count=%s",
             conversation.conversation_id,
             task_id,
             selected_model,
@@ -209,10 +209,11 @@ class SystemStatusDomainAgent:
             else None
         )
         self._logger.info(
-            "system status DSA LLM reply conversation_id=%s task_id=%s model=%s end_conversation=%s reply_len=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s duration_ms=%s",
+            "system status DSA LLM reply conversation_id=%s task_id=%s cloud_model=%s local_model=%s end_conversation=%s reply_len=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s duration_ms=%s",
             conversation.conversation_id,
             task_id,
             selected_model,
+            selected_fallback_model,
             reply.end_conversation,
             len(reply.reply_text),
             reply.prompt_eval_count,
