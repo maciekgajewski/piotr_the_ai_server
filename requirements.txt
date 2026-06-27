@@ -7,5 +7,4 @@ onnxruntime-gpu
 piper-tts
 PyYAML
 wyoming
-wyoming-faster-whisper
 wyoming-piper

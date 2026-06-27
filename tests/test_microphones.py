@@ -14,6 +14,7 @@ from ai_server.microphones.messages import StartFollowUpListening
 from ai_server.microphones.messages import StartWakeWordListening
 from ai_server.microphones.messages import TextEnd, TextFragment
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
+from ai_server.speech_to_text.types import PcmAudioChunk
 from ai_server.speaker_recognition.client import SpeakerRecognitionResult
 
 
@@ -277,7 +278,7 @@ def test_microphone_manager_sends_transcript_to_agent_and_speaks_reply() -> None
         assert microphone.closed is True
         assert tts.closed is True
         assert len(stt.sessions) == 1
-        assert stt.sessions[0].audio_chunks == [AudioChunk(data=b"audio")]
+        assert stt.sessions[0].audio_chunks == [PcmAudioChunk(data=b"audio")]
         assert stt.sessions[0].ended is True
         assert tts.synthesized == ["reply:cześć"]
         assert microphone.sent_audio_events == [
@@ -335,9 +336,9 @@ def test_microphone_manager_rearms_wake_word_after_empty_wake_transcript() -> No
 
         assert agent.messages == ["cześć"]
         assert len(stt.sessions) == 2
-        assert stt.sessions[0].audio_chunks == [AudioChunk(data=b"wake-noise")]
+        assert stt.sessions[0].audio_chunks == [PcmAudioChunk(data=b"wake-noise")]
         assert stt.sessions[0].ended is True
-        assert stt.sessions[1].audio_chunks == [AudioChunk(data=b"audio")]
+        assert stt.sessions[1].audio_chunks == [PcmAudioChunk(data=b"audio")]
         assert stt.sessions[1].ended is True
         assert tts.synthesized == ["reply:cześć"]
         assert microphone.sent_audio_events == [

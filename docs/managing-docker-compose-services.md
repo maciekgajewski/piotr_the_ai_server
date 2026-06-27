@@ -11,7 +11,7 @@ docker compose --env-file config/services.env ps
 Stop background services:
 
 ```bash
-docker compose --env-file config/services.env stop ollama wyoming-piper wyoming-whisper
+docker compose --env-file config/services.env stop ollama wyoming-piper
 ```
 
 Stop and remove the Compose stack:

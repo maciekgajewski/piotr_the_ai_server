@@ -7,7 +7,6 @@ services:
     depends_on:
       - ollama
       - wyoming-piper
-      - wyoming-whisper
       - speaker-recognition
     network_mode: host
     gpus: all
@@ -16,7 +15,6 @@ services:
       - "${AI_SERVER_CONFIG:?AI_SERVER_CONFIG must be set to the AI server config file path}:/config/ai_server.yaml:ro"
       - ./.hf-cache:/app/.hf-cache
       - ./.piper-cache:/app/.piper-cache
-      - ./.whisper-cache:/app/.whisper-cache
       - ./audio:/app/audio
     entrypoint:
       - /usr/local/bin/ai-server-entrypoint.sh

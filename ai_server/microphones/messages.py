@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
+from ai_server.speech_to_text.messages import TextEnd, TextEvent, TextFragment
+
 
 @dataclass(frozen=True)
 class AudioStart:
@@ -43,16 +45,6 @@ class ConversationTimeoutCue:
     pass
 
 
-@dataclass(frozen=True)
-class TextFragment:
-    text: str
-
-
-@dataclass(frozen=True)
-class TextEnd:
-    pass
-
-
 AudioEvent: TypeAlias = AudioStart | AudioChunk | AudioEnd
 MicrophoneOutputEvent: TypeAlias = (
     AudioStart
@@ -63,4 +55,3 @@ MicrophoneOutputEvent: TypeAlias = (
     | StartFollowUpListening
     | ConversationTimeoutCue
 )
-TextEvent: TypeAlias = TextFragment | TextEnd

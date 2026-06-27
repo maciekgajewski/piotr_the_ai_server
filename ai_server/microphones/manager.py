@@ -14,15 +14,18 @@ from ai_server.messages import ConversationEnded, MessageBegin, MessageEnd, Mess
 from ai_server.messages import RequestFollowUp, TextMessage, WaitForNewConversation, WaitForNewMessage
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.drivers import create_microphone
-from ai_server.microphones.interfaces import Microphone, MicrophoneUnavailable, SpeechToText, SttSession, TextToSpeech
+from ai_server.microphones.interfaces import Microphone, MicrophoneUnavailable, TextToSpeech
 from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, ConversationTimeoutCue, MessageEndCue
-from ai_server.microphones.messages import StartFollowUpListening, StartWakeWordListening, TextEnd, TextFragment
-from ai_server.microphones.stt import WyomingFasterWhisperSpeechToText
+from ai_server.microphones.messages import StartFollowUpListening, StartWakeWordListening
 from ai_server.microphones.tts import PiperTextToSpeech
 from ai_server.sessions import Session
 from ai_server.speaker_recognition.client import SpeakerRecognitionAudioFormat, SpeakerRecognitionClient
 from ai_server.speaker_recognition.client import SpeakerRecognitionResult, SpeakerRecognitionStream
 from ai_server.speaker_recognition.client import voice_profiles_from_users
+from ai_server.speech_to_text.faster_whisper import FasterWhisperSpeechToText
+from ai_server.speech_to_text.interfaces import SpeechToText, SttSession
+from ai_server.speech_to_text.messages import TextEnd, TextFragment
+from ai_server.speech_to_text.types import PcmAudioChunk
 from ai_server.user_settings import UserSettingsProvider
 
 
@@ -289,7 +292,7 @@ class MicrophoneManager:
         try:
             audio_done = False
             if isinstance(first_event, AudioChunk):
-                await stt_session.send_audio(first_event)
+                await stt_session.send_audio(PcmAudioChunk(data=first_event.data))
                 if speaker_stream is not None:
                     await speaker_stream.send_audio(first_event)
             elif isinstance(first_event, AudioEnd):
@@ -303,7 +306,7 @@ class MicrophoneManager:
             while not audio_done:
                 next_event = await microphone.wait_for_event()
                 if isinstance(next_event, AudioChunk):
-                    await stt_session.send_audio(next_event)
+                    await stt_session.send_audio(PcmAudioChunk(data=next_event.data))
                     if speaker_stream is not None:
                         await speaker_stream.send_audio(next_event)
                     continue
@@ -571,7 +574,7 @@ async def init_mics(
 
     manager = MicrophoneManager(
         microphones=microphones,
-        stt=WyomingFasterWhisperSpeechToText(stt_config),
+        stt=FasterWhisperSpeechToText(stt_config),
         tts=PiperTextToSpeech(tts_config),
         agent=agent,
         follow_up_timeout_seconds=conversation_config.follow_up_timeout_seconds,

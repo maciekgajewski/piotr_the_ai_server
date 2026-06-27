@@ -14,6 +14,7 @@ DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_STT_MODEL = "medium"
 DEFAULT_STT_LANGUAGE = "pl"
 DEFAULT_STT_DEVICE = "auto"
+DEFAULT_STT_COMPUTE_TYPE = "default"
 DEFAULT_STT_BEAM_SIZE = 5
 DEFAULT_STT_CAPTURE_SECONDS = 5.0
 DEFAULT_TTS_VOICE = "pl_PL-bass-high"
@@ -58,6 +59,7 @@ class SttConfig:
     model: str = DEFAULT_STT_MODEL
     language: str = DEFAULT_STT_LANGUAGE
     device: str = DEFAULT_STT_DEVICE
+    compute_type: str = DEFAULT_STT_COMPUTE_TYPE
     beam_size: int = DEFAULT_STT_BEAM_SIZE
     capture_seconds: float = DEFAULT_STT_CAPTURE_SECONDS
 
@@ -335,6 +337,10 @@ def _parse_stt_config(raw_config: Any) -> SttConfig:
     if not isinstance(device, str) or device not in STT_DEVICES:
         raise ValueError("stt.device must be one of auto, cuda, cpu")
 
+    compute_type = raw_config.get("compute_type", DEFAULT_STT_COMPUTE_TYPE)
+    if not isinstance(compute_type, str) or not compute_type:
+        raise ValueError("stt.compute_type must be a non-empty string")
+
     beam_size = raw_config.get("beam_size", DEFAULT_STT_BEAM_SIZE)
     if not isinstance(beam_size, int) or isinstance(beam_size, bool) or beam_size <= 0:
         raise ValueError("stt.beam_size must be a positive integer")
@@ -347,6 +353,7 @@ def _parse_stt_config(raw_config: Any) -> SttConfig:
         model=model,
         language=language,
         device=device,
+        compute_type=compute_type,
         beam_size=beam_size,
         capture_seconds=float(capture_seconds),
     )

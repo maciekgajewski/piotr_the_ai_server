@@ -34,38 +34,5 @@ services:
       - --samples-per-chunk
       - "1024"
 
-  wyoming-whisper:
-    build:
-      context: .
-      dockerfile: docker/ai-server.Dockerfile
-    restart: unless-stopped
-    network_mode: host
-    gpus: all
-    environment:
-      HF_HOME: /app/.hf-cache
-    volumes:
-      - ./.whisper-cache:/data
-      - ./.hf-cache:/app/.hf-cache
-    entrypoint:
-      - python3
-      - -m
-      - wyoming_faster_whisper
-      - --model
-      - "${AI_SERVER_STT_MODEL:?AI_SERVER_STT_MODEL must be set in the services config}"
-      - --language
-      - "${AI_SERVER_STT_LANGUAGE:?AI_SERVER_STT_LANGUAGE must be set in the services config}"
-      - --device
-      - "${AI_SERVER_STT_DEVICE:?AI_SERVER_STT_DEVICE must be set in the services config}"
-      - --compute-type
-      - "${AI_SERVER_STT_COMPUTE_TYPE:?AI_SERVER_STT_COMPUTE_TYPE must be set in the services config}"
-      - --beam-size
-      - "${AI_SERVER_STT_BEAM_SIZE:?AI_SERVER_STT_BEAM_SIZE must be set in the services config}"
-      - --uri
-      - tcp://0.0.0.0:10300
-      - --data-dir
-      - /data
-      - --download-dir
-      - /data
-
 volumes:
   ollama:

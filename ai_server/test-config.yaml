@@ -21,6 +21,7 @@ stt:
   model: base
   language: pl
   device: auto
+  compute_type: default
   beam_size: 5
   capture_seconds: 5
 

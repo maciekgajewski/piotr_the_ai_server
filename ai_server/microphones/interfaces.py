@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Protocol
 
-from ai_server.microphones.messages import AudioChunk, AudioEvent, MicrophoneOutputEvent, TextEvent
+from ai_server.microphones.messages import AudioEvent, MicrophoneOutputEvent
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
+from ai_server.speech_to_text.interfaces import SpeechToText, SttSession
 
 
 class MicrophoneUnavailable(Exception):
@@ -19,31 +20,6 @@ class Microphone(Protocol):
         raise NotImplementedError
 
     async def send_output_event(self, event: MicrophoneOutputEvent) -> None:
-        raise NotImplementedError
-
-    async def close(self) -> None:
-        raise NotImplementedError
-
-
-class SttSession(Protocol):
-    async def send_audio(self, chunk: AudioChunk) -> None:
-        raise NotImplementedError
-
-    async def end_audio(self) -> None:
-        raise NotImplementedError
-
-    async def receive_text(self) -> TextEvent:
-        raise NotImplementedError
-
-    async def close(self) -> None:
-        raise NotImplementedError
-
-
-class SpeechToText(Protocol):
-    async def start(self) -> None:
-        raise NotImplementedError
-
-    async def create_session(self, session_id: str) -> SttSession:
         raise NotImplementedError
 
     async def close(self) -> None:

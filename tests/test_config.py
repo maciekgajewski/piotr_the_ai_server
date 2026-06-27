@@ -432,6 +432,7 @@ stt:
   model: small
   language: pl
   device: cpu
+  compute_type: int8
   beam_size: 3
   capture_seconds: 4.5
 tts:
@@ -446,6 +447,7 @@ tts:
         model="small",
         language="pl",
         device="cpu",
+        compute_type="int8",
         beam_size=3,
         capture_seconds=4.5,
     )
@@ -596,6 +598,10 @@ agent:
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  device: nope",
             "stt.device must be one of",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  compute_type: ''",
+            "stt.compute_type must be a non-empty string",
         ),
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\ntts:\n  volume: 2",
