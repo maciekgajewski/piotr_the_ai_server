@@ -239,6 +239,7 @@ def test_orchestrator_does_not_read_followup_without_explicit_request(caplog) ->
     assert planning_payload["conversation"]["area"] == "office"
     assert planning_payload["conversation"]["server_location"] == "Wrocław"
     assert planning_payload["conversation"]["server_timezone"] == "Europe/Warsaw"
+    assert "user_settings" not in planning_payload["conversation"]
     assert "location" not in planning_payload["conversation"]
     assert "room" not in planning_payload["conversation"]
     assert conversation.state["orchestrator"]["active_domain"] == "home_assistant"
@@ -314,10 +315,10 @@ def test_orchestrator_planning_prompt_uses_only_loaded_domain_prompts() -> None:
     system_prompt = ollama.requests[0]["messages"][0]["content"]
     assert "Available task domains: time" in system_prompt
     assert "For time tasks only." in system_prompt
-    assert "For time read-only queries:" in system_prompt
-    assert "current_time: Current time - Read the current configured time." in system_prompt
-    assert "intents: current_time" in system_prompt
-    assert '"query": "original question"' in system_prompt
+    assert "time read-only queries:" in system_prompt
+    assert "current_time: Read the current configured time.; intents=current_time" in system_prompt
+    assert 'command={"query": "original question"}' in system_prompt
+    assert "która godzina?" not in system_prompt
     assert "Prefer the server timezone for local time questions." in system_prompt
     assert "system_status" not in system_prompt
     assert "home_assistant" not in system_prompt

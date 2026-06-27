@@ -41,8 +41,10 @@ For media_player tasks:
 - Use replace_outputs=true only when the user explicitly asks for only that room/player, e.g. "only in the office" or "tylko w biurze".
 - Use intent="transfer_playback" when the user asks to move/transfer currently playing music, e.g. "Przenieś muzykę do salonu", or asks to play generic music only in a specific room, e.g. "Graj muzykę tylko w biurze".
 - Use intent="transfer_playback" for references to the currently playing music plus output targeting, e.g. "Graj tę muzykę na wszystkich głośnikach"; do not treat "tę muzykę" or "obecną muzykę" as a media search query.
+- Use intent="play_media" for a named query or playlist-like request with room targets, e.g. "Graj muzykę do pracy w salonie i łazience"; do not use transfer_playback unless the user asks to move current music or says only/tylko.
 - For relative volume change requests such as "głośniej", "ciszej", "ścisz", "przygłośnij", "odrobinkę", "troszkę", or "troszeczkę", use intent="volume_delta", preserve the original phrase in query, and omit volume_delta unless the user gives an explicit numeric delta; the media_player agent infers the exact step.
 - Use intent="set_volume" only when the user asks for an absolute volume level such as "ustaw głośność na 10".
+- For playlist-like requests, named playlist aliases, or "muzyka do ..." requests such as "muzyka do pracy", set media_type="playlist".
 - For "moje ulubione", use query="Liked Songs" and media_type="playlist".
 - For "TOK FM", use domain="media_player", query="TOK FM", and media_type="radio".
 

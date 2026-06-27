@@ -19,11 +19,13 @@ from ai_server.utils.text import normalize_text
 PLANNING_PROMPT = """
 For time tasks:
 - Include geo_location or timezone only when the user explicitly asks for a geographic place or timezone.
+- For named cities or places such as Jacksonville, set geo_location and omit timezone.
 - For plain questions like "która godzina?", omit geo_location and timezone; the time agent already knows server_location and server_timezone.
 - Never copy conversation.area into time.geo_location.
+- Omit unknown fields instead of writing placeholder strings like "optional".
 
 Command shape:
-{"query": "original time question", "geo_location": "optional geographic place", "timezone": "optional"}
+{"query": "original time question", "geo_location": "geographic place when named", "timezone": "IANA timezone only when explicitly named"}
 """
 
 DEFAULT_TIMEZONE = "UTC"
@@ -144,7 +146,11 @@ class CurrentTimeDomainAgent:
                 name="Current time and date",
                 description="Read the current time/date for the local server timezone or an explicitly named place/timezone.",
                 intents=("current_time", "current_date"),
-                command_template={"query": "original time/date question", "geo_location": "optional geographic place", "timezone": "optional"},
+                command_template={
+                    "query": "original time/date question",
+                    "geo_location": "geographic place when named",
+                    "timezone": "IANA timezone only when explicitly named",
+                },
             )
         }
 

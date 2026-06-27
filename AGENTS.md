@@ -26,6 +26,7 @@ Rules:
 - DSA stands for Domain Specific Agent
 - A config file is required ot start the server. The config file always has to be provided by user in the command-line parameters, regardless if launched directly or trough a wrapper script. Do not hardcode config values in the code. Test tools are the only exception.
 - Abstract components must stay sealed behind their abstract interfaces. DSAs, input modules, microphones, and similar pluggable components must expose behavior only through their interface methods; other parts of the system must not hardcode knowledge of concrete component types, prompts, commands, or shortcuts.
+- Before changing orchestrator or DSA planning architecture, read `docs/orchestrator-dsa-architecture.md`.
 
 
 # Python coding guidelines

@@ -50,34 +50,15 @@ Never treat area as a geographic location.
 Available task domains: {available_domains}
 Only create tasks for the available task domains. If no available domain fits the user utterance, return kind="chat" with tasks=[].
 
-Return schema:
-{
-  "kind": "single_task|multi_task|followup|clarification_answer|chat",
-  "confidence": 0.0,
-  "tasks": [
-    {
-      "id": "t1",
-      "domain": "one of the available task domains",
-      "command": {},
-      "depends_on": [],
-      "status": "ready|blocked",
-      "clarification_question": null
-    }
-  ],
-  "context_updates": {
-    "salient_entities": [],
-    "active_domain": "string or null"
-  },
-  "needs_clarification": false,
-  "clarification_question": null
-}
-The top-level object must contain context_updates outside tasks. The tasks array must contain only task objects, never strings.
-Set confidence from 0.0 to 1.0 for how likely this plan is the correct route and task structure.
+Return this schema:
+{"kind":"single_task|multi_task|followup|clarification_answer|chat","confidence":0.0,"tasks":[{"id":"t1","domain":"available domain","command":{},"depends_on":[],"status":"ready|blocked","clarification_question":null}],"context_updates":{"salient_entities":[],"active_domain":null},"needs_clarification":false,"clarification_question":null}
+context_updates is top-level. tasks contains only task objects, never strings. confidence is 0.0..1.0.
+In command objects, omit optional fields when the user did not provide a concrete value; never output placeholder strings like "optional".
 
 Read-only state and configuration queries:
-- Any domain may expose state/configuration query capabilities through its DomainAgent interface.
-- Use these capabilities for questions asking what is available, configured, active, playing, enabled, set, counted, listed, or currently true in that domain.
-- These tasks must not imply a modification; concrete query command shape and semantics are owned by the selected domain.
+- Domains expose read-only query capabilities through their DomainAgent interface.
+- Use them for questions asking what is available, configured, active, playing, enabled, set, counted, listed, or currently true.
+- Do not imply modification; concrete query command shape and semantics are owned by the selected domain.
 
 {query_capabilities}
 
@@ -361,7 +342,6 @@ class OrchestratorAgent:
             "conversation_id": conversation.conversation_id,
             "user": conversation.user,
             "area": conversation.area,
-            "user_settings": conversation.user_settings,
             "server_location": self._server_config.location,
             "server_timezone": self._server_config.timezone,
         }
@@ -1011,7 +991,7 @@ def _format_domain_query_capabilities(domain: str, domain_agent: DomainAgent) ->
     if not capabilities and not prompt_notes:
         return ""
 
-    lines = [f"For {domain} read-only queries:"]
+    lines = [f"{domain} read-only queries:"]
     for capability_id, capability in capabilities.items():
         lines.extend(_format_query_capability(capability_id, capability))
     if prompt_notes:
@@ -1020,14 +1000,12 @@ def _format_domain_query_capabilities(domain: str, domain_agent: DomainAgent) ->
 
 
 def _format_query_capability(capability_id: str, capability: QueryCapability) -> list[str]:
-    lines = [f"- {capability_id}: {capability.name} - {capability.description}"]
+    line = f"- {capability_id}: {capability.description}"
     if capability.intents:
-        lines.append(f"  intents: {', '.join(capability.intents)}")
+        line = f"{line}; intents={','.join(capability.intents)}"
     if capability.command_template:
-        lines.append(f"  command_template: {_compact_json(capability.command_template)}")
-    for example in capability.examples:
-        lines.append(f"  example: {_compact_json(example)}")
-    return lines
+        line = f"{line}; command={_compact_json(capability.command_template, max_length=240)}"
+    return [line]
 
 
 def _response_token_counts(response: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
