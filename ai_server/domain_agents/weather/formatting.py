@@ -5,6 +5,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from ai_server.domain_agents.weather.interfaces import CurrentWeather, DailyForecast, HourlyForecast, WeatherForecast
+from ai_server.utils.polish_numbers import polish_cardinal, polish_decimal
 from ai_server.utils.text import ascii_fold, normalize_text
 
 
@@ -86,7 +87,7 @@ def _format_daily_forecast(forecast: WeatherForecast, location: str) -> str:
     parts = []
     for day in forecast.daily:
         label = WEEKDAYS[day.date.weekday()]
-        temperatures = f"{_round_number(day.temperature_min_c)}-{_round_number(day.temperature_max_c)} stopni"
+        temperatures = f"od {_round_number(day.temperature_min_c)} do {_round_number(day.temperature_max_c)} stopni"
         detail = f"{label}: {temperatures}"
         if day.weather_description:
             detail += f", {day.weather_description}"
@@ -101,7 +102,7 @@ def _format_hourly_forecast(forecast: WeatherForecast, location: str) -> str:
     visible_hours = forecast.hourly[:6]
     parts = []
     for hour in visible_hours:
-        label = hour.time.strftime("%H:%M")
+        label = _hour_phrase(hour.time)
         detail = f"{label}: {_temperature_phrase(hour.temperature_c)}"
         if hour.weather_description:
             detail += f", {hour.weather_description}"
@@ -140,10 +141,14 @@ def _round_number(value: float | int | None) -> str:
     if value is None:
         return "?"
     rounded = round(float(value))
-    return str(int(rounded))
+    return polish_cardinal(int(rounded))
 
 
 def _format_decimal(value: float) -> str:
     if value == round(value):
-        return str(int(value))
-    return f"{value:.1f}".rstrip("0").rstrip(".")
+        return polish_cardinal(int(value))
+    return polish_decimal(value)
+
+
+def _hour_phrase(value: dt.datetime) -> str:
+    return f"o {polish_cardinal(value.hour)} zero zero"

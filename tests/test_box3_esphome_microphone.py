@@ -631,6 +631,59 @@ def test_box3_microphone_executes_cue_and_follow_up_services(monkeypatch) -> Non
     asyncio.run(run())
 
 
+def test_box3_microphone_reports_api_service_timeout_as_unavailable(monkeypatch) -> None:
+    class UserService:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.key = 1
+            self.args = []
+
+    class FakeClient:
+        connected_address = "127.0.0.1"
+        disconnect_called = False
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def connect(self, login: bool) -> None:
+            assert login is True
+
+        async def disconnect(self) -> None:
+            FakeClient.disconnect_called = True
+
+        def subscribe_voice_assistant(self, **kwargs):
+            return lambda: None
+
+        async def list_entities_services(self):
+            return [], [UserService("start_open_mic_listening")]
+
+        async def execute_service(self, service, data):
+            await asyncio.Event().wait()
+
+    fake_module = SimpleNamespace(APIClient=FakeClient)
+    monkeypatch.setitem(sys.modules, "aioesphomeapi", fake_module)
+    monkeypatch.setattr(box3_esphome, "aioesphomeapi", fake_module)
+    monkeypatch.setattr(box3_esphome, "API_SERVICE_TIMEOUT_SECONDS", 0.01)
+
+    async def run() -> None:
+        microphone = Box3EsphomeMicrophone.from_config(
+            MicrophoneConfig(
+                type="box3_esphome",
+                name="box3-office",
+                area=None,
+                options={"address": "box.local", "api_key": "secret"},
+            )
+        )
+
+        with pytest.raises(MicrophoneUnavailable, match="service=start_open_mic_listening timed out"):
+            await microphone.send_output_event(StartOpenMicListening())
+
+        assert microphone._client is None
+        assert FakeClient.disconnect_called is True
+
+    asyncio.run(run())
+
+
 def test_box3_playback_stream_estimates_remaining_speaker_drain_time() -> None:
     stream = box3_esphome.Box3PlaybackStream(
         local_ip="127.0.0.1",

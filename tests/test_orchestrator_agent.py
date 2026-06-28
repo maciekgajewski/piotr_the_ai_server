@@ -1,12 +1,14 @@
 import asyncio
 import json
 import logging
+from pathlib import Path
 
 import pytest
 
 from ai_server.orchestrator import GENERATION_FAILURE_MESSAGE, OrchestratorAgent, _parse_plan
 from ai_server.config import ServerConfig
 from ai_server.domain_agents import QueryCapability
+from ai_server.domain_agents.weather import WeatherDomainAgent
 from ai_server.home_assistant.interfaces import HomeAssistantArea, HomeAssistantInventory
 from ai_server.interfaces import Conversation
 from ai_server.messages import TextMessage, text_message_to_events
@@ -511,6 +513,27 @@ def test_orchestrator_short_path_dispatches_weather_utterance_without_ollama() -
         }
     ]
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="We Wrocławiu jest 16 stopni.")))
+
+
+def test_orchestrator_weather_planning_prompt_routes_minimal_commands(tmp_path: Path) -> None:
+    weather_agent = WeatherDomainAgent(
+        model="qwen3:4b-instruct",
+        location="Wrocław",
+        cache_dir=tmp_path,
+        providers=[],
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="qwen3:4b-instruct",
+        domain_agents={"weather": weather_agent},
+        ollama_client=FakeOllamaClient([]),
+        owns_ollama_client=False,
+    )
+
+    prompt = agent._planning_system_prompt
+    assert 'command={"query": "original weather question"}' in prompt
+    assert '{"query": "original weather question"}' in prompt
+    assert "get_weather_forecast" not in prompt
+    assert '"location"' not in prompt
 
 
 def test_orchestrator_plans_pronoun_temperature_followup_instead_of_weather_short_path() -> None:

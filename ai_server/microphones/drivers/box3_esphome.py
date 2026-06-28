@@ -34,6 +34,7 @@ STREAM_PATH = "/tts.wav"
 WAV_HEADER_BYTES = 44
 STREAM_REQUEST_TIMEOUT_SECONDS = 5.0
 STREAM_DONE_TIMEOUT_SECONDS = 30.0
+API_SERVICE_TIMEOUT_SECONDS = 5.0
 PLAYBACK_DRAIN_GRACE_SECONDS = 0.2
 SPEECH_PEAK_THRESHOLD = 500
 SPEECH_START_SECONDS = 0.2
@@ -492,12 +493,24 @@ class Box3EsphomeMicrophone:
     async def _execute_api_service(self, service_name: str) -> None:
         await self._ensure_connected()
         try:
-            _, services = await self._client.list_entities_services()
+            _, services = await asyncio.wait_for(
+                self._client.list_entities_services(),
+                timeout=API_SERVICE_TIMEOUT_SECONDS,
+            )
             for service in services:
                 if service.name == service_name:
-                    await self._client.execute_service(service, {})
+                    await asyncio.wait_for(
+                        self._client.execute_service(service, {}),
+                        timeout=API_SERVICE_TIMEOUT_SECONDS,
+                    )
                     self._logger.debug("executed ESPHome satellite API service=%s", service_name)
                     return
+        except TimeoutError as error:
+            await self._mark_disconnected()
+            raise MicrophoneUnavailable(
+                f"address={self.playback_target.address} service={service_name} "
+                f"timed out after {API_SERVICE_TIMEOUT_SECONDS:.1f}s"
+            ) from error
         except _expected_unavailable_errors() as error:
             await self._mark_disconnected()
             raise MicrophoneUnavailable(f"address={self.playback_target.address} error={error}") from error

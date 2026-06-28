@@ -24,19 +24,18 @@ from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL
+from ai_server.utils.polish_numbers import polish_cardinal, polish_decimal
 from ai_server.utils.text import ascii_fold, normalize_text
 
 
 PLANNING_PROMPT = """
 For weather tasks:
-- For plain local weather questions, omit location; the weather agent already knows server_location.
-- For weather questions about later today, tonight, evening, rain, or whether something will happen, use get_weather_forecast, not get_weather_now.
-- Use focus="temperature" only when the user asks about temperature or degrees.
-- Never copy conversation.area into weather.location.
+- Only route the utterance to the weather domain. The weather agent owns parsing current versus forecast,
+  forecast horizon, location, and focus.
+- Do not include weather tool names, locations, horizons, granularities, or focus fields.
 
-Command shapes:
-{"tool": "get_weather_now", "query": "original weather question", "location": "optional geographic place", "focus": "temperature optional"}
-{"tool": "get_weather_forecast", "query": "original weather question", "location": "optional geographic place", "horizon": "today|tomorrow|weekend|next_weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday", "granularity": "daily|hourly", "focus": "temperature optional"}
+Command shape:
+{"query": "original weather question"}
 """
 
 
@@ -80,12 +79,8 @@ class WeatherDomainAgent:
             "weather_state": QueryCapability(
                 name="Current weather and forecast",
                 description="Read current weather conditions or forecast state for the default location or an explicitly named place.",
-                intents=("get_weather_now", "get_weather_forecast"),
                 command_template={
-                    "tool": "get_weather_now|get_weather_forecast",
                     "query": "original weather question",
-                    "location": "optional geographic place",
-                    "focus": "temperature|rain|wind optional",
                 },
             )
         }
@@ -116,6 +111,8 @@ class WeatherDomainAgent:
                 fast_command["tool"],
             )
             return await self._run_fast_lane(fast_command, logger)
+
+        task = _minimal_task_for_agent_loop(task)
 
         toolset = WeatherDomainToolSet(
             self._providers,
@@ -492,7 +489,28 @@ def _sanitize_reply_text(text: str) -> str:
     sanitized = re.sub(r"(?<=\d)\s*(?:°\s*C|℃|°)", " stopni", text, flags=re.IGNORECASE)
     sanitized = re.sub(r"(?:°\s*C|℃)", "stopni", sanitized, flags=re.IGNORECASE)
     sanitized = sanitized.replace("°", "")
+    sanitized = re.sub(r"\b-?\d+(?:[\.,]\d+)?\b", _number_match_to_words, sanitized)
     return " ".join(sanitized.split())
+
+
+def _number_match_to_words(match: re.Match[str]) -> str:
+    text = match.group(0)
+    if "." in text or "," in text:
+        return polish_decimal(float(text.replace(",", ".")))
+    return polish_cardinal(int(text))
+
+
+def _minimal_task_for_agent_loop(task: DomainTask) -> DomainTask:
+    command = task.get("command")
+    query = command.get("query") if isinstance(command, dict) else None
+    return {
+        "id": task.get("id"),
+        "domain": task.get("domain"),
+        "command": {"query": query} if isinstance(query, str) else {},
+        "depends_on": task.get("depends_on", []),
+        "status": task.get("status", "ready"),
+        "clarification_question": task.get("clarification_question"),
+    }
 
 
 def _ascii_key(value: str) -> str:

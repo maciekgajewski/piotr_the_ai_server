@@ -25,6 +25,22 @@ from ai_server.interfaces import Conversation
 from ai_server.orchestrator.known_utterances import collect_known_utterance_tasks, known_utterance_task
 
 
+def test_weather_planning_contract_routes_minimal_tasks(tmp_path: Path) -> None:
+    agent = WeatherDomainAgent(
+        model="qwen3:4b-instruct",
+        location="Wrocław",
+        cache_dir=tmp_path,
+        providers=[],
+    )
+
+    assert agent.query_capabilities()["weather_state"].command_template == {
+        "query": "original weather question",
+    }
+    assert '{"query": "original weather question"}' in agent.planning_prompt()
+    assert "get_weather_forecast" not in agent.planning_prompt()
+    assert '"location"' not in agent.planning_prompt()
+
+
 def test_weather_fast_lane_creates_current_temperature_task() -> None:
     task = weather_task_from_utterance("Jaka jest temperatura?")
 
@@ -230,7 +246,11 @@ def test_weather_domain_agent_formats_simple_current_weather() -> None:
 
     assert result["status"] == "ok"
     assert result["final_reply_mode"] == "verbatim"
-    assert result["text"] == "We Wrocławiu jest 16 stopni, wilgotność 90 procent, wiatr 11 kilometrów na godzinę, opad 1.4 milimetra."
+    assert (
+        result["text"]
+        == "We Wrocławiu jest szesnaście stopni, wilgotność dziewięćdziesiąt procent, "
+        "wiatr jedenaście kilometrów na godzinę, opad jeden przecinek cztery milimetra."
+    )
     assert provider.now_requests == [WeatherNowRequest(location="Wrocław", focus=None)]
 
 
@@ -268,6 +288,8 @@ def test_weather_domain_agent_runs_agent_loop_for_non_fast_lane_query() -> None:
                 "command": {
                     "tool": "get_weather_now",
                     "query": "Czy dziś wieczorem będzie deszcz?",
+                    "location": "Europe/Warsaw",
+                    "horizon": "tomorrow",
                     "focus": "temperature",
                 },
             },
@@ -284,7 +306,7 @@ def test_weather_domain_agent_runs_agent_loop_for_non_fast_lane_query() -> None:
     assert loop_factory.config.fallback_backoff_seconds == 120
     assert isinstance(loop_factory.tools, WeatherDomainToolSet)
     payload = json.loads(loop_factory.loop.user_message)
-    assert payload["task"]["command"]["query"] == "Czy dziś wieczorem będzie deszcz?"
+    assert payload["task"]["command"] == {"query": "Czy dziś wieczorem będzie deszcz?"}
     assert payload["conversation"]["server_location"] == "Wrocław"
 
 
@@ -293,7 +315,7 @@ def test_weather_domain_agent_removes_celsius_degree_symbol_from_agent_loop_repl
         json.dumps(
             {
                 "status": "ok",
-                "text": "W Gdańsku będzie około 20°C i pochmurno.",
+                "text": "W Gdańsku będzie około 20°C i opady 35 procent.",
                 "needs_clarification": False,
                 "clarification_question": None,
                 "entities": ["weather.Gdańsk"],
@@ -319,8 +341,9 @@ def test_weather_domain_agent_removes_celsius_degree_symbol_from_agent_loop_repl
     )
 
     assert result["status"] == "ok"
-    assert result["text"] == "W Gdańsku będzie około 20 stopni i pochmurno."
+    assert result["text"] == "W Gdańsku będzie około dwadzieścia stopni i opady trzydzieści pięć procent."
     assert "°" not in result["text"]
+    assert not any(character.isdigit() for character in result["text"])
 
 
 def test_weather_domain_agent_rejects_non_json_agent_loop_reply() -> None:
@@ -417,7 +440,7 @@ def test_format_current_weather_temperature_focus() -> None:
         precipitation_mm=None,
     )
 
-    assert format_current_weather(weather, focus="temperature") == "We Wrocławiu jest 16 stopni."
+    assert format_current_weather(weather, focus="temperature") == "We Wrocławiu jest szesnaście stopni."
 
 
 class FakeSession:
