@@ -62,11 +62,13 @@ class FakeMicrophone:
         )
         self.closed = False
         self.sent_audio_events = []
-        self._events = list(events or [
-            AudioStart(wake_word="Ryszardzie"),
-            AudioChunk(data=b"audio"),
-            AudioEnd(),
-        ])
+        if events is None:
+            events = [
+                AudioStart(wake_word="Ryszardzie"),
+                AudioChunk(data=b"audio"),
+                AudioEnd(),
+            ]
+        self._events = list(events)
 
     async def wait_for_event(self):
         if not self._events:
@@ -422,6 +424,86 @@ def test_microphone_manager_discards_open_mic_speech_without_wake_phrase() -> No
         ]
 
     asyncio.run(run())
+
+
+def test_microphone_manager_retries_open_mic_when_audio_start_never_arrives(caplog) -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone(events=[])
+        agent = FakeAgent()
+        stt = FakeStt()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=stt,
+            tts=FakeTts(),
+            agent=agent,
+            follow_up_timeout_seconds=0.1,
+            microphone_audio_start_timeouts={"office": 0.01},
+            open_microphones={"office"},
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="ai_server.microphones.manager"):
+            await manager.start()
+            await asyncio.wait_for(
+                _wait_until(
+                    lambda: "microphone still unavailable; retrying soon "
+                    "error=open-mic audio start timed out after 0.01s" in caplog.text
+                ),
+                timeout=1,
+            )
+            await manager.close()
+
+        assert agent.messages == []
+        assert len(stt.streaming_sessions) == 0
+
+    asyncio.run(run())
+
+    assert "waiting for microphone audio start timeout_seconds=0.01 unavailable_on_timeout=True" in caplog.text
+    assert "open-mic audio start timed out timeout_seconds=0.01" in caplog.text
+    assert "microphone unavailable; retrying soon error=open-mic audio start timed out after 0.01s" in caplog.text
+    assert "microphone still unavailable; retrying soon error=open-mic audio start timed out after 0.01s" in caplog.text
+    assert "microphone available again" not in caplog.text
+
+
+def test_microphone_manager_retries_open_mic_when_stream_stops_emitting_events(caplog) -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone(
+            events=[
+                AudioStart(wake_word=None),
+                AudioChunk(data=b"partial-audio"),
+            ]
+        )
+        agent = FakeAgent()
+        stt = FakeStt()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=stt,
+            tts=FakeTts(),
+            agent=agent,
+            follow_up_timeout_seconds=0.1,
+            microphone_audio_event_timeouts={"office": 0.01},
+            open_microphones={"office"},
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="ai_server.microphones.manager"):
+            await manager.start()
+            await asyncio.wait_for(
+                _wait_until(
+                    lambda: "open-mic audio stream event timed out timeout_seconds=0.01" in caplog.text
+                ),
+                timeout=1,
+            )
+            await manager.close()
+
+        assert agent.messages == []
+        assert len(stt.streaming_sessions) == 1
+        assert stt.streaming_sessions[0].audio_chunks == [PcmAudioChunk(data=b"partial-audio")]
+        assert stt.streaming_sessions[0].closed is True
+
+    asyncio.run(run())
+
+    assert "open-mic audio stream event timed out timeout_seconds=0.01" in caplog.text
+    assert "microphone unavailable; retrying soon error=open-mic audio stream event timed out after 0.01s" in caplog.text
+    assert "microphone available again" not in caplog.text
 
 
 def test_microphone_manager_accepts_open_mic_wake_phrase_found_only_in_final() -> None:

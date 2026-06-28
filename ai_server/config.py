@@ -26,6 +26,8 @@ DEFAULT_TTS_VOICE = "pl_PL-bass-high"
 DEFAULT_TTS_VOLUME = 1.0
 DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS = 15.0
 DEFAULT_OPEN_MIC_WAKE_PHRASE = "Ryszardzie"
+DEFAULT_AUDIO_START_TIMEOUT_SECONDS = 5.0
+DEFAULT_AUDIO_EVENT_TIMEOUT_SECONDS = 5.0
 DEFAULT_INITIAL_SILENCE_SECONDS = 3.0
 DEFAULT_END_SILENCE_SECONDS = 0.9
 DEFAULT_SPEECH_PEAK_THRESHOLD = 500
@@ -101,6 +103,8 @@ class SpeakerRecognitionConfig:
 @dataclass(frozen=True)
 class MicrophoneDefaultsConfig:
     open_mic_wake_phrase: str = DEFAULT_OPEN_MIC_WAKE_PHRASE
+    audio_start_timeout_seconds: float = DEFAULT_AUDIO_START_TIMEOUT_SECONDS
+    audio_event_timeout_seconds: float = DEFAULT_AUDIO_EVENT_TIMEOUT_SECONDS
     initial_silence_seconds: float = DEFAULT_INITIAL_SILENCE_SECONDS
     end_silence_seconds: float = DEFAULT_END_SILENCE_SECONDS
     speech_peak_threshold: int = DEFAULT_SPEECH_PEAK_THRESHOLD
@@ -115,6 +119,8 @@ class MicrophoneConfig:
     area: str | None
     options: dict[str, Any]
     open_mic: bool = False
+    audio_start_timeout_seconds: float = DEFAULT_AUDIO_START_TIMEOUT_SECONDS
+    audio_event_timeout_seconds: float = DEFAULT_AUDIO_EVENT_TIMEOUT_SECONDS
     initial_silence_seconds: float = DEFAULT_INITIAL_SILENCE_SECONDS
     end_silence_seconds: float = DEFAULT_END_SILENCE_SECONDS
     speech_peak_threshold: int = DEFAULT_SPEECH_PEAK_THRESHOLD
@@ -509,6 +515,16 @@ def _parse_microphones_config(
             defaults.initial_silence_seconds,
             f"microphones[{index}].initial_silence_seconds",
         )
+        audio_start_timeout_seconds = _parse_optional_positive_float(
+            raw_microphone.get("audio_start_timeout_seconds"),
+            defaults.audio_start_timeout_seconds,
+            f"microphones[{index}].audio_start_timeout_seconds",
+        )
+        audio_event_timeout_seconds = _parse_optional_positive_float(
+            raw_microphone.get("audio_event_timeout_seconds"),
+            defaults.audio_event_timeout_seconds,
+            f"microphones[{index}].audio_event_timeout_seconds",
+        )
         end_silence_seconds = _parse_optional_positive_float(
             raw_microphone.get("end_silence_seconds"),
             defaults.end_silence_seconds,
@@ -539,6 +555,8 @@ def _parse_microphones_config(
                 "name",
                 "area",
                 "open_mic",
+                "audio_start_timeout_seconds",
+                "audio_event_timeout_seconds",
                 "initial_silence_seconds",
                 "end_silence_seconds",
                 "speech_peak_threshold",
@@ -561,6 +579,8 @@ def _parse_microphones_config(
                 name=name,
                 area=area,
                 open_mic=open_mic,
+                audio_start_timeout_seconds=audio_start_timeout_seconds,
+                audio_event_timeout_seconds=audio_event_timeout_seconds,
                 initial_silence_seconds=initial_silence_seconds,
                 end_silence_seconds=end_silence_seconds,
                 speech_peak_threshold=speech_peak_threshold,
@@ -583,6 +603,16 @@ def _parse_microphone_defaults(
 
     return MicrophoneDefaultsConfig(
         open_mic_wake_phrase=open_mic_wake_phrase,
+        audio_start_timeout_seconds=_parse_optional_positive_float(
+            raw_config.get("audio_start_timeout_seconds"),
+            DEFAULT_AUDIO_START_TIMEOUT_SECONDS,
+            "microphones.audio_start_timeout_seconds",
+        ),
+        audio_event_timeout_seconds=_parse_optional_positive_float(
+            raw_config.get("audio_event_timeout_seconds"),
+            DEFAULT_AUDIO_EVENT_TIMEOUT_SECONDS,
+            "microphones.audio_event_timeout_seconds",
+        ),
         initial_silence_seconds=_parse_optional_positive_float(
             raw_config.get("initial_silence_seconds"),
             DEFAULT_INITIAL_SILENCE_SECONDS,

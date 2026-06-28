@@ -10,7 +10,9 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ai_server.agent import Agent
-from ai_server.config import ConversationConfig, MicrophoneConfig, SpeakerRecognitionConfig, SttConfig, TtsConfig
+from ai_server.config import ConversationConfig, DEFAULT_AUDIO_EVENT_TIMEOUT_SECONDS, DEFAULT_AUDIO_START_TIMEOUT_SECONDS
+from ai_server.config import MicrophoneConfig
+from ai_server.config import SpeakerRecognitionConfig, SttConfig, TtsConfig
 from ai_server.messages import ConversationEnded, MessageBegin, MessageEnd, MessageFragment, NewConversation, ProcessingUpdate
 from ai_server.messages import RequestFollowUp, TextMessage, WaitForNewConversation, WaitForNewMessage
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
@@ -51,6 +53,8 @@ class MicrophoneManager:
         agent: Agent,
         follow_up_timeout_seconds: float,
         microphone_follow_up_timeouts: dict[str, float] | None = None,
+        microphone_audio_start_timeouts: dict[str, float] | None = None,
+        microphone_audio_event_timeouts: dict[str, float] | None = None,
         open_microphones: set[str] | None = None,
         user_settings: dict[str, dict[str, Any]] | None = None,
         user_settings_provider: UserSettingsProvider | None = None,
@@ -64,6 +68,8 @@ class MicrophoneManager:
         self._agent = agent
         self._follow_up_timeout_seconds = follow_up_timeout_seconds
         self._microphone_follow_up_timeouts = dict(microphone_follow_up_timeouts or {})
+        self._microphone_audio_start_timeouts = dict(microphone_audio_start_timeouts or {})
+        self._microphone_audio_event_timeouts = dict(microphone_audio_event_timeouts or {})
         self._open_microphones = set(open_microphones or ())
         self._user_settings = dict(user_settings or {})
         self._user_settings_provider = user_settings_provider
@@ -140,14 +146,15 @@ class MicrophoneManager:
                             type(output_event).__name__,
                         )
                         await microphone.send_output_event(output_event)
-                        availability_logger.available()
                         if isinstance(output_event, StartOpenMicListening):
                             captured = await self._capture_open_mic_utterance(
                                 microphone=microphone,
                                 endpoint=endpoint,
                                 logger=logger,
                             )
+                            availability_logger.available()
                         else:
+                            availability_logger.available()
                             captured = await self._capture_utterance(
                                 microphone=microphone,
                                 endpoint=endpoint,
@@ -253,7 +260,13 @@ class MicrophoneManager:
         endpoint: MicrophoneAgentEndpoint,
         logger: logging.Logger,
     ) -> CapturedUtterance:
-        event = await self._wait_for_audio_start(microphone, logger, timeout_seconds=None)
+        event = await self._wait_for_audio_start(
+            microphone,
+            logger,
+            timeout_seconds=self._audio_start_timeout_for(microphone),
+            timeout_is_unavailable=True,
+            timeout_label="open-mic audio start",
+        )
         if event is None:
             return CapturedUtterance(captured=False, text_fragments=())
 
@@ -270,9 +283,25 @@ class MicrophoneManager:
         final_text = ""
         accepted_text = ""
         cue_sent = False
+        audio_event_timeout_seconds = self._audio_event_timeout_for(microphone)
         try:
             while True:
-                next_event = await microphone.wait_for_event()
+                try:
+                    next_event = await asyncio.wait_for(
+                        microphone.wait_for_event(),
+                        timeout=audio_event_timeout_seconds,
+                    )
+                except TimeoutError as error:
+                    logger.debug(
+                        "open-mic audio stream event timed out timeout_seconds=%.2f chunks=%s bytes=%s wake_candidate=%s",
+                        audio_event_timeout_seconds,
+                        len(audio_chunks),
+                        sum(len(chunk.data) for chunk in audio_chunks),
+                        wake_candidate.is_set(),
+                    )
+                    raise MicrophoneUnavailable(
+                        f"open-mic audio stream event timed out after {audio_event_timeout_seconds:.2f}s"
+                    ) from error
                 if isinstance(next_event, AudioChunk):
                     audio_chunks.append(next_event)
                     await stt_session.send_audio(PcmAudioChunk(data=next_event.data))
@@ -345,7 +374,14 @@ class MicrophoneManager:
         microphone: Microphone,
         logger: logging.Logger,
         timeout_seconds: float | None,
+        timeout_is_unavailable: bool = False,
+        timeout_label: str = "microphone audio start",
     ) -> AudioStart | None:
+        logger.debug(
+            "waiting for microphone audio start timeout_seconds=%s unavailable_on_timeout=%s",
+            timeout_seconds,
+            timeout_is_unavailable,
+        )
         while True:
             try:
                 if timeout_seconds is None:
@@ -353,9 +389,21 @@ class MicrophoneManager:
                 else:
                     event = await asyncio.wait_for(microphone.wait_for_event(), timeout=timeout_seconds)
             except TimeoutError:
+                logger.debug("%s timed out timeout_seconds=%.2f", timeout_label, timeout_seconds or 0.0)
+                if timeout_is_unavailable:
+                    raise MicrophoneUnavailable(
+                        f"{timeout_label} timed out after {timeout_seconds:.2f}s"
+                    )
                 return None
 
             if isinstance(event, AudioStart):
+                logger.debug(
+                    "microphone audio start received wake_word=%r rate=%s width=%s channels=%s",
+                    event.wake_word,
+                    event.rate,
+                    event.width,
+                    event.channels,
+                )
                 return event
             logger.warning("ignored microphone event before audio start event=%s", type(event).__name__)
 
@@ -708,6 +756,18 @@ class MicrophoneManager:
             self._follow_up_timeout_seconds,
         )
 
+    def _audio_start_timeout_for(self, microphone: Microphone) -> float:
+        return self._microphone_audio_start_timeouts.get(
+            microphone.context.name,
+            DEFAULT_AUDIO_START_TIMEOUT_SECONDS,
+        )
+
+    def _audio_event_timeout_for(self, microphone: Microphone) -> float:
+        return self._microphone_audio_event_timeouts.get(
+            microphone.context.name,
+            DEFAULT_AUDIO_EVENT_TIMEOUT_SECONDS,
+        )
+
     def _new_conversation_listening_event(self, microphone: Microphone) -> MicrophoneOutputEvent:
         if microphone.context.name in self._open_microphones:
             return StartOpenMicListening()
@@ -744,6 +804,14 @@ async def init_mics(
         follow_up_timeout_seconds=conversation_config.follow_up_timeout_seconds,
         microphone_follow_up_timeouts={
             mic_config.name: mic_config.follow_up_timeout_seconds
+            for mic_config in mic_configs
+        },
+        microphone_audio_start_timeouts={
+            mic_config.name: mic_config.audio_start_timeout_seconds
+            for mic_config in mic_configs
+        },
+        microphone_audio_event_timeouts={
+            mic_config.name: mic_config.audio_event_timeout_seconds
             for mic_config in mic_configs
         },
         open_microphones={

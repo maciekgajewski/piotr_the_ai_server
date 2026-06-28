@@ -364,6 +364,8 @@ agent:
   type: echo
 microphones:
   initial_silence_seconds: 4
+  audio_start_timeout_seconds: 2.5
+  audio_event_timeout_seconds: 3.5
   end_silence_seconds: 1.2
   open_mic_wake_phrase: Alfredzie
   speech_peak_threshold: 600
@@ -375,6 +377,8 @@ microphones:
       address: box.local
       api_key: abc
       initial_silence_seconds: 5
+      audio_start_timeout_seconds: 1.5
+      audio_event_timeout_seconds: 2
       end_silence_seconds: 0.8
       speech_peak_threshold: 900
       post_speech_ignore_seconds: 2
@@ -386,12 +390,16 @@ microphones:
 
     assert config.microphone_defaults == MicrophoneDefaultsConfig(
         open_mic_wake_phrase="Alfredzie",
+        audio_start_timeout_seconds=2.5,
+        audio_event_timeout_seconds=3.5,
         initial_silence_seconds=4.0,
         end_silence_seconds=1.2,
         speech_peak_threshold=600,
         post_speech_ignore_seconds=1.5,
         follow_up_timeout_seconds=12.5,
     )
+    assert config.microphones[0].audio_start_timeout_seconds == 1.5
+    assert config.microphones[0].audio_event_timeout_seconds == 2.0
     assert config.microphones[0].initial_silence_seconds == 5.0
     assert config.microphones[0].end_silence_seconds == 0.8
     assert config.microphones[0].speech_peak_threshold == 900
@@ -670,8 +678,24 @@ agent:
             "microphones.initial_silence_seconds must be a positive number",
         ),
         (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  audio_start_timeout_seconds: 0",
+            "microphones.audio_start_timeout_seconds must be a positive number",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  audio_event_timeout_seconds: 0",
+            "microphones.audio_event_timeout_seconds must be a positive number",
+        ),
+        (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  open_mic_wake_phrase: ''",
             "microphones.open_mic_wake_phrase must be a non-empty string",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  devices:\n    - type: box3_esphome\n      name: box\n      address: host\n      api_key: key\n      audio_start_timeout_seconds: nope",
+            r"microphones\[0\].audio_start_timeout_seconds must be a positive number",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  devices:\n    - type: box3_esphome\n      name: box\n      address: host\n      api_key: key\n      audio_event_timeout_seconds: nope",
+            r"microphones\[0\].audio_event_timeout_seconds must be a positive number",
         ),
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  devices:\n    - type: box3_esphome\n      name: box\n      address: host\n      api_key: key\n      end_silence_seconds: nope",
