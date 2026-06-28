@@ -11,9 +11,11 @@ from ai_server.microphones.interfaces import MicrophoneUnavailable
 from ai_server.microphones.manager import MicrophoneManager, _MicrophoneAvailabilityLogger, init_mics
 from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, ConversationTimeoutCue, MessageEndCue
 from ai_server.microphones.messages import StartFollowUpListening
+from ai_server.microphones.messages import StartOpenMicListening
 from ai_server.microphones.messages import StartWakeWordListening
 from ai_server.microphones.messages import TextEnd, TextFragment
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
+from ai_server.speech_to_text.messages import TextPartial
 from ai_server.speech_to_text.types import PcmAudioChunk
 from ai_server.speaker_recognition.client import SpeakerRecognitionResult
 
@@ -137,12 +139,53 @@ class FakeSttSession:
         self.closed = True
 
 
+class FakeStreamingSttSession:
+    def __init__(self, partial_events=None, final_text: str = "Ryszardzie, cześć") -> None:
+        self.audio_chunks = []
+        self.ended = False
+        self.closed = False
+        self.final_transcribed = False
+        self._partial_events = list(
+            partial_events
+            or [
+                TextPartial(
+                    text="Ryszardzie, cześć",
+                    audio_start_seconds=0.0,
+                    audio_end_seconds=1.0,
+                    duration_seconds=1.0,
+                ),
+                TextEnd(),
+            ]
+        )
+        self._final_text = final_text
+
+    async def send_audio(self, chunk: PcmAudioChunk) -> None:
+        self.audio_chunks.append(chunk)
+
+    async def end_audio(self) -> None:
+        self.ended = True
+
+    async def receive_text(self):
+        if not self._partial_events:
+            return TextEnd()
+        return self._partial_events.pop(0)
+
+    async def transcribe_final(self) -> str:
+        self.final_transcribed = True
+        return self._final_text
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class FakeStt:
-    def __init__(self, session_text_events=None) -> None:
+    def __init__(self, session_text_events=None, streaming_sessions=None) -> None:
         self.started = False
         self.closed = False
         self.sessions = []
+        self.streaming_sessions = []
         self._session_text_events = list(session_text_events or [])
+        self._streaming_sessions = list(streaming_sessions or [])
 
     async def start(self) -> None:
         self.started = True
@@ -151,6 +194,11 @@ class FakeStt:
         text_events = self._session_text_events.pop(0) if self._session_text_events else None
         session = FakeSttSession(text_events)
         self.sessions.append(session)
+        return session
+
+    async def create_streaming_session(self, session_id: str):
+        session = self._streaming_sessions.pop(0) if self._streaming_sessions else FakeStreamingSttSession()
+        self.streaming_sessions.append(session)
         return session
 
     async def close(self) -> None:
@@ -291,6 +339,167 @@ def test_microphone_manager_sends_transcript_to_agent_and_speaks_reply() -> None
         ]
 
     asyncio.run(run())
+
+
+def test_microphone_manager_opens_configured_microphone_in_open_mic_mode() -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        agent = FakeAgent()
+        tts = FakeTts()
+        stt = FakeStt()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=stt,
+            tts=tts,
+            agent=agent,
+            follow_up_timeout_seconds=0.1,
+            open_microphones={"office"},
+        )
+
+        await manager.start()
+        await asyncio.wait_for(tts.spoke.wait(), timeout=1)
+        await manager.close()
+
+        assert agent.messages == ["cześć"]
+        assert len(stt.sessions) == 0
+        assert len(stt.streaming_sessions) == 1
+        assert stt.streaming_sessions[0].audio_chunks == [PcmAudioChunk(data=b"audio")]
+        assert stt.streaming_sessions[0].ended is True
+        assert stt.streaming_sessions[0].final_transcribed is True
+        assert microphone.sent_audio_events == [
+            StartOpenMicListening(),
+            MessageEndCue(),
+            AudioStart(rate=22050, width=2, channels=1, volume=1.0),
+            AudioChunk(data=b"reply-audio"),
+            AudioEnd(),
+            StartOpenMicListening(),
+        ]
+
+    asyncio.run(run())
+
+
+def test_microphone_manager_discards_open_mic_speech_without_wake_phrase() -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        stt = FakeStt(
+            streaming_sessions=[
+                FakeStreamingSttSession(
+                    partial_events=[
+                        TextPartial(
+                            text="to jest tło",
+                            audio_start_seconds=0.0,
+                            audio_end_seconds=1.0,
+                            duration_seconds=1.0,
+                        ),
+                        TextEnd(),
+                    ],
+                    final_text="to jest tło",
+                )
+            ]
+        )
+        agent = FakeAgent()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=stt,
+            tts=FakeTts(),
+            agent=agent,
+            follow_up_timeout_seconds=0.1,
+            open_microphones={"office"},
+        )
+
+        await manager.start()
+        await asyncio.wait_for(
+            _wait_until(lambda: len(microphone.sent_audio_events) >= 2),
+            timeout=1,
+        )
+        await manager.close()
+
+        assert agent.messages == []
+        assert not any(isinstance(event, MessageEndCue) for event in microphone.sent_audio_events)
+        assert microphone.sent_audio_events == [
+            StartOpenMicListening(),
+            StartOpenMicListening(),
+        ]
+
+    asyncio.run(run())
+
+
+def test_microphone_manager_accepts_open_mic_wake_phrase_found_only_in_final() -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        stt = FakeStt(
+            streaming_sessions=[
+                FakeStreamingSttSession(
+                    partial_events=[TextEnd()],
+                    final_text="Ryszardzie, włącz muzykę",
+                )
+            ]
+        )
+        agent = FakeAgent()
+        tts = FakeTts()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=stt,
+            tts=tts,
+            agent=agent,
+            follow_up_timeout_seconds=0.1,
+            open_microphones={"office"},
+        )
+
+        await manager.start()
+        await asyncio.wait_for(tts.spoke.wait(), timeout=1)
+        await manager.close()
+
+        assert agent.messages == ["włącz muzykę"]
+        assert microphone.sent_audio_events[0] == StartOpenMicListening()
+        assert microphone.sent_audio_events[1] == MessageEndCue()
+
+    asyncio.run(run())
+
+
+def test_microphone_manager_open_mic_partial_logs_do_not_include_background_text(caplog) -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=FakeStt(
+                streaming_sessions=[
+                    FakeStreamingSttSession(
+                        partial_events=[
+                            TextPartial(
+                                text="tajne tło",
+                                audio_start_seconds=0.0,
+                                audio_end_seconds=1.0,
+                                duration_seconds=1.0,
+                            ),
+                            TextEnd(),
+                        ],
+                        final_text="tajne tło",
+                    )
+                ]
+            ),
+            tts=FakeTts(),
+            agent=FakeAgent(),
+            follow_up_timeout_seconds=0.1,
+            open_microphones={"office"},
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="ai_server.microphones.manager"):
+            await manager.start()
+            await asyncio.wait_for(
+                _wait_until(lambda: len(microphone.sent_audio_events) >= 2),
+                timeout=1,
+            )
+            await manager.close()
+
+    asyncio.run(run())
+
+    assert "open-mic partial transcript chars=9" in caplog.text
+    assert "tajne tło" not in caplog.text
+    assert all(
+        record.levelno < logging.INFO or "open-mic" not in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_microphone_manager_rearms_wake_word_after_empty_wake_transcript() -> None:

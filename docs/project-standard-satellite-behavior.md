@@ -29,8 +29,11 @@ ESPHome satellites must expose these API services when the hardware can play loc
 - `play_message_end_cue`
 - `play_conversation_timeout_cue`
 - `start_follow_up_listening`
+- `start_open_mic_listening`
 
 The AI server uses these service names to keep follow-up conversations and end-of-message feedback consistent across satellite models.
+The open-mic service is used only for microphones configured with `open_mic: true`; other microphones continue to use local wake-word mode.
+In open-mic mode, satellites should not play a wake-recognized cue when the wake phrase is first detected in partial STT. The server plays `play_message_end_cue` only after end-of-speech and wake-phrase acceptance.
 
 ## Silence Calibration
 

@@ -58,8 +58,13 @@ stt:
   language: pl
   device: auto
   compute_type: default
+  local_files_only: true
   beam_size: 5
   capture_seconds: 5
+  partial_interval_seconds: 0.75
+  partial_window_seconds: 4.0
+  partial_beam_size: 1
+  partial_max_backlog_seconds: 2.0
 
 tts:
   voice: pl_PL-bass-high
@@ -87,6 +92,7 @@ speaker_recognition:
 #     - type: box3_esphome
 #       name: box3-office
 #       area: office
+#       open_mic: false
 #       initial_silence_seconds: 4
 #       end_silence_seconds: 1.1
 #       speech_peak_threshold: 700
@@ -95,6 +101,7 @@ speaker_recognition:
 #       address: piotr-box3.local
 #       api_key: secret
 microphones:
+  open_mic_wake_phrase: Ryszardzie
   initial_silence_seconds: 3
   end_silence_seconds: 0.9
   speech_peak_threshold: 500

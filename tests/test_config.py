@@ -319,6 +319,7 @@ microphones:
     address: piotr-box3-01-cbfaA8.local
     api_key: abc
     area: office
+    open_mic: true
   - type: box3_esphome
     name: box3-roaming
     address: 192.168.1.42
@@ -335,6 +336,7 @@ microphones:
             type="box3_esphome",
             name="box3-office",
             area="office",
+            open_mic=True,
             initial_silence_seconds=3.0,
             end_silence_seconds=0.9,
             follow_up_timeout_seconds=15.0,
@@ -363,6 +365,7 @@ agent:
 microphones:
   initial_silence_seconds: 4
   end_silence_seconds: 1.2
+  open_mic_wake_phrase: Alfredzie
   speech_peak_threshold: 600
   post_speech_ignore_seconds: 1.5
   follow_up_timeout_seconds: 12.5
@@ -382,6 +385,7 @@ microphones:
     config = load_config_from_yaml(config_path)
 
     assert config.microphone_defaults == MicrophoneDefaultsConfig(
+        open_mic_wake_phrase="Alfredzie",
         initial_silence_seconds=4.0,
         end_silence_seconds=1.2,
         speech_peak_threshold=600,
@@ -433,8 +437,13 @@ stt:
   language: pl
   device: cpu
   compute_type: int8
+  local_files_only: false
   beam_size: 3
   capture_seconds: 4.5
+  partial_interval_seconds: 0.25
+  partial_window_seconds: 2.5
+  partial_beam_size: 1
+  partial_max_backlog_seconds: 0.8
 tts:
   voice: pl_PL-darkman-medium
   volume: 0.7
@@ -448,8 +457,13 @@ tts:
         language="pl",
         device="cpu",
         compute_type="int8",
+        local_files_only=False,
         beam_size=3,
         capture_seconds=4.5,
+        partial_interval_seconds=0.25,
+        partial_window_seconds=2.5,
+        partial_beam_size=1,
+        partial_max_backlog_seconds=0.8,
     )
     assert config.tts == TtsConfig(voice="pl_PL-darkman-medium", volume=0.7)
 
@@ -604,6 +618,26 @@ agent:
             "stt.compute_type must be a non-empty string",
         ),
         (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  local_files_only: nope",
+            "stt.local_files_only must be a boolean",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  partial_interval_seconds: 0",
+            "stt.partial_interval_seconds must be a positive number",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  partial_window_seconds: no",
+            "stt.partial_window_seconds must be a positive number",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  partial_beam_size: 0",
+            "stt.partial_beam_size must be a positive integer",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  partial_max_backlog_seconds: -1",
+            "stt.partial_max_backlog_seconds must be a positive number",
+        ),
+        (
             "websocket:\n  port: 2137\nagent:\n  type: echo\ntts:\n  volume: 2",
             "tts.volume must be between",
         ),
@@ -636,6 +670,10 @@ agent:
             "microphones.initial_silence_seconds must be a positive number",
         ),
         (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  open_mic_wake_phrase: ''",
+            "microphones.open_mic_wake_phrase must be a non-empty string",
+        ),
+        (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  devices:\n    - type: box3_esphome\n      name: box\n      address: host\n      api_key: key\n      end_silence_seconds: nope",
             r"microphones\[0\].end_silence_seconds must be a positive number",
         ),
@@ -666,6 +704,10 @@ agent:
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  - type: box3_esphome\n    name: box",
             r"microphones\[0\].address must be a non-empty string for box3_esphome",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  - type: box3_esphome\n    name: box\n    open_mic: yes please",
+            r"microphones\[0\].open_mic must be a boolean",
         ),
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nmicrophones:\n  - type: box3_esphome\n    name: box\n    address: host",

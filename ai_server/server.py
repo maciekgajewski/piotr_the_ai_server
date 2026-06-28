@@ -28,6 +28,9 @@ THIRD_PARTY_LOGGERS = (
 QUIET_THIRD_PARTY_LOGGERS = (
     "aioesphomeapi.connection",
 )
+WARNING_THIRD_PARTY_LOGGERS = (
+    "faster_whisper",
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -56,6 +59,8 @@ def configure_logging(log_level: str) -> None:
     logging.getLogger().setLevel(level)
     for logger_name in THIRD_PARTY_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.INFO)
+    for logger_name in WARNING_THIRD_PARTY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
     for logger_name in QUIET_THIRD_PARTY_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.ERROR)
 
@@ -95,6 +100,7 @@ async def run_server(config: Config, ollama_url: str) -> None:
             user_settings=config.users,
             user_settings_provider=user_settings_provider,
             processing_update_spoken_cues=config.processing_updates.spoken_cues,
+            open_mic_wake_phrase=config.microphone_defaults.open_mic_wake_phrase,
         )
         app = create_app(config, agent, user_settings_provider=user_settings_provider)
         runner = web.AppRunner(app)

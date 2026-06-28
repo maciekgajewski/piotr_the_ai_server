@@ -15,11 +15,17 @@ DEFAULT_STT_MODEL = "medium"
 DEFAULT_STT_LANGUAGE = "pl"
 DEFAULT_STT_DEVICE = "auto"
 DEFAULT_STT_COMPUTE_TYPE = "default"
+DEFAULT_STT_LOCAL_FILES_ONLY = True
 DEFAULT_STT_BEAM_SIZE = 5
 DEFAULT_STT_CAPTURE_SECONDS = 5.0
+DEFAULT_STT_PARTIAL_INTERVAL_SECONDS = 0.75
+DEFAULT_STT_PARTIAL_WINDOW_SECONDS = 4.0
+DEFAULT_STT_PARTIAL_BEAM_SIZE = 1
+DEFAULT_STT_PARTIAL_MAX_BACKLOG_SECONDS = 2.0
 DEFAULT_TTS_VOICE = "pl_PL-bass-high"
 DEFAULT_TTS_VOLUME = 1.0
 DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS = 15.0
+DEFAULT_OPEN_MIC_WAKE_PHRASE = "Ryszardzie"
 DEFAULT_INITIAL_SILENCE_SECONDS = 3.0
 DEFAULT_END_SILENCE_SECONDS = 0.9
 DEFAULT_SPEECH_PEAK_THRESHOLD = 500
@@ -60,8 +66,13 @@ class SttConfig:
     language: str = DEFAULT_STT_LANGUAGE
     device: str = DEFAULT_STT_DEVICE
     compute_type: str = DEFAULT_STT_COMPUTE_TYPE
+    local_files_only: bool = DEFAULT_STT_LOCAL_FILES_ONLY
     beam_size: int = DEFAULT_STT_BEAM_SIZE
     capture_seconds: float = DEFAULT_STT_CAPTURE_SECONDS
+    partial_interval_seconds: float = DEFAULT_STT_PARTIAL_INTERVAL_SECONDS
+    partial_window_seconds: float = DEFAULT_STT_PARTIAL_WINDOW_SECONDS
+    partial_beam_size: int = DEFAULT_STT_PARTIAL_BEAM_SIZE
+    partial_max_backlog_seconds: float = DEFAULT_STT_PARTIAL_MAX_BACKLOG_SECONDS
 
 
 @dataclass(frozen=True)
@@ -89,6 +100,7 @@ class SpeakerRecognitionConfig:
 
 @dataclass(frozen=True)
 class MicrophoneDefaultsConfig:
+    open_mic_wake_phrase: str = DEFAULT_OPEN_MIC_WAKE_PHRASE
     initial_silence_seconds: float = DEFAULT_INITIAL_SILENCE_SECONDS
     end_silence_seconds: float = DEFAULT_END_SILENCE_SECONDS
     speech_peak_threshold: int = DEFAULT_SPEECH_PEAK_THRESHOLD
@@ -102,6 +114,7 @@ class MicrophoneConfig:
     name: str
     area: str | None
     options: dict[str, Any]
+    open_mic: bool = False
     initial_silence_seconds: float = DEFAULT_INITIAL_SILENCE_SECONDS
     end_silence_seconds: float = DEFAULT_END_SILENCE_SECONDS
     speech_peak_threshold: int = DEFAULT_SPEECH_PEAK_THRESHOLD
@@ -341,6 +354,10 @@ def _parse_stt_config(raw_config: Any) -> SttConfig:
     if not isinstance(compute_type, str) or not compute_type:
         raise ValueError("stt.compute_type must be a non-empty string")
 
+    local_files_only = raw_config.get("local_files_only", DEFAULT_STT_LOCAL_FILES_ONLY)
+    if not isinstance(local_files_only, bool):
+        raise ValueError("stt.local_files_only must be a boolean")
+
     beam_size = raw_config.get("beam_size", DEFAULT_STT_BEAM_SIZE)
     if not isinstance(beam_size, int) or isinstance(beam_size, bool) or beam_size <= 0:
         raise ValueError("stt.beam_size must be a positive integer")
@@ -349,13 +366,41 @@ def _parse_stt_config(raw_config: Any) -> SttConfig:
     if not isinstance(capture_seconds, (int, float)) or isinstance(capture_seconds, bool) or capture_seconds <= 0:
         raise ValueError("stt.capture_seconds must be a positive number")
 
+    partial_interval_seconds = _parse_optional_positive_float(
+        raw_config.get("partial_interval_seconds"),
+        DEFAULT_STT_PARTIAL_INTERVAL_SECONDS,
+        "stt.partial_interval_seconds",
+    )
+    partial_window_seconds = _parse_optional_positive_float(
+        raw_config.get("partial_window_seconds"),
+        DEFAULT_STT_PARTIAL_WINDOW_SECONDS,
+        "stt.partial_window_seconds",
+    )
+    partial_beam_size = raw_config.get("partial_beam_size", DEFAULT_STT_PARTIAL_BEAM_SIZE)
+    if (
+        not isinstance(partial_beam_size, int)
+        or isinstance(partial_beam_size, bool)
+        or partial_beam_size <= 0
+    ):
+        raise ValueError("stt.partial_beam_size must be a positive integer")
+    partial_max_backlog_seconds = _parse_optional_positive_float(
+        raw_config.get("partial_max_backlog_seconds"),
+        DEFAULT_STT_PARTIAL_MAX_BACKLOG_SECONDS,
+        "stt.partial_max_backlog_seconds",
+    )
+
     return SttConfig(
         model=model,
         language=language,
         device=device,
         compute_type=compute_type,
+        local_files_only=local_files_only,
         beam_size=beam_size,
         capture_seconds=float(capture_seconds),
+        partial_interval_seconds=partial_interval_seconds,
+        partial_window_seconds=partial_window_seconds,
+        partial_beam_size=partial_beam_size,
+        partial_max_backlog_seconds=partial_max_backlog_seconds,
     )
 
 
@@ -455,6 +500,10 @@ def _parse_microphones_config(
         if area is not None and (not isinstance(area, str) or not area):
             raise ValueError(f"microphones[{index}].area must be a non-empty string when provided")
 
+        open_mic = raw_microphone.get("open_mic", False)
+        if not isinstance(open_mic, bool):
+            raise ValueError(f"microphones[{index}].open_mic must be a boolean")
+
         initial_silence_seconds = _parse_optional_positive_float(
             raw_microphone.get("initial_silence_seconds"),
             defaults.initial_silence_seconds,
@@ -489,6 +538,7 @@ def _parse_microphones_config(
                 "type",
                 "name",
                 "area",
+                "open_mic",
                 "initial_silence_seconds",
                 "end_silence_seconds",
                 "speech_peak_threshold",
@@ -510,6 +560,7 @@ def _parse_microphones_config(
                 type=microphone_type,
                 name=name,
                 area=area,
+                open_mic=open_mic,
                 initial_silence_seconds=initial_silence_seconds,
                 end_silence_seconds=end_silence_seconds,
                 speech_peak_threshold=speech_peak_threshold,
@@ -526,7 +577,12 @@ def _parse_microphone_defaults(
     raw_config: dict[str, Any],
     legacy_follow_up_timeout_seconds: float,
 ) -> MicrophoneDefaultsConfig:
+    open_mic_wake_phrase = raw_config.get("open_mic_wake_phrase", DEFAULT_OPEN_MIC_WAKE_PHRASE)
+    if not isinstance(open_mic_wake_phrase, str) or not open_mic_wake_phrase:
+        raise ValueError("microphones.open_mic_wake_phrase must be a non-empty string")
+
     return MicrophoneDefaultsConfig(
+        open_mic_wake_phrase=open_mic_wake_phrase,
         initial_silence_seconds=_parse_optional_positive_float(
             raw_config.get("initial_silence_seconds"),
             DEFAULT_INITIAL_SILENCE_SECONDS,

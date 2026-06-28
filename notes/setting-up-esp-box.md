@@ -870,3 +870,32 @@ No firmware flashing has been done yet.
 - ESPHome reported `OTA successful` and `Successfully uploaded program.`
 - Post-flash check:
   - Ping to `192.168.0.180` succeeded with 2/2 replies.
+
+## 2026-06-27T21:07:47Z - Open-mic control service validated
+
+- Added ESPHome API service `start_open_mic_listening` for server-controlled open-mic startup.
+- The service stops wake-word handling, waits for media player and speaker idle, disables wake-word mode on the voice assistant, and starts continuous voice assistant capture.
+- Validated ESPHome configuration.
+- Rebuilt firmware and verified generated `main.cpp` contains:
+  - `start_open_mic_listening`
+  - `api::UserServiceTrigger` for `start_open_mic_listening`
+  - `voice_assistant::StartContinuousAction`
+- Firmware was compiled only; it was not flashed in this step.
+
+## 2026-06-27T21:14:58Z - Open-mic control service flashed OTA
+
+- Revalidated ESPHome configuration before flashing.
+- Verified generated `main.cpp` contains:
+  - `start_open_mic_listening`
+  - `voice_assistant::StartContinuousAction`
+- Flashed the office Box over OTA to `192.168.0.180`.
+- ESPHome reported `OTA successful` and `Successfully uploaded program.`
+- Post-flash check:
+  - Ping to `192.168.0.180` succeeded with 2/2 replies.
+## 2026-06-28T08:55:00Z - Open-mic display stays idle until server acceptance
+
+- Fixed open-mic satellite UI behavior where any loud VAD segment could switch the Box display into listening/thinking state before the server detected the wake phrase.
+- Added `server_controlled_open_mic_active` in `firmware/esphome/packages/esp32-s3-box-3-ryszardzie.yaml`.
+- While server-controlled open mic is active, `voice_assistant.on_listening`, `on_stt_vad_end`, and `on_stt_end` no longer update the display or request text.
+- `play_message_end_cue` now switches to the thinking phase only after the server accepts the open-mic segment and asks for the cue.
+- Validated with `esphome config` and `esphome compile`; generated `main.cpp` contains the open-mic guard and accepted-cue transition.

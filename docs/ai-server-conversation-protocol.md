@@ -32,10 +32,15 @@ Allowed client events:
 - `NewConversation` -> ReceivingMessage
 - endpoint closed -> Closed
 
-For microphone input, `WaitForNewConversation` maps to a silent `StartWakeWordListening` microphone
-output event. Wake-word detection then causes `NewConversation` and the first message stream to be sent
-automatically. Microphone drivers must not return to wake-word mode implicitly after a message or timeout;
-the transition is owned by this state.
+For microphone input, `WaitForNewConversation` maps to `StartWakeWordListening` by default, or
+`StartOpenMicListening` for microphones configured with `open_mic: true`. Wake-word detection or open-mic
+capture then causes `NewConversation` and the first message stream to be sent automatically. Microphone
+drivers must not return to wake-word or open-mic mode implicitly after a message or timeout; the transition
+is owned by this state.
+
+Open-mic mode has an additional acceptance step: the first `AudioStart` begins a private speech segment,
+but it does not create a conversation yet. The manager accepts the segment only after end-of-speech and a
+configured wake phrase match. See [Open-Mic Streaming Protocol](open-mic-protocol.md).
 
 ### ReceivingMessage
 
@@ -107,8 +112,9 @@ Microphone drivers expose raw audio input events to the server:
 The server sends microphone output/control events:
 
 - `StartWakeWordListening`: silent transition into wake-word mode. Sent only when Session has emitted `WaitForNewConversation`.
+- `StartOpenMicListening`: silent transition into open-mic mode. Sent only when Session has emitted `WaitForNewConversation` and the microphone has `open_mic: true`.
 - `StartFollowUpListening`: audible cue followed by transition into follow-up listening mode. Sent only when Session has emitted `RequestFollowUp`.
-- `MessageEndCue`: audible cue after a complete user audio stream has been captured.
+- `MessageEndCue`: audible cue after a complete user audio stream has been captured. In open-mic mode this cue is delayed until after end-of-speech and wake-phrase acceptance, so it does not interrupt the user.
 - `ConversationTimeoutCue`: audible cue when follow-up input times out.
 - `AudioStart`, `AudioChunk`, `AudioEnd`: assistant audio playback.
 
@@ -116,10 +122,12 @@ Mapping:
 
 | Session or conversation event | Microphone event/action |
 |---|---|
-| `WaitForNewConversation` | `StartWakeWordListening` |
-| first microphone `AudioStart` | `NewConversation`, then `MessageBegin` |
-| microphone `AudioChunk` stream | STT input; transcript fragments become `MessageFragment` |
-| microphone `AudioEnd` and transcript end | `MessageEnd`, then `MessageEndCue` |
+| `WaitForNewConversation` | `StartWakeWordListening`, or `StartOpenMicListening` when `open_mic: true` |
+| wake-word microphone `AudioStart` | `NewConversation`, then `MessageBegin` |
+| wake-word microphone `AudioChunk` stream | STT input; transcript fragments become `MessageFragment` |
+| wake-word microphone `AudioEnd` and transcript end | `MessageEnd`, then `MessageEndCue` |
+| open-mic `AudioStart` / `AudioChunk` / `AudioEnd` | private rolling STT; discard unless accepted by wake phrase |
+| accepted open-mic segment | `MessageEndCue`, then final transcript and optional speaker recognition, then `NewConversation` / `MessageBegin` / `MessageFragment` / `MessageEnd` |
 | assistant `MessageBegin` / `MessageFragment` / `MessageEnd` | playback `AudioStart` / `AudioChunk` / `AudioEnd` |
 | `RequestFollowUp` | `StartFollowUpListening`, including the follow-up cue |
 | follow-up microphone `AudioStart` / `AudioChunk` / `AudioEnd` | `MessageBegin` / `MessageFragment` / `MessageEnd`, then `MessageEndCue` |

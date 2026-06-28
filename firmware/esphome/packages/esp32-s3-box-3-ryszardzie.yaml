@@ -83,6 +83,10 @@ api:
       then:
         - script.execute: start_follow_up_listening
         - script.wait: start_follow_up_listening
+    - service: start_open_mic_listening
+      then:
+        - script.execute: start_open_mic_listening
+        - script.wait: start_open_mic_listening
   on_client_connected:
     - script.execute: draw_display
   on_client_disconnected:
@@ -297,22 +301,34 @@ voice_assistant:
   auto_gain: 31dBFS
   volume_multiplier: 2.0
   on_listening:
-    - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
-    - text_sensor.template.publish:
-        id: text_request
-        state: "..."
-    - text_sensor.template.publish:
-        id: text_response
-        state: "..."
-    - script.execute: draw_display
+    - if:
+        condition:
+          lambda: return !id(server_controlled_open_mic_active);
+        then:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+          - text_sensor.template.publish:
+              id: text_request
+              state: "..."
+          - text_sensor.template.publish:
+              id: text_response
+              state: "..."
+          - script.execute: draw_display
   on_stt_vad_end:
-    - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
-    - script.execute: draw_display
+    - if:
+        condition:
+          lambda: return !id(server_controlled_open_mic_active);
+        then:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+          - script.execute: draw_display
   on_stt_end:
-    - text_sensor.template.publish:
-        id: text_request
-        state: !lambda return x;
-    - script.execute: draw_display
+    - if:
+        condition:
+          lambda: return !id(server_controlled_open_mic_active);
+        then:
+          - text_sensor.template.publish:
+              id: text_request
+              state: !lambda return x;
+          - script.execute: draw_display
   on_tts_start:
     - text_sensor.template.publish:
         id: text_response
@@ -411,6 +427,12 @@ script:
   - id: play_message_end_cue
     mode: restart
     then:
+      - if:
+          condition:
+            lambda: return id(server_controlled_open_mic_active);
+          then:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+            - script.execute: draw_display
       - media_player.speaker.play_on_device_media_file:
           media_file: message_end_sound
           announcement: true
@@ -449,6 +471,7 @@ script:
   - id: start_follow_up_listening
     mode: restart
     then:
+      - lambda: id(server_controlled_open_mic_active) = false;
       - lambda: id(server_controlled_follow_up_starting) = true;
       - script.execute: stop_wake_word
       - wait_until:
@@ -469,6 +492,26 @@ script:
             - voice_assistant.start:
                 wake_word: follow_up
       - lambda: id(server_controlled_follow_up_starting) = false;
+
+  - id: start_open_mic_listening
+    mode: restart
+    then:
+      - lambda: id(server_controlled_open_mic_active) = true;
+      - script.execute: stop_wake_word
+      - wait_until:
+          condition:
+            and:
+              - not:
+                  media_player.is_announcing:
+              - not:
+                  speaker.is_playing:
+          timeout: 5s
+      - if:
+          condition:
+            switch.is_off: mute
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - voice_assistant.start_continuous:
 
   - id: play_follow_up_listening_cue
     mode: restart
@@ -639,6 +682,7 @@ script:
   # Starts either mWW or the streaming wake word, depending on the configured location
   - id: start_wake_word
     then:
+      - lambda: id(server_controlled_open_mic_active) = false;
       - if:
           condition:
             and:
@@ -674,6 +718,7 @@ script:
   # Starts a normal voice assistant run from the red touch button below the screen.
   - id: start_button_voice_assistant
     then:
+      - lambda: id(server_controlled_open_mic_active) = false;
       - script.execute: stop_wake_word
       - delay: 200ms
       - lambda: id(va).set_use_wake_word(false);
@@ -800,6 +845,10 @@ globals:
     restore_value: false
     initial_value: ${voice_assist_not_ready_phase_id}
   - id: server_controlled_follow_up_starting
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: server_controlled_open_mic_active
     type: bool
     restore_value: false
     initial_value: "false"

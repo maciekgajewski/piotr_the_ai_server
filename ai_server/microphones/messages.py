@@ -36,6 +36,11 @@ class StartWakeWordListening:
 
 
 @dataclass(frozen=True)
+class StartOpenMicListening:
+    pass
+
+
+@dataclass(frozen=True)
 class StartFollowUpListening:
     pass
 
@@ -52,6 +57,7 @@ MicrophoneOutputEvent: TypeAlias = (
     | AudioEnd
     | MessageEndCue
     | StartWakeWordListening
+    | StartOpenMicListening
     | StartFollowUpListening
     | ConversationTimeoutCue
 )

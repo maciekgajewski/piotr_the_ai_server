@@ -17,6 +17,7 @@ from typing import Any
 from ai_server.config import MicrophoneConfig
 from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioEvent, AudioStart, ConversationTimeoutCue
 from ai_server.microphones.messages import MessageEndCue, MicrophoneOutputEvent, StartFollowUpListening
+from ai_server.microphones.messages import StartOpenMicListening
 from ai_server.microphones.messages import StartWakeWordListening
 from ai_server.microphones.interfaces import MicrophoneUnavailable
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
@@ -40,6 +41,7 @@ VOICE_ASSISTANT_REARM_DELAY_SECONDS = 0.2
 PLAY_MESSAGE_END_CUE_SERVICE = "play_message_end_cue"
 PLAY_CONVERSATION_TIMEOUT_CUE_SERVICE = "play_conversation_timeout_cue"
 START_FOLLOW_UP_LISTENING_SERVICE = "start_follow_up_listening"
+START_OPEN_MIC_LISTENING_SERVICE = "start_open_mic_listening"
 FOLLOW_UP_WAKE_WORD = "follow_up"
 
 
@@ -154,6 +156,14 @@ class Box3EsphomeMicrophone:
                 self._voice_assistant_state(),
             )
             await self._start_wake_word_listening()
+            return
+        if isinstance(event, StartOpenMicListening):
+            self._logger.debug(
+                "requesting ESPHome satellite open-mic listening state=%s",
+                self._voice_assistant_state(),
+            )
+            await self._finish_voice_assistant_run()
+            await self._execute_api_service(START_OPEN_MIC_LISTENING_SERVICE)
             return
         if isinstance(event, StartFollowUpListening):
             self._logger.debug(
@@ -362,7 +372,7 @@ class Box3EsphomeMicrophone:
             self._voice_assistant_state(),
             self._events.qsize(),
         )
-        self._logger.info(
+        self._logger.debug(
             "voice assistant stream started conversation_id=%s wake_word=%r flags=%s audio_settings=%s "
             "post_speech_ignore_seconds=%.2f",
             _conversation_id,
@@ -449,7 +459,7 @@ class Box3EsphomeMicrophone:
             _aborted,
             self._voice_assistant_state(),
         )
-        self._logger.info(
+        self._logger.debug(
             "voice assistant stream stop aborted=%s chunks=%s bytes=%s",
             _aborted,
             self._audio_chunk_count,
@@ -592,7 +602,7 @@ class Box3EsphomeMicrophone:
                 await task
 
         if not done:
-            self._logger.info(
+            self._logger.debug(
                 "max capture time reached seconds=%s chunks=%s bytes=%s",
                 capture_seconds,
                 self._audio_chunk_count,
@@ -610,7 +620,7 @@ class Box3EsphomeMicrophone:
                 candidate_seconds = now - self._speech_candidate_started_at
                 if candidate_seconds < SPEECH_START_SECONDS:
                     return
-                self._logger.info("speech detected peak=%s", peak)
+                self._logger.debug("speech detected peak=%s", peak)
             self._speech_started = True
             self._last_speech_at = now
             return
@@ -622,7 +632,7 @@ class Box3EsphomeMicrophone:
                 and now - self._stream_started_at >= self._initial_silence_seconds
                 and not self._speech_done.is_set()
             ):
-                self._logger.info(
+                self._logger.debug(
                     "initial silence timeout seconds=%.2f peak=%s",
                     self._initial_silence_seconds,
                     peak,
@@ -635,7 +645,7 @@ class Box3EsphomeMicrophone:
 
         silence_seconds = now - self._last_speech_at
         if silence_seconds >= self._end_silence_seconds and not self._speech_done.is_set():
-            self._logger.info(
+            self._logger.debug(
                 "end of speech detected silence_seconds=%.2f peak=%s",
                 silence_seconds,
                 peak,

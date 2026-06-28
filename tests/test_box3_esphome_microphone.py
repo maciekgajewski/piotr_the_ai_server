@@ -14,6 +14,7 @@ from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.drivers.box3_esphome import Box3EsphomeMicrophone
 from ai_server.microphones.interfaces import MicrophoneUnavailable
 from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, MessageEndCue, StartFollowUpListening
+from ai_server.microphones.messages import StartOpenMicListening
 from ai_server.microphones.messages import StartWakeWordListening
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 
@@ -596,6 +597,7 @@ def test_box3_microphone_executes_cue_and_follow_up_services(monkeypatch) -> Non
             return [], [
                 UserService("play_message_end_cue"),
                 UserService("start_follow_up_listening"),
+                UserService("start_open_mic_listening"),
             ]
 
         async def execute_service(self, service, data):
@@ -618,10 +620,12 @@ def test_box3_microphone_executes_cue_and_follow_up_services(monkeypatch) -> Non
         await microphone.send_output_event(MessageEndCue())
         await microphone.send_output_event(StartWakeWordListening())
         await microphone.send_output_event(StartFollowUpListening())
+        await microphone.send_output_event(StartOpenMicListening())
 
         assert microphone._client.executed == [
             ("play_message_end_cue", {}),
             ("start_follow_up_listening", {}),
+            ("start_open_mic_listening", {}),
         ]
 
     asyncio.run(run())
