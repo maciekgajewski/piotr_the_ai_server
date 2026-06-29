@@ -62,7 +62,7 @@ def test_polite_reply_sends_wrapped_prompt_and_returns_reply(caplog) -> None:
     session = FakeSession([FakeResponse({"response": "Dzień dobry!"})])
     agent = PoliteReplyAgent(model="qwen3:4b", session=session)
     endpoint = FakeConversationEndpoint([TextMessage(text="siema")])
-    conversation = Conversation(conversation_id="conversation-1", attributes={})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     with caplog.at_level(logging.DEBUG):
         asyncio.run(agent.run_conversation(conversation, endpoint))
@@ -97,7 +97,7 @@ def test_polite_reply_strips_thinking_block() -> None:
     session = FakeSession([FakeResponse({"response": "<think>sekret</think>\n\nDzień dobry!"})])
     agent = PoliteReplyAgent(model="qwen3:4b", session=session)
     endpoint = FakeConversationEndpoint([TextMessage(text="siema")])
-    conversation = Conversation(conversation_id="conversation-1", attributes={})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     asyncio.run(agent.run_conversation(conversation, endpoint))
 
@@ -108,7 +108,7 @@ def test_polite_reply_sends_generic_apology_on_ollama_error(caplog) -> None:
     session = FakeSession([FakeResponse({"error": "missing model"}, status=500)])
     agent = PoliteReplyAgent(model="qwen3:4b", session=session)
     endpoint = FakeConversationEndpoint([TextMessage(text="tajna wiadomość")])
-    conversation = Conversation(conversation_id="conversation-2", attributes={})
+    conversation = Conversation(conversation_id="conversation-2", attributes={"medium": "voice"})
 
     with caplog.at_level(logging.DEBUG):
         asyncio.run(agent.run_conversation(conversation, endpoint))

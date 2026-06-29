@@ -38,7 +38,7 @@ class WaitState:
 
 
 async def send_session_attributes(websocket, user: str | None, area: str | None) -> None:
-    attributes = {}
+    attributes = {"medium": "text"}
     if user:
         attributes["user"] = user
     if area:

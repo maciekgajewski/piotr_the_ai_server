@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ai_server.agent import Agent
-from ai_server.interfaces import CommunicationEndpoint, Conversation, ConversationEndpoint, EndpointClosed
+from ai_server.interfaces import CommunicationEndpoint, Conversation, ConversationEndpoint, ConversationMedium, EndpointClosed
 from ai_server.messages import ConversationEnded, ConversationInputEvent, ConversationOutputEvent, MessageBegin, MessageEnd
 from ai_server.messages import MessageFragment, NewConversation, ProcessingUpdate, RequestFollowUp, SessionAttributes, TextMessage
 from ai_server.messages import WaitForNewConversation, text_message_to_events
@@ -43,9 +43,10 @@ class Session:
                     f"{__name__}.Session[{self.session_id}].Conversation[{conversation.conversation_id}]"
                 )
                 conversation_logger.info(
-                    "started user=%r area=%r attributes=%s",
+                    "started user=%r area=%r medium=%s attributes=%s",
                     conversation.user,
                     conversation.area,
+                    conversation.medium.value,
                     conversation.attributes,
                 )
                 try:
@@ -62,11 +63,13 @@ class Session:
         event = await self.endpoint.receive()
         assert isinstance(event, SessionAttributes), f"expected SessionAttributes, got {type(event).__name__}"
         self.attributes = _merge_attributes(self.attributes or {}, event.attributes)
+        _assert_valid_medium(self.attributes)
         await self._assert_known_user(self.attributes.get("user"))
         self._logger.info(
-            "session attributes user=%r area=%r attributes=%s",
+            "session attributes user=%r area=%r medium=%r attributes=%s",
             self.attributes.get("user"),
             self.attributes.get("area"),
+            self.attributes.get("medium"),
             self.attributes,
         )
 
@@ -251,3 +254,12 @@ def _merge_attributes(base: dict[str, str], overrides: dict[str, str]) -> dict[s
     merged = dict(base)
     merged.update(overrides)
     return merged
+
+
+def _assert_valid_medium(attributes: dict[str, str]) -> None:
+    raw_medium = attributes.get("medium")
+    try:
+        assert raw_medium is not None
+        ConversationMedium(raw_medium)
+    except (AssertionError, ValueError) as exc:
+        raise AssertionError(f"conversation.medium must be one of: voice, text; got {raw_medium!r}") from exc

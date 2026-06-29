@@ -286,6 +286,59 @@ class FakeWikipediaClient:
                 }
         return {}
 
+    async def wikidata_claims_by_property_query(
+        self,
+        wikibase_item: str,
+        property_query: str,
+        *,
+        language: str | None = None,
+        limit: int = 8,
+    ) -> dict[str, Any]:
+        del language, limit
+        for article in self._articles.values():
+            if article.wikibase_item != wikibase_item:
+                continue
+            if "birth" in property_query.casefold() or "urod" in property_query.casefold():
+                return {
+                    "id": wikibase_item,
+                    "property_query": property_query,
+                    "property_candidates": [
+                        {
+                            "property_id": "P569",
+                            "label": "date of birth",
+                            "description": "date on which the subject was born",
+                            "language": "en",
+                            "url": "https://www.wikidata.org/wiki/Property:P569",
+                        }
+                    ],
+                    "claims": [
+                        {
+                            "property_id": "P569",
+                            "property": {
+                                "property_id": "P569",
+                                "label": "date of birth",
+                                "description": "date on which the subject was born",
+                                "language": "en",
+                                "url": "https://www.wikidata.org/wiki/Property:P569",
+                            },
+                            "values": [
+                                {
+                                    "datatype": "time",
+                                    "value": {
+                                        "time": f"+{article.birth_year}-01-01T00:00:00Z" if article.birth_year is not None else "",
+                                        "precision": 9,
+                                        "calendar": "http://www.wikidata.org/entity/Q1985727",
+                                    },
+                                }
+                            ],
+                        }
+                    ]
+                    if article.birth_year is not None
+                    else [],
+                }
+            return {"id": wikibase_item, "property_query": property_query, "property_candidates": [], "claims": []}
+        return {}
+
     async def summary_for_query(self, query: str) -> WikipediaArticle:
         self.queries.append(query)
         article = self._articles.get(_normalized(query))
@@ -843,9 +896,10 @@ def _partial_match(expected: Any, actual: Any) -> bool:
 def _conversation(raw: dict[str, Any], settings: dict[str, Any], conversation_id: str) -> Conversation:
     area = _str_or_default(raw.get("area"), settings["area"])
     user = _str_or_default(raw.get("user"), settings["user"])
+    medium = _str_or_default(raw.get("medium"), "voice")
     return Conversation(
         conversation_id=conversation_id,
-        attributes={"area": area, "user": user},
+        attributes={"medium": medium, "area": area, "user": user},
         state={"user_settings": _user_settings_for(user, _dict_or_empty(settings.get("users")))},
     )
 

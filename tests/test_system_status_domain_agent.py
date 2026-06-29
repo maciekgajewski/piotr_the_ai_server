@@ -125,7 +125,7 @@ def test_system_status_domain_agent_refuses_anonymous_user(tmp_path):
         auto_start=True,
     )
 
-    result = asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={}), _task("quick_check"), {}))
+    result = asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"medium": "voice"}), _task("quick_check"), {}))
 
     assert result == {
         "status": "failed",
@@ -162,7 +162,7 @@ def test_system_status_domain_agent_calls_llm_for_green_reply(tmp_path):
         ollama_connection=FakeOllamaConnection(),
         auto_start=False,
     )
-    conversation = Conversation(conversation_id="c1", attributes={"user": "Krzysztof"})
+    conversation = Conversation(conversation_id="c1", attributes={"medium": "voice", "user": "Krzysztof"})
 
     result = asyncio.run(agent.run_task(conversation, _task("quick_check"), {}))
 
@@ -170,6 +170,8 @@ def test_system_status_domain_agent_calls_llm_for_green_reply(tmp_path):
     assert result["final_reply_mode"] == "verbatim"
     payload = json.loads(loop_factory.loop.user_message)
     assert payload["conversation"]["user"] == "Krzysztof"
+    assert payload["conversation"]["medium"] == "voice"
+    assert "numbers and dates as Polish words" in payload["conversation"]["reply_style"]
     assert payload["health_status"] == "ok"
 
 
@@ -195,7 +197,7 @@ def test_system_status_domain_agent_uses_fallback_model_for_ok_status(tmp_path):
         auto_start=False,
     )
 
-    asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), _task("quick_check"), {}))
+    asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"medium": "voice", "user": "Krzysztof"}), _task("quick_check"), {}))
 
     assert loop_factory.config.model == "small"
     assert loop_factory.config.fallback_model == "large"
@@ -226,7 +228,7 @@ def test_system_status_domain_agent_uses_main_model_for_warning_status(tmp_path)
         auto_start=False,
     )
 
-    asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), _task("summary"), {}))
+    asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"medium": "voice", "user": "Krzysztof"}), _task("summary"), {}))
 
     assert loop_factory.config.model == "large"
     assert loop_factory.config.fallback_model == "small"
@@ -257,7 +259,7 @@ def test_system_status_domain_agent_logs_task_and_result(tmp_path, caplog):
     )
 
     with caplog.at_level(logging.INFO, logger="ai_server.domain_agents.system_status"):
-        asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), _task("quick_check"), {}))
+        asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"medium": "voice", "user": "Krzysztof"}), _task("quick_check"), {}))
 
     assert "running system status task conversation_id=c1 task_id=t1 intent=quick_check snapshot_status=ok issue_count=0" in caplog.text
     assert "system status DSA LLM request conversation_id=c1 task_id=t1 cloud_model=qwen3:4b local_model=None intent=quick_check" in caplog.text
@@ -293,7 +295,7 @@ def test_system_status_domain_agent_mentions_many_issue_offer_context(tmp_path):
         auto_start=False,
     )
 
-    result = asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), _task("summary"), {}))
+    result = asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"medium": "voice", "user": "Krzysztof"}), _task("summary"), {}))
 
     assert "dłuższy raport" in result["text"]
     payload = json.loads(loop_factory.loop.user_message)
@@ -310,7 +312,7 @@ def test_system_status_domain_agent_falls_back_on_llm_failure(tmp_path):
         auto_start=False,
     )
 
-    result = asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"user": "Krzysztof"}), _task("quick_check"), {}))
+    result = asyncio.run(agent.run_task(Conversation(conversation_id="c1", attributes={"medium": "voice", "user": "Krzysztof"}), _task("quick_check"), {}))
 
     assert result["status"] == "ok"
     assert result["health_status"] == "ok"

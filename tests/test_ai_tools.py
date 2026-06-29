@@ -72,7 +72,7 @@ def test_tool_run_stubs_send_default_reply() -> None:
     config = AgentConfig(type="assistant", options={"intent_router_model": "llama3.2:3b"})
     tool = CalculatorTool(config)
     endpoint = FakeConversationEndpoint([])
-    conversation = Conversation(conversation_id="conversation-1", attributes={})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     asyncio.run(tool.run(conversation, endpoint, TextMessage(text="zrób coś")))
 
@@ -95,7 +95,7 @@ def test_time_tool_logs_locale_failure(monkeypatch, caplog) -> None:
     )
     tool = TimeTool(config)
     endpoint = FakeConversationEndpoint([])
-    conversation = Conversation(conversation_id="conversation-1", attributes={})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     with caplog.at_level("ERROR"):
         asyncio.run(tool.run(conversation, endpoint, TextMessage(text="która godzina?")))
@@ -122,7 +122,7 @@ def test_home_assistant_tool_runs_local_agent_loop_with_context(monkeypatch) -> 
     endpoint = FakeConversationEndpoint([])
     conversation = Conversation(
         conversation_id="conversation-1",
-        attributes={"area": "office", "user": "maciek"},
+        attributes={"medium": "voice", "area": "office", "user": "maciek"},
     )
 
     asyncio.run(tool.run(conversation, endpoint, TextMessage(text="włącz klimę")))
@@ -144,7 +144,7 @@ def test_home_assistant_tool_uses_processing_update_interval_from_factory(monkey
         processing_updates=ProcessingUpdatesConfig(interval_seconds=2.5),
     )
     endpoint = FakeConversationEndpoint([])
-    conversation = Conversation(conversation_id="conversation-1", attributes={})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     asyncio.run(tools["home_assistant"].run(conversation, endpoint, TextMessage(text="włącz klimę")))
 

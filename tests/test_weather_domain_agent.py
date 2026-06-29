@@ -238,7 +238,7 @@ def test_weather_domain_agent_formats_simple_current_weather() -> None:
 
     result = asyncio.run(
         agent.run_task(
-            Conversation(conversation_id="c1", attributes={}),
+            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
             {"id": "t1", "domain": "weather", "command": {"tool": "get_weather_now", "query": "Pogoda?"}},
             {},
         )
@@ -281,7 +281,7 @@ def test_weather_domain_agent_runs_agent_loop_for_non_fast_lane_query() -> None:
 
     result = asyncio.run(
         agent.run_task(
-            Conversation(conversation_id="c1", attributes={}),
+            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
             {
                 "id": "t1",
                 "domain": "weather",
@@ -334,7 +334,7 @@ def test_weather_domain_agent_removes_celsius_degree_symbol_from_agent_loop_repl
 
     result = asyncio.run(
         agent.run_task(
-            Conversation(conversation_id="c1", attributes={}),
+            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
             {"id": "t1", "domain": "weather", "command": {"query": "Jaka pogoda w Gdańsku?"}},
             {},
         )
@@ -358,7 +358,7 @@ def test_weather_domain_agent_rejects_non_json_agent_loop_reply() -> None:
 
     result = asyncio.run(
         agent.run_task(
-            Conversation(conversation_id="c1", attributes={}),
+            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
             {"id": "t1", "domain": "weather", "command": {"query": "Czy brać parasol?"}},
             {},
         )

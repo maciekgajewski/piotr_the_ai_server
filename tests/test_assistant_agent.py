@@ -43,7 +43,7 @@ def test_assistant_routes_message_to_selected_tool() -> None:
     )
     request = TextMessage(text="która godzina?")
     endpoint = FakeConversationEndpoint([request])
-    conversation = Conversation(conversation_id="conversation-1", attributes={})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     asyncio.run(agent.run_conversation(conversation, endpoint))
 

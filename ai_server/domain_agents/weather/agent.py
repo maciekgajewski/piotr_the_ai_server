@@ -24,6 +24,7 @@ from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL
+from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 from ai_server.utils.polish_numbers import polish_cardinal, polish_decimal
 from ai_server.utils.text import ascii_fold, normalize_text
 
@@ -133,6 +134,8 @@ class WeatherDomainAgent:
             "conversation": {
                 "user": conversation.user,
                 "area": conversation.area,
+                "medium": conversation.medium.value,
+                "reply_style": reply_style_instruction(conversation.medium),
                 "server_location": self._location,
                 "user_settings": conversation.user_settings,
             },
@@ -149,7 +152,7 @@ class WeatherDomainAgent:
         logger.debug("running Weather DSA agent loop task=%s active_context=%s", task, active_context)
         async with self._loop_factory(
             config=loop_config,
-            system_prompt=WEATHER_AGENT_SYSTEM_PROMPT,
+            system_prompt=system_prompt_with_reply_style(WEATHER_AGENT_SYSTEM_PROMPT, conversation.medium),
             tools=toolset,
             ollama_connection=self._ollama_connection,
             processing_update_callback=conversation.processing_update_callback,

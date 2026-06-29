@@ -24,7 +24,7 @@ def test_home_assistant_domain_agent_runs_one_agent_loop_task() -> None:
         connection=FakeHomeAssistantConnection(),
         loop_factory=fake_loop.factory,
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office", "user": "maciek"})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office", "user": "maciek"})
     task = {
         "id": "t1",
         "domain": "home_assistant",
@@ -53,8 +53,11 @@ def test_home_assistant_domain_agent_runs_one_agent_loop_task() -> None:
     assert fake_loop.config.fallback_model is None
     assert isinstance(fake_loop.tools, HomeAssistantDomainToolSet)
     assert "Current area: office" in fake_loop.system_prompt
+    assert "Reply style for conversation.medium=voice" in fake_loop.system_prompt
     payload = json.loads(fake_loop.messages[0])
     assert payload["task"] == task
+    assert payload["conversation"]["medium"] == "voice"
+    assert "numbers and dates as Polish words" in payload["conversation"]["reply_style"]
     assert "active_context" not in payload
     assert "execution_hints" in payload
     assert fake_loop.tools._tools._current_user_message == "ustaw ją na 22 stopnie"
@@ -75,7 +78,7 @@ def test_home_assistant_domain_agent_normalizes_hvac_mode_alias_before_availabil
         connection=FakeHomeAssistantConnection(),
         loop_factory=fake_loop.factory,
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office"})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office"})
     task = {
         "id": "t1",
         "domain": "home_assistant",
@@ -115,7 +118,7 @@ def test_home_assistant_domain_agent_answers_global_device_count_query_without_m
         connection=FakeHomeAssistantConnection(),
         loop_factory=fake_loop.factory,
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office"})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office"})
     task = {
         "id": "t1",
         "domain": "home_assistant",

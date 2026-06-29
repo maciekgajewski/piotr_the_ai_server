@@ -845,6 +845,7 @@ def test_microphone_manager_adds_recognized_user_to_new_conversation() -> None:
         await manager.close()
 
         assert agent.conversations[0].attributes["user"] == "Maciek"
+        assert agent.conversations[0].attributes["medium"] == "voice"
         assert agent.conversations[0].user_settings == {
             "voice_profile": "/profiles/maciek/speaker_profile.npz"
         }

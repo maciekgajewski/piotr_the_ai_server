@@ -10,6 +10,7 @@ from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.home_assistant.toolset import HomeAssistantToolSet
 from ai_server.interfaces import Conversation
+from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 
 
 PLANNING_PROMPT = """
@@ -197,6 +198,8 @@ class HomeAssistantDomainAgent:
             "conversation": {
                 "user": conversation.user,
                 "area": conversation.area,
+                "medium": conversation.medium.value,
+                "reply_style": reply_style_instruction(conversation.medium),
                 "user_settings": conversation.user_settings,
             },
         }
@@ -216,7 +219,7 @@ class HomeAssistantDomainAgent:
         logger.debug("running Home Assistant DSA task=%s active_context=%s", task, active_context)
         async with self._loop_factory(
             config=loop_config,
-            system_prompt=system_prompt,
+            system_prompt=system_prompt_with_reply_style(system_prompt, conversation.medium),
             tools=toolset,
             ollama_connection=self._ollama_connection,
             processing_update_callback=conversation.processing_update_callback,
@@ -253,7 +256,7 @@ class HomeAssistantDomainAgent:
                 "entities": [],
             }
         execution_result = toolset.last_execution_result
-        if execution_result is None and _task_requires_home_assistant_action(task):
+        if execution_result is None:
             logger.info(
                 "home_assistant DSA model returned without execute_home_assistant_task; executing stored task fallback "
                 "conversation_id=%s task_id=%s operation=%s",
@@ -822,13 +825,6 @@ def _clarification_result(question: str) -> dict[str, Any]:
         "clarification_question": question,
         "entities": [],
     }
-
-
-def _task_requires_home_assistant_action(task: DomainTask) -> bool:
-    command = task.get("command")
-    operation = command.get("operation") if isinstance(command, dict) else None
-    intent = operation.get("intent") if isinstance(operation, dict) else None
-    return intent in {"turn_on", "turn_off", "set_temperature", "set_hvac_mode", "set_brightness_percent", "adjust"}
 
 
 def _string_or_empty(value: Any) -> str:

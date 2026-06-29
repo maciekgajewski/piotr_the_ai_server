@@ -15,7 +15,7 @@ def test_current_time_domain_agent_uses_configured_timezone_and_location(tmp_pat
         cache_dir=tmp_path,
         now_factory=lambda zone: dt.datetime(2026, 5, 29, 14, 5, tzinfo=zone),
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     result = asyncio.run(
         agent.run_task(
@@ -39,7 +39,7 @@ def test_current_time_domain_agent_resolves_jacksonville_from_query(tmp_path: Pa
         cache_dir=tmp_path,
         now_factory=lambda zone: dt.datetime(2026, 5, 29, 8, 30, tzinfo=zone),
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     result = asyncio.run(
         agent.run_task(
@@ -61,7 +61,7 @@ def test_current_time_domain_agent_uses_geo_location_from_command(tmp_path: Path
         cache_dir=tmp_path,
         now_factory=lambda zone: dt.datetime(2026, 5, 29, 8, 30, tzinfo=zone),
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office"})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office"})
 
     result = asyncio.run(
         agent.run_task(
@@ -85,7 +85,7 @@ def test_current_time_domain_agent_uses_configured_timezone_when_model_copies_ar
         now_factory=lambda zone: dt.datetime(2026, 5, 30, 10, 4, tzinfo=zone),
         timezone_resolver=resolver,
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"area": "office"})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office"})
 
     result = asyncio.run(
         agent.run_task(
@@ -110,7 +110,7 @@ def test_current_time_domain_agent_formats_full_hour_as_words(tmp_path: Path) ->
         cache_dir=tmp_path,
         now_factory=lambda zone: dt.datetime(2026, 5, 30, 8, 0, tzinfo=zone),
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     result = asyncio.run(
         agent.run_task(
@@ -133,7 +133,7 @@ def test_current_time_domain_agent_trusts_command_geo_location_when_query_is_sho
         now_factory=lambda zone: dt.datetime(2026, 5, 30, 4, 46, tzinfo=zone),
         timezone_resolver=resolver,
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     result = asyncio.run(
         agent.run_task(
@@ -156,7 +156,7 @@ def test_current_time_domain_agent_handles_date_components(tmp_path: Path) -> No
         cache_dir=tmp_path,
         now_factory=lambda zone: dt.datetime(2026, 5, 29, 14, 5, tzinfo=zone),
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={})
+    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     result = asyncio.run(
         agent.run_task(

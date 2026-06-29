@@ -13,7 +13,7 @@ from ai_server import chat_client
 from ai_server.batch_ws_client import BatchWsClientOptions, run_batch_ws_client
 from ai_server.chat_client import ChatClientOptions
 from ai_server.config import AgentConfig, Config, WebsocketConfig
-from ai_server.interfaces import Conversation, ConversationEndpoint
+from ai_server.interfaces import Conversation, ConversationEndpoint, ConversationMedium
 from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, ProcessingUpdate, RequestFollowUp
 from ai_server.messages import SessionAttributes, SessionRejected, TextMessage, WaitForNewConversation, endpoint_event_from_json, endpoint_event_to_json
 from ai_server.messages import session_event_from_json, session_event_to_json, text_message_to_events
@@ -136,7 +136,7 @@ def test_websocket_applies_user_settings_from_provider_to_conversation() -> None
         try:
             async with ClientSession() as session:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"user": "Maciek"})))
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text", "user": "Maciek"})))
 
                     assert await _receive_session_event(websocket) == WaitForNewConversation()
 
@@ -152,6 +152,7 @@ def test_websocket_applies_user_settings_from_provider_to_conversation() -> None
             await runner.cleanup()
 
         assert provider.users == ["Maciek"]
+        assert agent.conversations[0].medium is ConversationMedium.TEXT
         assert agent.conversations[0].user_settings == {
             "media": {"playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"}}
         }
@@ -175,7 +176,7 @@ def test_websocket_forwards_processing_update() -> None:
         try:
             async with ClientSession() as session:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={})))
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
 
                     assert await _receive_session_event(websocket) == WaitForNewConversation()
 
@@ -209,7 +210,7 @@ def test_websocket_stays_open_during_slow_agent_with_client_heartbeat() -> None:
         try:
             async with ClientSession() as session:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat", heartbeat=0.05) as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={})))
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
 
                     assert await _receive_session_event(websocket) == WaitForNewConversation()
 
@@ -244,7 +245,7 @@ def test_websocket_drops_empty_message_before_agent() -> None:
         try:
             async with ClientSession() as session:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={})))
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
 
                     assert await _receive_session_event(websocket) == WaitForNewConversation()
 
@@ -357,7 +358,7 @@ def test_websocket_returns_to_new_conversation_without_requested_follow_up() -> 
         try:
             async with ClientSession() as session:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={})))
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
 
                     assert await _receive_session_event(websocket) == WaitForNewConversation()
 
@@ -393,7 +394,7 @@ def test_websocket_applies_explicit_user_and_user_settings_to_conversation() -> 
         try:
             async with ClientSession() as session:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"user": "Maciek"})))
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text", "user": "Maciek"})))
 
                     assert await _receive_session_event(websocket) == WaitForNewConversation()
 
@@ -417,6 +418,44 @@ def test_websocket_applies_explicit_user_and_user_settings_to_conversation() -> 
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("attributes", "reason"),
+    [
+        ({}, "conversation.medium must be one of: voice, text; got None"),
+        ({"medium": "phone"}, "conversation.medium must be one of: voice, text; got 'phone'"),
+    ],
+)
+def test_websocket_rejects_missing_or_invalid_medium(attributes, reason) -> None:
+    async def run() -> None:
+        port = _unused_port()
+        agent = CapturingAgent()
+        config = Config(
+            agent=AgentConfig(type="capturing", options={}),
+            websocket=WebsocketConfig(host="127.0.0.1", port=port),
+        )
+        app = create_app(config, agent)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
+        await site.start()
+
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes=attributes)))
+                    assert await _receive_session_event(websocket) == SessionRejected(reason=reason)
+                    message = await websocket.receive()
+
+                    assert message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING)
+                    assert websocket.close_code == WSCloseCode.PROTOCOL_ERROR
+        finally:
+            await runner.cleanup()
+
+        assert agent.conversations == []
+
+    asyncio.run(run())
+
+
 def test_websocket_rejects_unknown_session_user() -> None:
     async def run() -> None:
         port = _unused_port()
@@ -435,7 +474,7 @@ def test_websocket_rejects_unknown_session_user() -> None:
         try:
             async with ClientSession() as session:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"user": "Unknown"})))
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text", "user": "Unknown"})))
                     assert await _receive_session_event(websocket) == SessionRejected(reason="unknown user: Unknown")
                     message = await websocket.receive()
 
@@ -469,7 +508,7 @@ def test_websocket_request_follow_up_times_out_to_new_conversation() -> None:
         try:
             async with ClientSession() as session:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={})))
+                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
 
                     assert await _receive_session_event(websocket) == WaitForNewConversation()
 
@@ -871,7 +910,7 @@ def test_interactive_chat_prints_rejection_and_does_not_reconnect(monkeypatch, c
 
     assert connect_calls == 1
     assert rejected_websocket.closed
-    assert endpoint_event_from_json(rejected_websocket.sent[0]) == SessionAttributes(attributes={"user": "Unknown"})
+    assert endpoint_event_from_json(rejected_websocket.sent[0]) == SessionAttributes(attributes={"medium": "text", "user": "Unknown"})
     assert output == chat_client._style_client_text("Connection rejected: unknown user: Unknown.") + "\n"
 
 
@@ -934,7 +973,7 @@ def test_interactive_chat_exits_on_connection_drop_after_connect(monkeypatch, ca
 
     assert connect_calls == 1
     assert dropped_websocket.closed
-    assert endpoint_event_from_json(dropped_websocket.sent[0]) == SessionAttributes(attributes={})
+    assert endpoint_event_from_json(dropped_websocket.sent[0]) == SessionAttributes(attributes={"medium": "text"})
     assert output == chat_client._style_client_text("Connection lost: websocket closed.") + "\n"
 
 

@@ -113,7 +113,7 @@ class MicrophoneManager:
         logger = _microphone_logger(microphone)
         endpoint = MicrophoneAgentEndpoint()
         session_id = f"mic-{microphone.context.name}-{uuid.uuid4()}"
-        attributes = {}
+        attributes = {"medium": "voice"}
         if microphone.context.area:
             attributes["area"] = microphone.context.area
         session = Session(

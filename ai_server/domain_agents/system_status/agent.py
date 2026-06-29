@@ -9,6 +9,7 @@ from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
 from ai_server.domain_agents.system_status.collector import SystemStatusCollector
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL
+from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 
 
 PLANNING_PROMPT = """
@@ -167,6 +168,8 @@ class SystemStatusDomainAgent:
             "conversation": {
                 "user": conversation.user,
                 "area": conversation.area,
+                "medium": conversation.medium.value,
+                "reply_style": reply_style_instruction(conversation.medium),
                 "user_settings": conversation.user_settings,
             },
         }
@@ -196,7 +199,7 @@ class SystemStatusDomainAgent:
         )
         async with self._loop_factory(
             config=loop_config,
-            system_prompt=SYSTEM_STATUS_SYSTEM_PROMPT,
+            system_prompt=system_prompt_with_reply_style(SYSTEM_STATUS_SYSTEM_PROMPT, conversation.medium),
             tools=AgentCallableSet(),
             ollama_connection=self._ollama_connection,
             processing_update_callback=conversation.processing_update_callback,

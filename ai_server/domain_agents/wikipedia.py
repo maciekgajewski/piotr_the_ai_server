@@ -12,6 +12,7 @@ from aiohttp import ClientSession, ClientTimeout
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
 from ai_server.interfaces import Conversation
+from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 
 
 DEFAULT_LANGUAGES = ("pl", "en")
@@ -30,6 +31,8 @@ Your first assistant action must be a tool call to search_wikipedia.
 Do not return final JSON before at least one source tool has returned.
 If tool results do not contain enough information, say that the source data is insufficient or ask a clarification question.
 Keep the design source-oriented: Wikipedia and Wikidata are the current sources, but other encyclopedic sources may be added later.
+For exact factual values such as years, coordinates, identifiers, URLs, and place names, copy the source value exactly.
+Do not change decimal separators, signs, spellings, or digits when the task asks for an exact value.
 
 Recommended flow:
 1. Call search_wikipedia for the user's entity/topic, not for the requested property.
@@ -37,7 +40,9 @@ Recommended flow:
 2. Call get_wikipedia_summary for the best candidate.
 3. Use fields already returned by get_wikipedia_summary, such as coordinates, when they answer the question.
 4. Call get_wikidata_facts only when get_wikipedia_summary returned a wikibase_item for the selected article.
-5. Return final JSON only after the needed tool calls. Never return not_found before search_wikipedia returned no usable candidates.
+5. For facts where you do not know the exact Wikidata property id, call find_wikidata_claims with the
+   discovered wikibase_item and a short property query such as "GDP", "population", or "area".
+6. Return final JSON only after the needed tool calls. Never return not_found before search_wikipedia returned no usable candidates.
 
 Return only compact valid JSON with this shape:
 {
@@ -132,6 +137,8 @@ class WikipediaDomainAgent:
             "conversation": {
                 "user": conversation.user,
                 "area": conversation.area,
+                "medium": conversation.medium.value,
+                "reply_style": reply_style_instruction(conversation.medium),
                 "user_settings": conversation.user_settings,
             },
         }
@@ -148,7 +155,7 @@ class WikipediaDomainAgent:
         logger.debug("running Wikipedia DSA task=%s active_context=%s", task, active_context)
         async with self._loop_factory(
             config=loop_config,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt_with_reply_style(SYSTEM_PROMPT, conversation.medium),
             tools=toolset,
             ollama_connection=self._ollama_connection,
             processing_update_callback=conversation.processing_update_callback,
@@ -262,6 +269,43 @@ class WikipediaDomainToolSet(AgentCallableSet):
         self._logger.info("get_wikidata_facts item=%s properties=%s", wikibase_item, len(facts.get("claims", [])))
         return {"status": "ok" if facts else "not_found", "facts": facts}
 
+    @AgentCallableSet.tool(
+        description=(
+            "Resolve a natural-language Wikidata property query against a known Wikidata item and return matching claims. "
+            "Use this when you need a fact but do not know the exact Wikidata property id."
+        )
+    )
+    async def find_wikidata_claims(
+        self,
+        wikibase_item: Annotated[str, "Wikidata item id returned by get_wikipedia_summary, such as Q39."],
+        property_query: Annotated[str, "Short natural-language property query, such as GDP, population, area, or birth date."],
+        language: Annotated[str | None, "Optional Wikidata search language code such as pl or en."] = None,
+        limit: Annotated[int, "Maximum number of property candidates to inspect."] = 8,
+    ) -> dict[str, Any]:
+        if not wikibase_item.strip():
+            return {"status": "needs_clarification", "message": "Wikidata item id is empty."}
+        if wikibase_item.strip() not in self._known_wikibase_items:
+            return {
+                "status": "needs_summary",
+                "message": "Call get_wikipedia_summary first and use the wikibase_item returned by that tool.",
+            }
+        if not property_query.strip():
+            return {"status": "needs_clarification", "message": "Wikidata property query is empty."}
+        result = await self._client.wikidata_claims_by_property_query(
+            wikibase_item.strip(),
+            property_query.strip(),
+            language=language,
+            limit=max(1, min(limit, 20)),
+        )
+        self._logger.info(
+            "find_wikidata_claims item=%s query=%r candidates=%s claims=%s",
+            wikibase_item,
+            property_query,
+            len(result.get("property_candidates", [])),
+            len(result.get("claims", [])),
+        )
+        return {"status": "ok" if result.get("claims") else "not_found", "result": result}
+
 
 class WikipediaClient:
     def __init__(
@@ -302,6 +346,21 @@ class WikipediaClient:
         limit: int = 24,
     ) -> dict[str, Any]:
         return await self._wikidata_facts(wikibase_item, property_ids=property_ids, limit=limit)
+
+    async def wikidata_claims_by_property_query(
+        self,
+        wikibase_item: str,
+        property_query: str,
+        *,
+        language: str | None = None,
+        limit: int = 8,
+    ) -> dict[str, Any]:
+        return await self._wikidata_claims_by_property_query(
+            wikibase_item,
+            property_query,
+            language=language,
+            limit=limit,
+        )
 
     async def close(self) -> None:
         if self._owns_session and self._session is not None:
@@ -375,17 +434,7 @@ class WikipediaClient:
         property_ids: list[str] | None = None,
         limit: int = 24,
     ) -> dict[str, Any]:
-        if not wikibase_item:
-            return {}
-        try:
-            response = await self._fetch_json(f"https://www.wikidata.org/wiki/Special:EntityData/{quote(wikibase_item)}.json")
-        except Exception:
-            self._logger.debug("failed to fetch Wikidata facts item=%s", wikibase_item, exc_info=True)
-            return {}
-        if not isinstance(response, dict):
-            return {}
-        entities = response.get("entities")
-        entity = entities.get(wikibase_item) if isinstance(entities, dict) else None
+        entity = await self._wikidata_entity(wikibase_item)
         claims = entity.get("claims") if isinstance(entity, dict) else None
         if not isinstance(claims, dict):
             return {}
@@ -401,6 +450,95 @@ class WikipediaClient:
             "coordinates": _wikidata_coordinates(claims),
             "claims": _simplify_wikidata_claims(claims, property_ids=property_ids, limit=limit),
         }
+
+    async def _wikidata_claims_by_property_query(
+        self,
+        wikibase_item: str,
+        property_query: str,
+        *,
+        language: str | None,
+        limit: int,
+    ) -> dict[str, Any]:
+        entity = await self._wikidata_entity(wikibase_item)
+        claims = entity.get("claims") if isinstance(entity, dict) else None
+        if not isinstance(claims, dict):
+            return {}
+        candidates = await self._search_wikidata_properties(property_query, language=language, limit=limit)
+        matched_claims = []
+        for candidate in candidates:
+            if candidate.property_id not in claims:
+                continue
+            simplified_claims = _simplify_wikidata_claims(claims, property_ids=[candidate.property_id], limit=1)
+            if not simplified_claims:
+                continue
+            matched_claim = dict(simplified_claims[0])
+            matched_claim["property"] = candidate.to_json()
+            matched_claims.append(matched_claim)
+        return {
+            "id": wikibase_item,
+            "property_query": property_query,
+            "property_candidates": [candidate.to_json() for candidate in candidates],
+            "claims": matched_claims,
+        }
+
+    async def _wikidata_entity(self, wikibase_item: str) -> dict[str, Any]:
+        if not wikibase_item:
+            return {}
+        try:
+            response = await self._fetch_json(f"https://www.wikidata.org/wiki/Special:EntityData/{quote(wikibase_item)}.json")
+        except Exception:
+            self._logger.debug("failed to fetch Wikidata entity item=%s", wikibase_item, exc_info=True)
+            return {}
+        if not isinstance(response, dict):
+            return {}
+        entities = response.get("entities")
+        entity = entities.get(wikibase_item) if isinstance(entities, dict) else None
+        return entity if isinstance(entity, dict) else {}
+
+    async def _search_wikidata_properties(
+        self,
+        query: str,
+        *,
+        language: str | None,
+        limit: int,
+    ) -> list["WikidataPropertySearchResult"]:
+        if not query:
+            return []
+        candidates_by_id: dict[str, WikidataPropertySearchResult] = {}
+        for source_language in _preferred_languages(language, self._languages):
+            params = urlencode(
+                {
+                    "action": "wbsearchentities",
+                    "search": query,
+                    "language": source_language,
+                    "type": "property",
+                    "format": "json",
+                    "limit": str(max(1, min(limit, 50))),
+                }
+            )
+            try:
+                response = await self._fetch_json(f"https://www.wikidata.org/w/api.php?{params}")
+            except Exception:
+                self._logger.debug(
+                    "failed to search Wikidata properties query=%r language=%s",
+                    query,
+                    source_language,
+                    exc_info=True,
+                )
+                continue
+            if not isinstance(response, dict):
+                continue
+            raw_results = response.get("search")
+            if not isinstance(raw_results, list):
+                continue
+            for raw_result in raw_results:
+                candidate = _wikidata_property_search_result(raw_result, source_language)
+                if candidate is None or candidate.property_id in candidates_by_id:
+                    continue
+                candidates_by_id[candidate.property_id] = candidate
+                if len(candidates_by_id) >= limit:
+                    return list(candidates_by_id.values())
+        return list(candidates_by_id.values())
 
     async def _fetch_json(self, url: str) -> Any:
         session = self._session
@@ -460,6 +598,31 @@ class WikipediaSearchResult:
         }
 
 
+@dataclass(frozen=True)
+class WikidataPropertySearchResult:
+    property_id: str
+    label: str
+    description: str | None = None
+    aliases: tuple[str, ...] = ()
+    language: str | None = None
+    url: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "property_id": self.property_id,
+            "label": self.label,
+        }
+        if self.description:
+            result["description"] = self.description
+        if self.aliases:
+            result["aliases"] = list(self.aliases)
+        if self.language:
+            result["language"] = self.language
+        if self.url:
+            result["url"] = self.url
+        return result
+
+
 def _parse_domain_reply(content: str) -> dict[str, Any]:
     try:
         raw = json.loads(content)
@@ -484,11 +647,28 @@ def _parse_domain_reply(content: str) -> dict[str, Any]:
         raise ValueError("Wikipedia DSA reply entities must be a list of strings")
 
     parsed = dict(raw)
+    parsed["text"] = _ensure_source_title_in_text(text, parsed.get("title"))
     parsed["needs_clarification"] = needs_clarification
     parsed["clarification_question"] = clarification_question
     parsed["entities"] = entities
     parsed.setdefault("final_reply_mode", "verbatim")
     return parsed
+
+
+def _ensure_source_title_in_text(text: str, title: Any) -> str:
+    if not isinstance(title, str) or not title.strip():
+        return text
+    title_parts = [part.strip() for part in title.split(",") if part.strip()]
+    if not title_parts:
+        return text
+    normalized_text = _normalize_source_text(text)
+    if all(_normalize_source_text(part) in normalized_text for part in title_parts):
+        return text
+    return f"{text.rstrip()} Źródło: {title}."
+
+
+def _normalize_source_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).casefold()
 
 
 def _task_intent(task: DomainTask) -> str:
@@ -775,6 +955,29 @@ def _wikidata_aliases(raw_aliases: Any) -> dict[str, list[str]]:
     return aliases
 
 
+def _wikidata_property_search_result(raw_result: Any, language: str) -> WikidataPropertySearchResult | None:
+    if not isinstance(raw_result, dict):
+        return None
+    property_id = raw_result.get("id")
+    label = raw_result.get("label")
+    if not isinstance(property_id, str) or not property_id.startswith("P"):
+        return None
+    if not isinstance(label, str) or not label:
+        return None
+    raw_aliases = raw_result.get("aliases")
+    aliases = tuple(alias for alias in raw_aliases if isinstance(alias, str) and alias) if isinstance(raw_aliases, list) else ()
+    description = raw_result.get("description")
+    url = raw_result.get("concepturi")
+    return WikidataPropertySearchResult(
+        property_id=property_id,
+        label=label,
+        description=description if isinstance(description, str) and description else None,
+        aliases=aliases,
+        language=language,
+        url=url if isinstance(url, str) and url else f"https://www.wikidata.org/wiki/Property:{property_id}",
+    )
+
+
 def _simplify_wikidata_claims(
     claims: dict[str, Any],
     *,
@@ -795,14 +998,59 @@ def _simplify_wikidata_claims(
             datavalue = mainsnak.get("datavalue")
             if not isinstance(datavalue, dict):
                 continue
+            value = {
+                "datatype": mainsnak.get("datatype"),
+                "value": _simplify_wikidata_value(datavalue.get("value")),
+            }
+            rank = raw_claim.get("rank") if isinstance(raw_claim, dict) else None
+            if isinstance(rank, str) and rank:
+                value["rank"] = rank
+            qualifiers = _simplify_wikidata_snaks(raw_claim.get("qualifiers") if isinstance(raw_claim, dict) else None)
+            if qualifiers:
+                value["qualifiers"] = qualifiers
+            references = _simplify_wikidata_references(raw_claim.get("references") if isinstance(raw_claim, dict) else None)
+            if references:
+                value["references"] = references
+            values.append(value)
+        if values:
+            simplified.append({"property_id": property_id, "values": values})
+    return simplified
+
+
+def _simplify_wikidata_references(raw_references: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_references, list):
+        return []
+    references = []
+    for raw_reference in raw_references[:2]:
+        snaks = raw_reference.get("snaks") if isinstance(raw_reference, dict) else None
+        simplified_snaks = _simplify_wikidata_snaks(snaks)
+        if simplified_snaks:
+            references.append({"snaks": simplified_snaks})
+    return references
+
+
+def _simplify_wikidata_snaks(raw_snaks: Any) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(raw_snaks, dict):
+        return {}
+    simplified = {}
+    for property_id, raw_property_snaks in raw_snaks.items():
+        if not isinstance(property_id, str) or not isinstance(raw_property_snaks, list):
+            continue
+        values = []
+        for raw_snak in raw_property_snaks[:3]:
+            if not isinstance(raw_snak, dict):
+                continue
+            datavalue = raw_snak.get("datavalue")
+            if not isinstance(datavalue, dict):
+                continue
             values.append(
                 {
-                    "datatype": mainsnak.get("datatype"),
+                    "datatype": raw_snak.get("datatype"),
                     "value": _simplify_wikidata_value(datavalue.get("value")),
                 }
             )
         if values:
-            simplified.append({"property_id": property_id, "values": values})
+            simplified[property_id] = values
     return simplified
 
 

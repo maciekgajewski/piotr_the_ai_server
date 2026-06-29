@@ -12,10 +12,11 @@ from ai_server.agent_loop.agent_callable_set import to_json_value
 from ai_server.config import ServerConfig
 from ai_server.domain_agents import DomainAgent, DomainTask, QueryCapability
 from ai_server.home_assistant.interfaces import HomeAssistantInventory
-from ai_server.interfaces import Conversation, ConversationEndpoint
+from ai_server.interfaces import Conversation, ConversationEndpoint, ConversationMedium
 from ai_server.messages import ProcessingUpdate, RequestFollowUp, TextMessage
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
 from ai_server.orchestrator.known_utterances import KnownUtteranceTasks, collect_known_utterance_tasks, known_utterance_task
+from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 from ai_server.utils.processing import ProcessingUpdateCallback, ProcessingUpdateThrottle, await_with_processing_updates
 from ai_server.utils.text import normalize_text
 
@@ -272,6 +273,7 @@ class OrchestratorAgent:
         _store_pending_clarification(state, plan, task_results)
 
         reply = await self._final_reply(
+            conversation=conversation,
             user_input=user_input,
             active_context=_active_context(state),
             plan=plan,
@@ -322,6 +324,7 @@ class OrchestratorAgent:
         _store_pending_clarification(state, plan, task_results)
 
         reply = await self._final_reply(
+            conversation=conversation,
             user_input=user_input,
             active_context=_active_context(state),
             plan=plan,
@@ -342,6 +345,7 @@ class OrchestratorAgent:
             "conversation_id": conversation.conversation_id,
             "user": conversation.user,
             "area": conversation.area,
+            "medium": conversation.medium.value,
             "server_location": self._server_config.location,
             "server_timezone": self._server_config.timezone,
         }
@@ -452,6 +456,8 @@ class OrchestratorAgent:
                 "conversation_id": conversation.conversation_id,
                 "user": conversation.user,
                 "area": conversation.area,
+                "medium": conversation.medium.value,
+                "reply_style": reply_style_instruction(conversation.medium),
                 "user_settings": conversation.user_settings,
                 "server_location": self._server_config.location,
                 "server_timezone": self._server_config.timezone,
@@ -465,6 +471,7 @@ class OrchestratorAgent:
                 model=model,
                 prompt=prompt,
                 pending_clarification=pending_clarification,
+                medium=conversation.medium,
                 processing_update_callback=conversation.processing_update_callback,
             )
         except Exception:
@@ -480,6 +487,7 @@ class OrchestratorAgent:
                     model=fallback_model,
                     prompt=prompt,
                     pending_clarification=pending_clarification,
+                    medium=conversation.medium,
                     processing_update_callback=conversation.processing_update_callback,
                 )
             raise
@@ -490,6 +498,7 @@ class OrchestratorAgent:
         model: str,
         prompt: dict[str, Any],
         pending_clarification: dict[str, Any],
+        medium: ConversationMedium,
         processing_update_callback: ProcessingUpdateCallback | None,
     ) -> dict[str, Any]:
         response = await await_with_processing_updates(
@@ -503,7 +512,7 @@ class OrchestratorAgent:
                     "keep_alive": "1h",
                     "options": PLANNING_OPTIONS,
                     "messages": [
-                        {"role": "system", "content": CLARIFICATION_SYSTEM_PROMPT},
+                        {"role": "system", "content": system_prompt_with_reply_style(CLARIFICATION_SYSTEM_PROMPT, medium)},
                         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
                     ],
                 }
@@ -613,6 +622,7 @@ class OrchestratorAgent:
     async def _final_reply(
         self,
         *,
+        conversation: Conversation,
         user_input: str,
         active_context: dict[str, Any],
         plan: dict[str, Any],
@@ -621,6 +631,10 @@ class OrchestratorAgent:
     ) -> str:
         prompt = {
             "utterance": user_input,
+            "conversation": {
+                "medium": conversation.medium.value,
+                "reply_style": reply_style_instruction(conversation.medium),
+            },
             "active_context": active_context,
             "plan": plan,
             "task_results": task_results,
@@ -639,6 +653,7 @@ class OrchestratorAgent:
         reply = await self._final_reply_with_model(
             self._orchestrator_model,
             prompt,
+            medium=conversation.medium,
             processing_update_callback=processing_update_callback,
         )
         if reply or self._clarification_model is None:
@@ -648,6 +663,7 @@ class OrchestratorAgent:
         reply = await self._final_reply_with_model(
             self._clarification_model,
             prompt,
+            medium=conversation.medium,
             processing_update_callback=processing_update_callback,
         )
         return reply or GENERATION_FAILURE_MESSAGE
@@ -657,6 +673,7 @@ class OrchestratorAgent:
         model: str,
         prompt: dict[str, Any],
         *,
+        medium: ConversationMedium,
         processing_update_callback: ProcessingUpdateCallback | None,
     ) -> str:
         try:
@@ -671,7 +688,7 @@ class OrchestratorAgent:
                         "keep_alive": "1h",
                         "options": FINAL_REPLY_OPTIONS,
                         "messages": [
-                            {"role": "system", "content": FINAL_REPLY_SYSTEM_PROMPT},
+                            {"role": "system", "content": system_prompt_with_reply_style(FINAL_REPLY_SYSTEM_PROMPT, medium)},
                             {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
                         ],
                     }
@@ -689,6 +706,7 @@ class OrchestratorAgent:
                 return await self._final_reply_with_model(
                     self._clarification_model,
                     prompt,
+                    medium=medium,
                     processing_update_callback=processing_update_callback,
                 )
             raise

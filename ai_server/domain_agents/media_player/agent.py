@@ -29,6 +29,7 @@ from ai_server.domain_agents.media_player.parser import (
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient
+from ai_server.utils.conversation_style import reply_style_instruction
 from ai_server.utils.processing import ProcessingUpdateCallback, await_with_processing_updates
 
 
@@ -673,6 +674,8 @@ class MediaPlayerDomainAgent:
             "conversation": {
                 "area": conversation.area,
                 "user": conversation.user,
+                "medium": conversation.medium.value,
+                "reply_style": reply_style_instruction(conversation.medium),
             },
         }
         try:
@@ -999,6 +1002,8 @@ class MediaPlayerDomainAgent:
             "conversation": {
                 "area": conversation.area,
                 "user": conversation.user,
+                "medium": conversation.medium.value,
+                "reply_style": reply_style_instruction(conversation.medium),
                 "user_settings": conversation.user_settings,
             },
             "active_context": active_context,
