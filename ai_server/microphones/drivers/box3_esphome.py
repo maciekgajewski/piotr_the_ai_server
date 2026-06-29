@@ -15,7 +15,7 @@ import time
 from typing import Any
 
 from ai_server.config import MicrophoneConfig
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioEvent, AudioStart, ConversationTimeoutCue
+from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioEvent, AudioProgress, AudioStart, ConversationTimeoutCue
 from ai_server.microphones.messages import MessageEndCue, MicrophoneOutputEvent, StartFollowUpListening
 from ai_server.microphones.messages import OpenMicWakeCandidateRejected
 from ai_server.microphones.messages import StartOpenMicListening
@@ -46,6 +46,7 @@ START_FOLLOW_UP_LISTENING_SERVICE = "start_follow_up_listening"
 START_OPEN_MIC_LISTENING_SERVICE = "start_open_mic_listening"
 RESET_OPEN_MIC_WAKE_CANDIDATE_SERVICE = "reset_open_mic_wake_candidate"
 FOLLOW_UP_WAKE_WORD = "follow_up"
+OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL = 50
 
 
 class Box3EsphomeMicrophone:
@@ -77,6 +78,7 @@ class Box3EsphomeMicrophone:
         self._wake_word: str | None = None
         self._byte_count = 0
         self._audio_chunk_count = 0
+        self._last_audio_progress_chunk_count = 0
         self._speech_started = False
         self._speech_candidate_started_at: float | None = None
         self._last_speech_at: float | None = None
@@ -381,6 +383,7 @@ class Box3EsphomeMicrophone:
         self._wake_word = wake_word_phrase
         self._byte_count = 0
         self._audio_chunk_count = 0
+        self._last_audio_progress_chunk_count = 0
         self._speech_started = False
         self._speech_candidate_started_at = None
         self._last_speech_at = None
@@ -441,6 +444,19 @@ class Box3EsphomeMicrophone:
             if self._audio_ended:
                 self._pending_audio_chunks.clear()
 
+        if (
+            self._listening_mode == "open_mic"
+            and self._audio_chunk_count > 0
+            and self._audio_chunk_count - self._last_audio_progress_chunk_count
+            >= OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL
+        ):
+            self._last_audio_progress_chunk_count = self._audio_chunk_count
+            self._events.put_nowait(
+                AudioProgress(
+                    chunks=self._audio_chunk_count,
+                    bytes=self._byte_count,
+                )
+            )
         if self._audio_chunk_count > 0 and (self._audio_chunk_count == 1 or self._audio_chunk_count % 50 == 0):
             self._logger.debug(
                 "received audio chunks=%s bytes=%s",
@@ -678,6 +694,7 @@ class Box3EsphomeMicrophone:
         self._pending_audio_chunks.clear()
         self._byte_count = 0
         self._audio_chunk_count = 0
+        self._last_audio_progress_chunk_count = 0
         self._speech_started = False
         self._speech_candidate_started_at = None
         self._last_speech_at = None

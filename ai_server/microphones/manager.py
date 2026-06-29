@@ -18,7 +18,7 @@ from ai_server.messages import RequestFollowUp, TextMessage, WaitForNewConversat
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.interfaces import Microphone, MicrophoneUnavailable, TextToSpeech
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, ConversationTimeoutCue, MessageEndCue
+from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioProgress, AudioStart, ConversationTimeoutCue, MessageEndCue
 from ai_server.microphones.messages import MicrophoneOutputEvent, StartFollowUpListening, StartOpenMicListening
 from ai_server.microphones.messages import OpenMicWakeCandidateRejected
 from ai_server.microphones.messages import StartWakeWordListening
@@ -36,6 +36,7 @@ from ai_server.user_settings import UserSettingsProvider
 
 DEFAULT_PROCESSING_UPDATE_CUES = ("Hmm...", "Myslę....", "momencik...")
 PROCESSING_UPDATE_VOLUME = 0.7
+OPEN_MIC_IDLE_TIMEOUTS_BEFORE_REARM = 3
 
 
 @dataclass(frozen=True)
@@ -284,6 +285,7 @@ class MicrophoneManager:
         try:
             while True:
                 audio_chunks: list[AudioChunk] = []
+                idle_timeouts = 0
                 final_text = ""
                 accepted_text = ""
                 while True:
@@ -294,11 +296,25 @@ class MicrophoneManager:
                         )
                     except TimeoutError as error:
                         if not audio_chunks and not wake_candidate.is_set():
+                            idle_timeouts += 1
+                            if idle_timeouts < OPEN_MIC_IDLE_TIMEOUTS_BEFORE_REARM:
+                                logger.debug(
+                                    "open-mic audio stream idle timeout ignored timeout_seconds=%.2f "
+                                    "idle_timeouts=%s max_idle_timeouts=%s",
+                                    audio_event_timeout_seconds,
+                                    idle_timeouts,
+                                    OPEN_MIC_IDLE_TIMEOUTS_BEFORE_REARM,
+                                )
+                                continue
                             logger.debug(
-                                "open-mic audio stream idle timeout ignored timeout_seconds=%.2f",
+                                "open-mic audio stream stalled after idle timeouts=%s timeout_seconds=%.2f",
+                                idle_timeouts,
                                 audio_event_timeout_seconds,
                             )
-                            continue
+                            raise MicrophoneUnavailable(
+                                "open-mic audio stream stalled after "
+                                f"{idle_timeouts} idle timeouts of {audio_event_timeout_seconds:.2f}s"
+                            ) from error
                         logger.debug(
                             "open-mic audio stream event timed out timeout_seconds=%.2f chunks=%s bytes=%s "
                             "wake_candidate=%s",
@@ -310,9 +326,17 @@ class MicrophoneManager:
                         raise MicrophoneUnavailable(
                             f"open-mic audio stream event timed out after {audio_event_timeout_seconds:.2f}s"
                         ) from error
+                    idle_timeouts = 0
                     if isinstance(next_event, AudioChunk):
                         audio_chunks.append(next_event)
                         await stt_session.send_audio(PcmAudioChunk(data=next_event.data))
+                        continue
+                    if isinstance(next_event, AudioProgress):
+                        logger.debug(
+                            "open-mic audio stream progress chunks=%s bytes=%s",
+                            next_event.chunks,
+                            next_event.bytes,
+                        )
                         continue
                     if isinstance(next_event, AudioEnd):
                         await stt_session.end_audio()

@@ -26,6 +26,12 @@ class AudioEnd:
 
 
 @dataclass(frozen=True)
+class AudioProgress:
+    chunks: int
+    bytes: int
+
+
+@dataclass(frozen=True)
 class MessageEndCue:
     pass
 
@@ -55,7 +61,7 @@ class OpenMicWakeCandidateRejected:
     pass
 
 
-AudioEvent: TypeAlias = AudioStart | AudioChunk | AudioEnd
+AudioEvent: TypeAlias = AudioStart | AudioChunk | AudioEnd | AudioProgress
 MicrophoneOutputEvent: TypeAlias = (
     AudioStart
     | AudioChunk

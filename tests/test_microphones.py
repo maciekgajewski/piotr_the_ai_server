@@ -9,7 +9,7 @@ from ai_server.messages import WaitForNewConversation
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.interfaces import MicrophoneUnavailable
 from ai_server.microphones.manager import MicrophoneManager, _MicrophoneAvailabilityLogger, init_mics
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, ConversationTimeoutCue, MessageEndCue
+from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioProgress, AudioStart, ConversationTimeoutCue, MessageEndCue
 from ai_server.microphones.messages import OpenMicWakeCandidateRejected
 from ai_server.microphones.messages import StartFollowUpListening
 from ai_server.microphones.messages import StartOpenMicListening
@@ -81,6 +81,24 @@ class FakeMicrophone:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class ProgressOnlyOpenMicMicrophone(FakeMicrophone):
+    def __init__(self) -> None:
+        super().__init__(events=[])
+        self._started = False
+        self.progress_count = 0
+
+    async def wait_for_event(self):
+        if not self._started:
+            self._started = True
+            return AudioStart(wake_word=None)
+        await asyncio.sleep(0.001)
+        self.progress_count += 1
+        return AudioProgress(
+            chunks=self.progress_count * 50,
+            bytes=self.progress_count * 51200,
+        )
 
 
 class UnavailableMicrophone(FakeMicrophone):
@@ -558,7 +576,7 @@ def test_microphone_manager_retries_open_mic_when_stream_stops_emitting_events(c
     assert "microphone available again" not in caplog.text
 
 
-def test_microphone_manager_keeps_open_mic_idle_stream_open(caplog) -> None:
+def test_microphone_manager_rearms_open_mic_when_idle_stream_stalls(caplog) -> None:
     async def run() -> None:
         microphone = FakeMicrophone(events=[AudioStart(wake_word=None)])
         agent = FakeAgent()
@@ -584,7 +602,8 @@ def test_microphone_manager_keeps_open_mic_idle_stream_open(caplog) -> None:
             await manager.start()
             await asyncio.wait_for(
                 _wait_until(
-                    lambda: "open-mic audio stream idle timeout ignored timeout_seconds=0.01" in caplog.text
+                    lambda: "open-mic audio stream stalled after idle timeouts=3 timeout_seconds=0.01"
+                    in caplog.text
                 ),
                 timeout=1,
             )
@@ -597,8 +616,53 @@ def test_microphone_manager_keeps_open_mic_idle_stream_open(caplog) -> None:
     asyncio.run(run())
 
     assert "open-mic audio stream idle timeout ignored timeout_seconds=0.01" in caplog.text
+    assert "open-mic audio stream stalled after idle timeouts=3 timeout_seconds=0.01" in caplog.text
+    assert (
+        "microphone unavailable; retrying soon error=open-mic audio stream stalled after "
+        "3 idle timeouts of 0.01s"
+    ) in caplog.text
     assert "open-mic audio stream event timed out timeout_seconds=0.01" not in caplog.text
-    assert "microphone unavailable; retrying soon error=open-mic audio stream event timed out" not in caplog.text
+
+
+def test_microphone_manager_keeps_open_mic_progress_stream_open(caplog) -> None:
+    async def run() -> None:
+        microphone = ProgressOnlyOpenMicMicrophone()
+        agent = FakeAgent()
+        stt = FakeStt(
+            streaming_sessions=[
+                FakeStreamingSttSession(
+                    partial_events=[TextEnd()],
+                    final_text="",
+                )
+            ]
+        )
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=stt,
+            tts=FakeTts(),
+            agent=agent,
+            follow_up_timeout_seconds=0.1,
+            microphone_audio_event_timeouts={"office": 0.01},
+            open_microphones={"office"},
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="ai_server.microphones.manager"):
+            await manager.start()
+            await asyncio.wait_for(
+                _wait_until(lambda: microphone.progress_count >= 5),
+                timeout=1,
+            )
+            await manager.close()
+
+        assert agent.messages == []
+        assert len(stt.streaming_sessions) == 1
+        assert microphone.sent_audio_events == [StartOpenMicListening()]
+
+    asyncio.run(run())
+
+    assert "open-mic audio stream progress chunks=250 bytes=256000" in caplog.text
+    assert "open-mic audio stream stalled" not in caplog.text
+    assert "microphone unavailable; retrying soon error=open-mic audio stream stalled" not in caplog.text
 
 
 def test_microphone_manager_accepts_open_mic_wake_phrase_found_only_in_final() -> None:

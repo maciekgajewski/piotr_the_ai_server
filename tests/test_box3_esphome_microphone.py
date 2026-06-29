@@ -13,7 +13,7 @@ import ai_server.microphones.drivers.box3_esphome as box3_esphome
 from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.drivers.box3_esphome import Box3EsphomeMicrophone
 from ai_server.microphones.interfaces import MicrophoneUnavailable
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, MessageEndCue, StartFollowUpListening
+from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioProgress, AudioStart, MessageEndCue, StartFollowUpListening
 from ai_server.microphones.messages import OpenMicWakeCandidateRejected
 from ai_server.microphones.messages import StartOpenMicListening
 from ai_server.microphones.messages import StartWakeWordListening
@@ -313,6 +313,48 @@ def test_box3_microphone_keeps_open_mic_stream_running_during_initial_silence(mo
         assert microphone._audio_ended is False
         assert microphone._pending_audio_chunks == [silence_chunk]
         assert voice_assistant_events == []
+
+    asyncio.run(run())
+
+
+def test_box3_microphone_emits_open_mic_audio_progress_during_silence(monkeypatch) -> None:
+    async def run() -> None:
+        microphone = Box3EsphomeMicrophone.from_config(
+            MicrophoneConfig(
+                type="box3_esphome",
+                name="box3-office",
+                area=None,
+                options={"address": "box.local", "api_key": "secret"},
+            )
+        )
+
+        async def fake_finish_voice_assistant_run() -> None:
+            pass
+
+        async def fake_execute_api_service(_service_name: str) -> None:
+            pass
+
+        async def fake_ensure_connected() -> None:
+            pass
+
+        monkeypatch.setattr(microphone, "_finish_voice_assistant_run", fake_finish_voice_assistant_run)
+        monkeypatch.setattr(microphone, "_execute_api_service", fake_execute_api_service)
+        monkeypatch.setattr(microphone, "_ensure_connected", fake_ensure_connected)
+
+        await microphone.send_output_event(StartOpenMicListening())
+        await microphone._handle_start("conversation", 0, object(), None)
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioStart(wake_word=None)
+
+        silence_chunk = _pcm16_chunk(0)
+        for _ in range(box3_esphome.OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL):
+            await microphone._handle_audio(silence_chunk)
+
+        assert await asyncio.wait_for(microphone.wait_for_event(), timeout=1) == AudioProgress(
+            chunks=box3_esphome.OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL,
+            bytes=len(silence_chunk) * box3_esphome.OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL,
+        )
+        assert microphone._audio_ended is False
+        assert microphone._voice_assistant_run_active is True
 
     asyncio.run(run())
 
