@@ -20,6 +20,7 @@ from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.interfaces import Microphone, MicrophoneUnavailable, TextToSpeech
 from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, ConversationTimeoutCue, MessageEndCue
 from ai_server.microphones.messages import MicrophoneOutputEvent, StartFollowUpListening, StartOpenMicListening
+from ai_server.microphones.messages import OpenMicWakeCandidateRejected
 from ai_server.microphones.messages import StartWakeWordListening
 from ai_server.microphones.tts import PiperTextToSpeech
 from ai_server.sessions import Session
@@ -279,88 +280,98 @@ class MicrophoneManager:
         partial_task = asyncio.create_task(
             self._collect_open_mic_partials(stt_session, wake_candidate, logger)
         )
-        audio_chunks: list[AudioChunk] = []
-        final_text = ""
-        accepted_text = ""
-        cue_sent = False
         audio_event_timeout_seconds = self._audio_event_timeout_for(microphone)
         try:
             while True:
-                try:
-                    next_event = await asyncio.wait_for(
-                        microphone.wait_for_event(),
-                        timeout=audio_event_timeout_seconds,
+                audio_chunks: list[AudioChunk] = []
+                final_text = ""
+                accepted_text = ""
+                while True:
+                    try:
+                        next_event = await asyncio.wait_for(
+                            microphone.wait_for_event(),
+                            timeout=audio_event_timeout_seconds,
+                        )
+                    except TimeoutError as error:
+                        if not audio_chunks and not wake_candidate.is_set():
+                            logger.debug(
+                                "open-mic audio stream idle timeout ignored timeout_seconds=%.2f",
+                                audio_event_timeout_seconds,
+                            )
+                            continue
+                        logger.debug(
+                            "open-mic audio stream event timed out timeout_seconds=%.2f chunks=%s bytes=%s "
+                            "wake_candidate=%s",
+                            audio_event_timeout_seconds,
+                            len(audio_chunks),
+                            sum(len(chunk.data) for chunk in audio_chunks),
+                            wake_candidate.is_set(),
+                        )
+                        raise MicrophoneUnavailable(
+                            f"open-mic audio stream event timed out after {audio_event_timeout_seconds:.2f}s"
+                        ) from error
+                    if isinstance(next_event, AudioChunk):
+                        audio_chunks.append(next_event)
+                        await stt_session.send_audio(PcmAudioChunk(data=next_event.data))
+                        continue
+                    if isinstance(next_event, AudioEnd):
+                        await stt_session.end_audio()
+                        break
+                    if isinstance(next_event, AudioStart):
+                        logger.warning("received nested open-mic audio start; ending current stream")
+                        await stt_session.end_audio()
+                        break
+                    logger.warning(
+                        "ignored microphone event in open-mic audio stream event=%s",
+                        type(next_event).__name__,
                     )
-                except TimeoutError as error:
-                    logger.debug(
-                        "open-mic audio stream event timed out timeout_seconds=%.2f chunks=%s bytes=%s wake_candidate=%s",
-                        audio_event_timeout_seconds,
-                        len(audio_chunks),
-                        sum(len(chunk.data) for chunk in audio_chunks),
-                        wake_candidate.is_set(),
-                    )
-                    raise MicrophoneUnavailable(
-                        f"open-mic audio stream event timed out after {audio_event_timeout_seconds:.2f}s"
-                    ) from error
-                if isinstance(next_event, AudioChunk):
-                    audio_chunks.append(next_event)
-                    await stt_session.send_audio(PcmAudioChunk(data=next_event.data))
-                    continue
-                if isinstance(next_event, AudioEnd):
-                    await stt_session.end_audio()
-                    break
-                if isinstance(next_event, AudioStart):
-                    logger.warning("received nested open-mic audio start; ending current stream")
-                    await stt_session.end_audio()
-                    break
-                logger.warning("ignored microphone event in open-mic audio stream event=%s", type(next_event).__name__)
 
-            logger.debug(
-                "open-mic speech segment ended chunks=%s bytes=%s wake_candidate=%s",
-                len(audio_chunks),
-                sum(len(chunk.data) for chunk in audio_chunks),
-                wake_candidate.is_set(),
-            )
-
-            if wake_candidate.is_set():
-                await microphone.send_output_event(MessageEndCue())
-                cue_sent = True
-
-            partial_had_wake = await partial_task
-            if partial_had_wake and not cue_sent:
-                await microphone.send_output_event(MessageEndCue())
-                cue_sent = True
-
-            final_text = await stt_session.transcribe_final()
-            accepted_text = _text_after_wake_phrase(final_text, self._open_mic_wake_phrase) or ""
-            if not accepted_text.strip():
                 logger.debug(
-                    "open-mic speech discarded wake_phrase_detected=%s final_chars=%s",
-                    partial_had_wake,
-                    len(final_text),
+                    "open-mic speech segment ended chunks=%s bytes=%s wake_candidate=%s",
+                    len(audio_chunks),
+                    sum(len(chunk.data) for chunk in audio_chunks),
+                    wake_candidate.is_set(),
                 )
-                return CapturedUtterance(captured=False, text_fragments=())
 
-            if not cue_sent:
+                partial_had_wake = await partial_task
+
+                final_text = await stt_session.transcribe_final()
+                accepted_text = _text_after_wake_phrase(final_text, self._open_mic_wake_phrase) or ""
+                if not accepted_text.strip():
+                    logger.debug(
+                        "open-mic speech discarded wake_phrase_detected=%s final_chars=%s; continuing stream",
+                        partial_had_wake,
+                        len(final_text),
+                    )
+                    if partial_had_wake:
+                        await microphone.send_output_event(OpenMicWakeCandidateRejected())
+                    await stt_session.close()
+                    stt_session = await self._stt.create_streaming_session(microphone.context.name)
+                    wake_candidate = asyncio.Event()
+                    partial_task = asyncio.create_task(
+                        self._collect_open_mic_partials(stt_session, wake_candidate, logger)
+                    )
+                    continue
+
                 await microphone.send_output_event(MessageEndCue())
 
-            logger.info(
-                "open-mic utterance accepted wake_phrase=%r utterance_chars=%s",
-                self._open_mic_wake_phrase,
-                len(accepted_text),
-            )
-            logger.debug("open_mic_utterance=%r", accepted_text)
-            speaker_result = await self._recognize_speaker_from_audio_chunks(event, audio_chunks, logger)
-            attributes = {}
-            if speaker_result is not None and speaker_result.recognized_user:
-                attributes["user"] = speaker_result.recognized_user
-            await endpoint.send_to_session(NewConversation(attributes=attributes))
-            await self._send_captured_text(endpoint, (accepted_text,))
-            return CapturedUtterance(
-                captured=True,
-                text_fragments=(accepted_text,),
-                speaker_result=speaker_result,
-            )
+                logger.info(
+                    "open-mic utterance accepted wake_phrase=%r utterance_chars=%s",
+                    self._open_mic_wake_phrase,
+                    len(accepted_text),
+                )
+                logger.debug("open_mic_utterance=%r", accepted_text)
+                speaker_result = await self._recognize_speaker_from_audio_chunks(event, audio_chunks, logger)
+                attributes = {}
+                if speaker_result is not None and speaker_result.recognized_user:
+                    attributes["user"] = speaker_result.recognized_user
+                await endpoint.send_to_session(NewConversation(attributes=attributes))
+                await self._send_captured_text(endpoint, (accepted_text,))
+                return CapturedUtterance(
+                    captured=True,
+                    text_fragments=(accepted_text,),
+                    speaker_result=speaker_result,
+                )
         except Exception:
             partial_task.cancel()
             with suppress(asyncio.CancelledError):

@@ -50,6 +50,11 @@ class ConversationTimeoutCue:
     pass
 
 
+@dataclass(frozen=True)
+class OpenMicWakeCandidateRejected:
+    pass
+
+
 AudioEvent: TypeAlias = AudioStart | AudioChunk | AudioEnd
 MicrophoneOutputEvent: TypeAlias = (
     AudioStart
@@ -60,4 +65,5 @@ MicrophoneOutputEvent: TypeAlias = (
     | StartOpenMicListening
     | StartFollowUpListening
     | ConversationTimeoutCue
+    | OpenMicWakeCandidateRejected
 )

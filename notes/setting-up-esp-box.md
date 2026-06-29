@@ -899,3 +899,15 @@ No firmware flashing has been done yet.
 - While server-controlled open mic is active, `voice_assistant.on_listening`, `on_stt_vad_end`, and `on_stt_end` no longer update the display or request text.
 - `play_message_end_cue` now switches to the thinking phase only after the server accepts the open-mic segment and asks for the cue.
 - Validated with `esphome config` and `esphome compile`; generated `main.cpp` contains the open-mic guard and accepted-cue transition.
+
+## 2026-06-28T20:34:00Z - Open-mic rejected-candidate reset service
+
+- Added ESPHome API service `reset_open_mic_wake_candidate` for the AI-server `OpenMicWakeCandidateRejected` protocol event.
+- The service keeps continuous open-mic capture active, resets `voice_assistant_phase` to listening while `server_controlled_open_mic_active` is true, clears request/response text placeholders, and redraws the display.
+- Validated ESPHome configuration.
+- Rebuilt firmware and verified generated `main.cpp` contains:
+  - `api::UserServiceTrigger` for `reset_open_mic_wake_candidate`
+  - `voice_assistant_phase->value() = 2`
+  - `text_request` and `text_response` reset to `"..."`
+- Flashed the office Box over OTA to `192.168.0.180`.
+- ESPHome reported `OTA successful` and `Successfully uploaded program.`

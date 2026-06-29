@@ -87,6 +87,10 @@ api:
       then:
         - script.execute: start_open_mic_listening
         - script.wait: start_open_mic_listening
+    - service: reset_open_mic_wake_candidate
+      then:
+        - script.execute: reset_open_mic_wake_candidate
+        - script.wait: reset_open_mic_wake_candidate
   on_client_connected:
     - script.execute: draw_display
   on_client_disconnected:
@@ -448,6 +452,22 @@ script:
               - not:
                   speaker.is_playing:
           timeout: 2s
+
+  - id: reset_open_mic_wake_candidate
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: return id(server_controlled_open_mic_active);
+          then:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+            - text_sensor.template.publish:
+                id: text_request
+                state: "..."
+            - text_sensor.template.publish:
+                id: text_response
+                state: "..."
+            - script.execute: draw_display
 
   - id: play_conversation_timeout_cue
     mode: restart

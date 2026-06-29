@@ -52,29 +52,37 @@ wake phrase, without waiting for a second post-wake recording cue.
 
    The driver emits `AudioEnd` after end-of-speech detection.
 
-7. `UtteranceAccepted`
+7. `WakePhraseCandidateRejected`
 
-   If the segment has a wake-phrase candidate, the manager accepts the complete
-   segment and plays the accepted-utterance cue. This is the former wake-word
-   chime semantics moved to the end of the sentence: it means "the full utterance
-   was heard and is now being processed."
+   If a partial transcript contained the wake phrase but the final transcript
+   does not contain an accepted utterance after the wake phrase, the manager
+   discards the segment and sends `OpenMicWakeCandidateRejected` to the
+   microphone driver. The event is silent. Drivers use it to reset any
+   wake-candidate UI state, while keeping continuous capture active.
+
+8. `UtteranceAccepted`
+
+   If the final transcript contains the wake phrase and usable text after it,
+   the manager accepts the complete segment and plays the accepted-utterance cue.
+   This is the former wake-word chime semantics moved to the end of the sentence:
+   it means "the full utterance was heard and is now being processed."
 
    If no partial contained the wake phrase, the manager may run one final private
    transcript pass to avoid missing short segments. If the final transcript still
    has no wake phrase, the segment is discarded silently.
 
-8. `TranscriptFinal`
+9. `TranscriptFinal`
 
    After acceptance, STT produces a final transcript for the accepted segment.
    The manager extracts the text following the wake phrase. Only accepted final
    text may be logged or forwarded.
 
-9. `SpeakerRecognitionFinal`
+10. `SpeakerRecognitionFinal`
 
    Speaker recognition runs only for accepted audio. It may use audio buffered
    during the speech segment, but its result is awaited only after acceptance.
 
-10. Agent input
+11. Agent input
 
    The manager sends the normal conversation events downstream:
 
