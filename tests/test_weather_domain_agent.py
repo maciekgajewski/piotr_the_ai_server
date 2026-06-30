@@ -339,6 +339,9 @@ def test_weather_toolset_returns_astronomy_facts() -> None:
     assert result["status"] == "ok"
     assert result["kind"] == "astronomy"
     assert result["astronomy"]["location"] == "Wrocław"
+    assert "today" in result["astronomy"]
+    assert "day_length_comparison" in result["astronomy"]
+    assert "records" not in result["astronomy"]
     assert result["entities"] == ["astronomy.Wrocław"]
     assert "słońce wschodzi" in result["formatted_text"]
     assert "najdłuższy" in result["formatted_text"]
@@ -452,6 +455,36 @@ def test_weather_domain_agent_fast_lane_uses_local_cache() -> None:
     assert result["status"] == "ok"
     assert result["data"]["weather"]["location"] == "Wrocław"
     assert provider.now_requests == []
+
+
+def test_weather_domain_agent_fast_lane_returns_astronomy_without_agent_loop() -> None:
+    loop_factory = FakeLoopFactory("unexpected")
+    agent = WeatherDomainAgent(
+        model="qwen3:4b-instruct",
+        location="Wrocław",
+        cache_dir=Path("/tmp/piotr-test-cache"),
+        providers=[FakeWeatherProvider()],
+        astronomy_refresher=StaticAstronomyRefresher(_astronomy_snapshot("Wrocław", "2026-06-30T10:00:00Z")),
+        loop_factory=loop_factory.factory,
+        ollama_connection=FakeOllamaConnection(),
+    )
+
+    result = asyncio.run(
+        agent.run_task(
+            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
+            {"id": "t1", "domain": "weather", "command": {"query": "o której dzisiaj zachód słońca."}},
+            {},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["final_reply_mode"] == "verbatim"
+    assert result["text"] == "Dzisiaj we Wrocławiu zachód słońca jest o dwadzieścia jeden dziesięć."
+    assert result["data"]["kind"] == "astronomy"
+    assert result["data"]["astronomy"]["focus"] == "sunset"
+    assert result["data"]["astronomy"]["today"]["sunset"] == "21:10"
+    assert "records" not in result["data"]["astronomy"]
+    assert loop_factory.loop is None
 
 
 def test_weather_domain_agent_formats_simple_current_weather() -> None:

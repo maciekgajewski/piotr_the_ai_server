@@ -15,3 +15,21 @@ cases:
       final_reply_mode: verbatim
     expected_replies:
       - contains_all: [Wrocławiu, szesnaście, stopni]
+
+  - id: local_sunset
+    task:
+      id: t1
+      domain: weather
+      command:
+        query: o której dzisiaj zachód słońca.
+    expected_result:
+      status: ok
+      final_reply_mode: verbatim
+      data:
+        kind: astronomy
+        astronomy:
+          focus: sunset
+          today:
+            sunset: "21:10"
+    expected_replies:
+      - contains_all: [Wrocławiu, zachód, dwadzieścia jeden dziesięć]

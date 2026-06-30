@@ -11,6 +11,7 @@ from aiohttp import ClientSession, ClientTimeout
 
 from ai_server.utils import JsonFileStore
 from ai_server.utils.polish_numbers import polish_cardinal
+from ai_server.utils.text import ascii_fold, normalize_text
 
 
 ASTRONOMY_URL = "https://api.ipgeolocation.io/v3/astronomy"
@@ -229,6 +230,20 @@ def astronomy_to_json(snapshot: AstronomySnapshot) -> dict[str, Any]:
     return _snapshot_to_json(snapshot)
 
 
+def astronomy_facts_to_json(snapshot: AstronomySnapshot) -> dict[str, Any]:
+    today = snapshot.records.get(TODAY_RECORD_KEY)
+    data: dict[str, Any] = {
+        "location": snapshot.location,
+        "last_pull_date": snapshot.last_pull_date,
+    }
+    if today is not None:
+        data["today"] = asdict(today)
+    comparison = day_length_comparison_to_json(snapshot)
+    if comparison is not None:
+        data["day_length_comparison"] = comparison
+    return data
+
+
 def format_astronomy(snapshot: AstronomySnapshot) -> str:
     today = snapshot.records.get(TODAY_RECORD_KEY)
     if today is None:
@@ -241,6 +256,69 @@ def format_astronomy(snapshot: AstronomySnapshot) -> str:
     if comparison:
         parts.append(comparison)
     return " ".join(parts)
+
+
+def format_astronomy_for_query(snapshot: AstronomySnapshot, query: str) -> str:
+    today = snapshot.records.get(TODAY_RECORD_KEY)
+    if today is None:
+        return f"Nie mam danych astronomicznych dla lokalizacji {snapshot.location}."
+    focus = astronomy_focus_from_query(query)
+    location_phrase = _location_phrase(snapshot.location)
+    if focus == "sunrise":
+        return f"Dzisiaj {location_phrase} wschód słońca jest o {_time_phrase(today.sunrise)}."
+    if focus == "sunset":
+        return f"Dzisiaj {location_phrase} zachód słońca jest o {_time_phrase(today.sunset)}."
+    if focus == "moonrise":
+        return f"Dzisiaj {location_phrase} księżyc wschodzi o {_time_phrase(today.moonrise)}."
+    if focus == "moonset":
+        return f"Dzisiaj {location_phrase} księżyc zachodzi o {_time_phrase(today.moonset)}."
+    if focus == "moon_phase":
+        return f"Dzisiaj {location_phrase} faza księżyca to {_moon_phase_phrase(today.moon_phase)}."
+    if focus == "day_length":
+        comparison = _day_length_comparison(snapshot)
+        if comparison:
+            return f"Dzisiaj {location_phrase} {comparison[0].lower()}{comparison[1:]}"
+        return f"Dzisiaj {location_phrase} dzień trwa {_duration_phrase(today.day_length)}."
+    return format_astronomy(snapshot)
+
+
+def astronomy_focus_from_query(query: str) -> str | None:
+    normalized = _normalize_query(query)
+    if "wschod slonca" in normalized or ("slonce" in normalized and "wschod" in normalized):
+        return "sunrise"
+    if "zachod slonca" in normalized or ("slonce" in normalized and "zachod" in normalized):
+        return "sunset"
+    if "wschod ksiezyca" in normalized or ("ksiezyc" in normalized and "wschod" in normalized):
+        return "moonrise"
+    if "zachod ksiezyca" in normalized or ("ksiezyc" in normalized and "zachod" in normalized):
+        return "moonset"
+    if "faza ksiezyca" in normalized or ("ksiezyc" in normalized and "faza" in normalized):
+        return "moon_phase"
+    if "dlugosc dnia" in normalized or "dzien trwa" in normalized or "najdluzsz" in normalized or "najkrotsz" in normalized:
+        return "day_length"
+    if "slonce" in normalized or "ksiezyc" in normalized:
+        return "all"
+    return None
+
+
+def day_length_comparison_to_json(snapshot: AstronomySnapshot) -> dict[str, Any] | None:
+    today = snapshot.records.get(TODAY_RECORD_KEY)
+    june = snapshot.records.get(JUNE_SOLSTICE_RECORD_KEY)
+    december = snapshot.records.get(DECEMBER_SOLSTICE_RECORD_KEY)
+    if today is None or june is None or december is None:
+        return None
+    today_minutes = _duration_minutes(today.day_length)
+    june_minutes = _duration_minutes(june.day_length)
+    december_minutes = _duration_minutes(december.day_length)
+    if today_minutes is None or june_minutes is None or december_minutes is None:
+        return None
+    longest = max(june_minutes, december_minutes)
+    shortest = min(june_minutes, december_minutes)
+    return {
+        "today_minutes": today_minutes,
+        "shorter_than_longest_minutes": max(0, longest - today_minutes),
+        "longer_than_shortest_minutes": max(0, today_minutes - shortest),
+    }
 
 
 def _snapshot_to_json(snapshot: AstronomySnapshot) -> dict[str, Any]:
@@ -308,23 +386,13 @@ def _required_string(data: dict[str, Any], key: str) -> str:
 
 
 def _day_length_comparison(snapshot: AstronomySnapshot) -> str | None:
-    today = snapshot.records.get(TODAY_RECORD_KEY)
-    june = snapshot.records.get(JUNE_SOLSTICE_RECORD_KEY)
-    december = snapshot.records.get(DECEMBER_SOLSTICE_RECORD_KEY)
-    if today is None or june is None or december is None:
+    comparison = day_length_comparison_to_json(snapshot)
+    if comparison is None:
         return None
-    today_minutes = _duration_minutes(today.day_length)
-    june_minutes = _duration_minutes(june.day_length)
-    december_minutes = _duration_minutes(december.day_length)
-    if today_minutes is None or june_minutes is None or december_minutes is None:
-        return None
-    longest = max(june_minutes, december_minutes)
-    shortest = min(june_minutes, december_minutes)
-    shorter_than_longest = max(0, longest - today_minutes)
-    longer_than_shortest = max(0, today_minutes - shortest)
     return (
-        f"Dzień trwa {_duration_phrase_from_minutes(today_minutes)}, jest o {_duration_phrase_from_minutes(shorter_than_longest)} "
-        f"krótszy niż najdłuższy i o {_duration_phrase_from_minutes(longer_than_shortest)} dłuższy niż najkrótszy dzień roku."
+        f"Dzień trwa {_duration_phrase_from_minutes(comparison['today_minutes'])}, "
+        f"jest o {_duration_phrase_from_minutes(comparison['shorter_than_longest_minutes'])} krótszy niż najdłuższy "
+        f"i o {_duration_phrase_from_minutes(comparison['longer_than_shortest_minutes'])} dłuższy niż najkrótszy dzień roku."
     )
 
 
@@ -368,6 +436,13 @@ def _time_phrase(value: str) -> str:
     return f"{polish_cardinal(hour)} {polish_cardinal(minute)}"
 
 
+def _duration_phrase(value: str) -> str:
+    minutes = _duration_minutes(value)
+    if minutes is None:
+        return value
+    return _duration_phrase_from_minutes(minutes)
+
+
 def _moon_phase_phrase(value: str) -> str:
     return {
         "NEW_MOON": "nów",
@@ -395,6 +470,16 @@ def _minute_word(value: int) -> str:
     if 2 <= value % 10 <= 4 and value % 100 not in {12, 13, 14}:
         return "minuty"
     return "minut"
+
+
+def _normalize_query(query: str) -> str:
+    return ascii_fold(normalize_text(query))
+
+
+def _location_phrase(location: str) -> str:
+    if location == "Wrocław":
+        return "we Wrocławiu"
+    return f"dla lokalizacji {location}"
 
 
 def _utc_iso(value: dt.datetime) -> str:

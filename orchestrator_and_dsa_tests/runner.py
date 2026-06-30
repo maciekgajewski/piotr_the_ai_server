@@ -30,6 +30,7 @@ from ai_server.domain_agents.system_status.agent import PLANNING_PROMPT as SYSTE
 from ai_server.domain_agents.system_status.agent import KNOWN_UTTERANCES as SYSTEM_STATUS_KNOWN_UTTERANCES
 from ai_server.domain_agents.weather import CurrentWeather, WeatherDomainAgent, WeatherNowRequest
 from ai_server.domain_agents.weather.agent import PLANNING_PROMPT as WEATHER_PLANNING_PROMPT
+from ai_server.domain_agents.weather.astronomy import AstronomyRecord, AstronomySnapshot
 from ai_server.domain_agents.wikipedia import PLANNING_PROMPT as WIKIPEDIA_PLANNING_PROMPT
 from ai_server.domain_agents.wikipedia import WikipediaArticle, WikipediaDomainAgent, WikipediaSearchResult
 from ai_server.interfaces import Conversation, ConversationEndpoint
@@ -377,6 +378,17 @@ class FakeWeatherOllamaClient:
         pass
 
 
+class StaticAstronomyRefresher:
+    def __init__(self, snapshot: AstronomySnapshot) -> None:
+        self._snapshot = snapshot
+
+    async def ensure_fresh(self) -> AstronomySnapshot:
+        return self._snapshot
+
+    async def close(self) -> None:
+        pass
+
+
 @dataclass(frozen=True)
 class StaticHomeAssistantInventoryProvider:
     inventory: Any
@@ -716,6 +728,7 @@ async def _run_dsa_weather_case(case: TestCase, settings: dict[str, Any]) -> Cas
         location=settings["location"],
         cache_dir=Path(tempfile.gettempdir()),
         providers=[FakeWeatherProvider(current)],
+        astronomy_refresher=StaticAstronomyRefresher(_astronomy_snapshot(settings)),
     )
     result = CaseResult(case=case)
     try:
@@ -924,6 +937,42 @@ def _user_settings_for(user: str, users: dict[str, Any]) -> dict[str, Any]:
 
 def _home_assistant_inventory() -> Any:
     return agent_tool_eval._build_inventory({})
+
+
+def _astronomy_snapshot(settings: dict[str, Any]) -> AstronomySnapshot:
+    return AstronomySnapshot(
+        location=settings["location"],
+        last_pull_date=settings["fixed_utc"].isoformat().replace("+00:00", "Z"),
+        records={
+            "today": AstronomyRecord(
+                date=settings["fixed_utc"].date().isoformat(),
+                sunrise="04:40",
+                sunset="21:10",
+                moonrise="22:53",
+                moonset="07:59",
+                moon_phase="FULL_MOON",
+                day_length="16:30",
+            ),
+            "june_solstice": AstronomyRecord(
+                date=f"{settings['fixed_utc'].year}-06-21",
+                sunrise="04:36",
+                sunset="21:12",
+                moonrise="13:30",
+                moonset="00:18",
+                moon_phase="WAXING_GIBBOUS",
+                day_length="16:36",
+            ),
+            "december_solstice": AstronomyRecord(
+                date=f"{settings['fixed_utc'].year}-12-21",
+                sunrise="07:54",
+                sunset="15:44",
+                moonrise="12:01",
+                moonset="03:33",
+                moon_phase="FIRST_QUARTER",
+                day_length="07:50",
+            ),
+        },
+    )
 
 
 def _parse_expected_calls(raw: dict[str, Any]) -> tuple[Any, ...]:

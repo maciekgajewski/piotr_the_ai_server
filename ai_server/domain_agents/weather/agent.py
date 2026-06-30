@@ -11,11 +11,14 @@ from aiohttp import ClientSession
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
 from ai_server.domain_agents.weather.astronomy import (
+    AstronomySnapshot,
     IPGeolocationAstronomyClient,
     WeatherAstronomyRefresher,
     WeatherAstronomyStore,
-    astronomy_to_json,
+    astronomy_facts_to_json,
+    astronomy_focus_from_query,
     format_astronomy,
+    format_astronomy_for_query,
 )
 from ai_server.domain_agents.weather.formatting import format_current_weather, format_forecast, weather_to_json
 from ai_server.domain_agents.weather.interfaces import (
@@ -150,6 +153,16 @@ class WeatherDomainAgent:
             )
             return await self._run_fast_lane(fast_command, logger)
 
+        astronomy_query = _astronomy_query_from_task(task)
+        if astronomy_query is not None:
+            logger.info(
+                "weather DSA using astronomy fast-lane conversation_id=%s task_id=%s focus=%s",
+                conversation.conversation_id,
+                task.get("id", "unknown"),
+                astronomy_focus_from_query(astronomy_query),
+            )
+            return await self._run_astronomy_fast_lane(astronomy_query, logger)
+
         task = _minimal_task_for_agent_loop(task)
 
         toolset = WeatherDomainToolSet(
@@ -283,6 +296,16 @@ class WeatherDomainAgent:
         if forecast is None:
             return _not_found_result(location)
         return _result_for_forecast(forecast)
+
+    async def _run_astronomy_fast_lane(self, query: str, logger: logging.Logger) -> dict[str, Any]:
+        if self._astronomy_refresher is None:
+            logger.info("astronomy fast-lane unavailable reason=not_configured")
+            return _failed_result("Nie mam teraz skonfigurowanych danych astronomicznych.")
+        snapshot = await self._astronomy_refresher.ensure_fresh()
+        if snapshot is None:
+            logger.info("astronomy fast-lane unavailable reason=no_data")
+            return _failed_result("Nie mam teraz danych astronomicznych dla skonfigurowanej lokalizacji.")
+        return _result_for_astronomy(snapshot, query)
 
     async def _get_weather_now(self, request: WeatherNowRequest) -> CurrentWeather | None:
         if self._local_weather_cache is not None:
@@ -457,12 +480,11 @@ class WeatherDomainToolSet(AgentCallableSet):
         snapshot = await self._astronomy_refresher.ensure_fresh()
         if snapshot is None:
             return _tool_failed("No astronomy data is available for the configured location.")
-        data = astronomy_to_json(snapshot)
         return {
             "status": "ok",
             "kind": "astronomy",
             "formatted_text": format_astronomy(snapshot),
-            "astronomy": data,
+            "astronomy": astronomy_facts_to_json(snapshot),
             "entities": [f"astronomy.{snapshot.location}"],
         }
 
@@ -508,6 +530,19 @@ def _result_for_forecast(forecast: WeatherForecast) -> dict[str, Any]:
         text=format_forecast(forecast),
         data={"kind": "forecast", "forecast": data},
         entities=[f"weather.{forecast.location}"],
+        final_reply_mode="verbatim",
+    )
+
+
+def _result_for_astronomy(snapshot: AstronomySnapshot, query: str) -> dict[str, Any]:
+    data = astronomy_facts_to_json(snapshot)
+    focus = astronomy_focus_from_query(query)
+    if focus is not None:
+        data["focus"] = focus
+    return _ok_result(
+        text=format_astronomy_for_query(snapshot, query),
+        data={"kind": "astronomy", "astronomy": data},
+        entities=[f"astronomy.{snapshot.location}"],
         final_reply_mode="verbatim",
     )
 
@@ -651,6 +686,20 @@ def _minimal_task_for_agent_loop(task: DomainTask) -> DomainTask:
         "status": task.get("status", "ready"),
         "clarification_question": task.get("clarification_question"),
     }
+
+
+def _astronomy_query_from_task(task: DomainTask) -> str | None:
+    command = task.get("command")
+    if not isinstance(command, dict):
+        return None
+    if isinstance(command.get("location"), str) and command["location"].strip():
+        return None
+    query = command.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return None
+    if astronomy_focus_from_query(query) is None:
+        return None
+    return query
 
 
 def _ascii_key(value: str) -> str:
