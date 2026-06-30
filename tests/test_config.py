@@ -248,7 +248,7 @@ agent:
   cloud_model: gpt-oss:20b-cloud
   domain_agents:
     home_assistant:
-      model: qwen3:8b
+      cloud_model: qwen3:8b
     time: {}
 """,
     )
@@ -264,7 +264,7 @@ agent:
             "orchestrator_model": "qwen3:4b-instruct",
             "cloud_model": "gpt-oss:20b-cloud",
             "domain_agents": {
-                "home_assistant": {"model": "qwen3:8b"},
+                "home_assistant": {"cloud_model": "qwen3:8b"},
                 "time": {},
             },
         },
@@ -286,7 +286,7 @@ agent:
   fallback_backoff_seconds: 120
   domain_agents:
     home_assistant:
-      fallback_model: qwen3:8b
+      local_model: qwen3:8b
 """,
     )
 
@@ -299,7 +299,7 @@ agent:
             "local_model": "qwen3:4b-instruct",
             "fallback_backoff_seconds": 120.0,
             "domain_agents": {
-                "home_assistant": {"fallback_model": "qwen3:8b"},
+                "home_assistant": {"local_model": "qwen3:8b"},
             },
         },
     )
@@ -585,6 +585,14 @@ agent:
         (
             "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small\n  cloud_model: main\n  fallback_backoff_seconds: 0",
             "agent.fallback_backoff_seconds must be a positive number",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small\n  cloud_model: main\n  domain_agents:\n    weather:\n      model: local",
+            "agent.domain_agents.weather.model has been renamed to agent.domain_agents.weather.cloud_model",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: orchestrator\n  orchestrator_model: small\n  cloud_model: main\n  domain_agents:\n    weather:\n      fallback_model: local",
+            "agent.domain_agents.weather.fallback_model has been renamed to agent.domain_agents.weather.local_model",
         ),
         ("websocket:\n  port: nope\nagent:\n  type: echo", "websocket.port must be an integer"),
         ("websocket:\n  port: 0\nagent:\n  type: echo", "websocket.port must be between 1 and 65535"),

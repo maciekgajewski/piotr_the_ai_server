@@ -46,6 +46,9 @@ For weather tasks:
 - Only route the utterance to the weather domain. The weather agent owns parsing current versus forecast,
   astronomy facts, forecast horizon, location, and focus.
 - Do not include weather tool names, locations, horizons, granularities, astronomy fields, or focus fields.
+- Questions phrased as "o której/kiedy zachodzi słońce", "o której/kiedy wschodzi słońce",
+  "zachód słońca", "wschód słońca", "faza księżyca", or "kiedy wschodzi/zachodzi księżyc"
+  are weather astronomy questions, not current-time questions.
 
 Command shape:
 {"query": "original weather question"}

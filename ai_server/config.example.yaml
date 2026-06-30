@@ -34,6 +34,7 @@ agent:
 #     time: {}
 #     wikipedia: {}
 #     weather:
+#       local_model: qwen3:4b-instruct
 #       ipgeolocation_api_key: replace-with-ipgeolocation-api-key
 #     system_status:
 #       collection_interval_seconds: 30
@@ -45,8 +46,8 @@ agent:
 #       default_music_media_type: playlist
 #       default_music_name: muzykę ze Spotify
 #     home_assistant:
-#       model: gpt-oss:20b-cloud
-#       fallback_model: qwen3:4b-instruct
+#       cloud_model: gpt-oss:20b-cloud
+#       local_model: qwen3:4b-instruct
 
 websocket:
   host: 0.0.0.0

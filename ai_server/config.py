@@ -230,11 +230,24 @@ def _parse_agent_config(raw_config: dict[str, Any], home_assistant_config: Any =
         domain_agents = options.get("domain_agents", {})
         if not isinstance(domain_agents, dict):
             raise ValueError("agent.domain_agents must be a mapping for orchestrator")
+        _validate_domain_agent_model_keys(domain_agents)
 
     return AgentConfig(
         type=agent_type,
         options=options,
     )
+
+
+def _validate_domain_agent_model_keys(domain_agents: dict[str, Any]) -> None:
+    for domain, raw_options in domain_agents.items():
+        if not isinstance(raw_options, dict):
+            continue
+        if "model" in raw_options:
+            raise ValueError(f"agent.domain_agents.{domain}.model has been renamed to agent.domain_agents.{domain}.cloud_model")
+        if "fallback_model" in raw_options:
+            raise ValueError(
+                f"agent.domain_agents.{domain}.fallback_model has been renamed to agent.domain_agents.{domain}.local_model"
+            )
 
 
 def _parse_users_config(raw_config: Any) -> dict[str, dict[str, Any]]:

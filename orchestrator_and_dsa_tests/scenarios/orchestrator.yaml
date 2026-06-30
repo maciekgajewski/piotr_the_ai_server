@@ -66,6 +66,22 @@ cases:
     expected_replies:
       - contains_all: [raport]
 
+  - id: weather_sunset_not_time
+    messages:
+      - o której dzisiaj zachodzi słońce?
+    domain_results:
+      weather:
+        t1:
+          status: ok
+          text: Dzisiaj we Wrocławiu zachód słońca jest o dwadzieścia jeden dziesięć.
+          final_reply_mode: verbatim
+    expected_tasks:
+      - domain: weather
+        command:
+          query: o której dzisiaj zachodzi słońce?
+    expected_replies:
+      - contains_all: [zachód, słońca, dwadzieścia jeden dziesięć]
+
   - id: ha_turn_off_current_area
     messages:
       - wyłącz klimatyzację

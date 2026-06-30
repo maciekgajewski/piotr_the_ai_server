@@ -114,7 +114,7 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
                 "local_model": "qwen3:4b-instruct-fallback",
                 "fallback_backoff_seconds": 120,
                 "domain_agents": {
-                    "home_assistant": {"model": "qwen3:8b", "fallback_model": "qwen3:4b"},
+                    "home_assistant": {"cloud_model": "qwen3:8b", "local_model": "qwen3:4b"},
                     "time": {},
                     "wikipedia": {},
                     "weather": {},
@@ -222,6 +222,81 @@ def test_create_agent_home_assistant_domain_agent_inherits_orchestrator_models(m
         try:
             assert agent._domain_agents["home_assistant"]._model == "gpt-oss:20b-cloud"
             assert agent._domain_agents["home_assistant"]._fallback_model == "qwen3:4b-instruct"
+        finally:
+            await agent.close()
+
+    monkeypatch.setattr(OrchestratorAgent, "preload", fake_preload)
+
+    asyncio.run(create_and_check_agent())
+
+
+def test_create_agent_weather_domain_agent_uses_only_local_model_as_primary(monkeypatch) -> None:
+    async def fake_preload(self) -> None:
+        pass
+
+    async def fake_local_weather_cache_start(self) -> None:
+        pass
+
+    async def create_and_check_agent() -> None:
+        config = AgentConfig(
+            type="orchestrator",
+            options={
+                "orchestrator_model": "qwen3:4b-instruct",
+                "cloud_model": "gpt-oss:20b-cloud",
+                "local_model": "qwen3:14b",
+                "domain_agents": {
+                    "weather": {
+                        "local_model": "qwen3:14b",
+                    },
+                },
+            },
+        )
+        agent = await create_agent(
+            config,
+            "http://ollama:11434",
+            server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
+            cache_dir=Path("/tmp/piotr-test-cache"),
+        )
+
+        try:
+            weather = agent._domain_agents["weather"]
+            assert isinstance(weather, WeatherDomainAgent)
+            assert weather._model == "qwen3:14b"
+            assert weather._fallback_model is None
+        finally:
+            await agent.close()
+
+    monkeypatch.setattr(OrchestratorAgent, "preload", fake_preload)
+    monkeypatch.setattr(WeatherLocalCache, "start", fake_local_weather_cache_start)
+
+    asyncio.run(create_and_check_agent())
+
+
+def test_create_agent_domain_agent_uses_only_cloud_model_as_primary(monkeypatch) -> None:
+    async def fake_preload(self) -> None:
+        pass
+
+    async def create_and_check_agent() -> None:
+        config = AgentConfig(
+            type="orchestrator",
+            options={
+                "orchestrator_model": "qwen3:4b-instruct",
+                "cloud_model": "gpt-oss:20b-cloud",
+                "local_model": "qwen3:14b",
+                "domain_agents": {
+                    "wikipedia": {
+                        "cloud_model": "gpt-oss:20b-cloud-wiki",
+                    },
+                },
+            },
+        )
+        agent = await create_agent(config, "http://ollama:11434")
+
+        try:
+            wikipedia = agent._domain_agents["wikipedia"]
+            assert isinstance(wikipedia, WikipediaDomainAgent)
+            assert wikipedia._model == "gpt-oss:20b-cloud-wiki"
+            assert wikipedia._fallback_model is None
         finally:
             await agent.close()
 
