@@ -892,6 +892,7 @@ No firmware flashing has been done yet.
 - ESPHome reported `OTA successful` and `Successfully uploaded program.`
 - Post-flash check:
   - Ping to `192.168.0.180` succeeded with 2/2 replies.
+
 ## 2026-06-28T08:55:00Z - Open-mic display stays idle until server acceptance
 
 - Fixed open-mic satellite UI behavior where any loud VAD segment could switch the Box display into listening/thinking state before the server detected the wake phrase.
@@ -911,3 +912,48 @@ No firmware flashing has been done yet.
   - `text_request` and `text_response` reset to `"..."`
 - Flashed the office Box over OTA to `192.168.0.180`.
 - ESPHome reported `OTA successful` and `Successfully uploaded program.`
+
+## 2026-06-29T18:31:01Z - Shared satellite microphone service contract
+
+- Added `firmware/esphome/packages/piotr-voice-satellite-api-services.yaml` as the common ESPHome API service contract for Piotr voice satellites.
+- Box and Voice PE firmware packages now include the common service contract instead of duplicating `api.services`.
+- The contract exposes:
+  - `play_message_end_cue`
+  - `play_conversation_timeout_cue`
+  - `start_follow_up_listening`
+  - `start_open_mic_listening`
+  - `reset_open_mic_wake_candidate`
+- Voice PE firmware now implements the open-mic backend scripts so it has the same server-facing microphone control surface as the office Box, while keeping Voice PE-specific LED and audio playback behavior local to its package.
+- Validated ESPHome configuration for:
+  - `firmware/esphome/box3-satellite.yaml`
+  - `firmware/esphome/voice-pe-bedroom.yaml`
+  - `firmware/esphome/voice-pe-02.yaml`
+- Compiled all three firmware entrypoints successfully.
+- Verified generated `main.cpp` for all three builds contains:
+  - all five shared API service triggers
+  - `server_controlled_open_mic_active`
+  - `voice_assistant::StartContinuousAction`
+- Flashed the office Box over OTA to `192.168.0.180`; ESPHome reported `OTA successful`.
+- Flashed the bedroom Voice PE over OTA to `192.168.0.13`; ESPHome reported `OTA successful`.
+- Flashed the new living-room Voice PE over USB on `/dev/ttyACM0`; esptool verified the written hashes and ESPHome reported `Successfully uploaded program`.
+- Post-flash name resolution:
+  - `piotr-box3-01-cbfaA8.local` -> `192.168.0.180`
+  - `piotr-voice-pe-bedroom-01.local` -> `192.168.0.13`
+  - `piotr-voice-pe-02.local` -> `192.168.0.167`
+
+## 2026-06-29T19:27:42Z - Added office Voice PE 03
+
+- Added `firmware/esphome/voice-pe-03.yaml` for `piotr-voice-pe-03`.
+- Added matching ESPHome API and OTA secrets in `firmware/esphome/secrets.yaml` and placeholders in `firmware/esphome/secrets.example.yaml`.
+- Added AI-server microphone config for `voice-pe-03` in area `office`.
+- Moved the existing Box 3 AI-server area from `office` to `Hanna's Den` while keeping its existing config name stable.
+- Updated `docs/project-standard-satellite-behavior.md` to list `voice-pe-03` as the office Voice PE.
+- Validated ESPHome configuration for `firmware/esphome/voice-pe-03.yaml`.
+- Compiled `firmware/esphome/voice-pe-03.yaml` successfully.
+- Verified generated `main.cpp` contains:
+  - all five shared API service triggers
+  - `server_controlled_open_mic_active`
+  - `voice_assistant::StartContinuousAction`
+- Flashed the new Voice PE over USB on `/dev/ttyACM0`; esptool verified written hashes and ESPHome reported `Successfully uploaded program`.
+- Post-flash name resolution:
+  - `piotr-voice-pe-03.local` -> `192.168.0.153`

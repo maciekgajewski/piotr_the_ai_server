@@ -417,6 +417,7 @@ class MicrophoneManager:
             timeout_seconds,
             timeout_is_unavailable,
         )
+        ignored_counts: dict[str, int] = {}
         while True:
             try:
                 if timeout_seconds is None:
@@ -439,8 +440,24 @@ class MicrophoneManager:
                     event.width,
                     event.channels,
                 )
+                if ignored_counts:
+                    logger.debug(
+                        "ignored stale microphone events before audio start counts=%s",
+                        ignored_counts,
+                    )
                 return event
-            logger.warning("ignored microphone event before audio start event=%s", type(event).__name__)
+            event_name = type(event).__name__
+            ignored_counts[event_name] = ignored_counts.get(event_name, 0) + 1
+            if isinstance(event, (AudioChunk, AudioEnd, AudioProgress)):
+                count = ignored_counts[event_name]
+                if count == 1 or count % 50 == 0:
+                    logger.debug(
+                        "ignored stale microphone event before audio start event=%s count=%s",
+                        event_name,
+                        count,
+                    )
+                continue
+            logger.warning("ignored microphone event before audio start event=%s", event_name)
 
     async def _send_transcript_message(
         self,

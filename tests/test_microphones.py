@@ -534,6 +534,49 @@ def test_microphone_manager_retries_open_mic_when_audio_start_never_arrives(capl
     assert "microphone available again" not in caplog.text
 
 
+def test_microphone_manager_ignores_stale_events_before_open_mic_audio_start_on_debug(caplog) -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone(
+            events=[
+                AudioProgress(chunks=50, bytes=51200),
+                AudioChunk(data=b"stale-audio"),
+                AudioEnd(),
+                AudioStart(wake_word=None),
+                AudioChunk(data=b"audio"),
+                AudioEnd(),
+            ]
+        )
+        agent = FakeAgent()
+        tts = FakeTts()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=FakeStt(),
+            tts=tts,
+            agent=agent,
+            follow_up_timeout_seconds=0.1,
+            open_microphones={"office"},
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="ai_server.microphones.manager"):
+            await manager.start()
+            await asyncio.wait_for(tts.spoke.wait(), timeout=1)
+            await manager.close()
+
+        assert agent.messages == ["cześć"]
+
+    asyncio.run(run())
+
+    assert "ignored stale microphone event before audio start event=AudioProgress count=1" in caplog.text
+    assert "ignored stale microphone event before audio start event=AudioChunk count=1" in caplog.text
+    assert "ignored stale microphone event before audio start event=AudioEnd count=1" in caplog.text
+    assert "ignored stale microphone events before audio start counts=" in caplog.text
+    assert all(
+        record.levelno < logging.WARNING
+        for record in caplog.records
+        if "ignored" in record.getMessage() and "before audio start" in record.getMessage()
+    )
+
+
 def test_microphone_manager_retries_open_mic_when_stream_stops_emitting_events(caplog) -> None:
     async def run() -> None:
         microphone = FakeMicrophone(

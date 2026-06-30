@@ -30,10 +30,23 @@ ESPHome satellites must expose these API services when the hardware can play loc
 - `play_conversation_timeout_cue`
 - `start_follow_up_listening`
 - `start_open_mic_listening`
+- `reset_open_mic_wake_candidate`
 
 The AI server uses these service names to keep follow-up conversations and end-of-message feedback consistent across satellite models.
 The open-mic service is used only for microphones configured with `open_mic: true`; other microphones continue to use local wake-word mode.
 In open-mic mode, satellites should not play a wake-recognized cue when the wake phrase is first detected in partial STT. The server plays `play_message_end_cue` only after end-of-speech and wake-phrase acceptance.
+When a partial STT segment is rejected as a wake candidate, the server calls `reset_open_mic_wake_candidate`; the satellite should keep continuous capture active and reset only its local waiting/listening UI.
+
+The shared service contract lives in `firmware/esphome/packages/piotr-voice-satellite-api-services.yaml`.
+Hardware packages include that file and implement the script IDs it calls:
+
+- `play_message_end_cue`
+- `play_conversation_timeout_cue`
+- `start_follow_up_listening`
+- `start_open_mic_listening`
+- `reset_open_mic_wake_candidate`
+
+Keep hardware-specific behavior inside the hardware package. For example, the Box updates its display and text sensors, while Voice PE updates LED state and uses its own media-player playback path.
 
 ## Silence Calibration
 
@@ -62,3 +75,5 @@ A physical push-to-talk or touch-to-talk control should start a normal voice ass
 
 - ESP32-S3-BOX-3: `firmware/esphome/box3-satellite.yaml`
 - Home Assistant Voice Preview Edition, bedroom: `firmware/esphome/voice-pe-bedroom.yaml`
+- Home Assistant Voice Preview Edition, living room: `firmware/esphome/voice-pe-02.yaml`
+- Home Assistant Voice Preview Edition, office: `firmware/esphome/voice-pe-03.yaml`

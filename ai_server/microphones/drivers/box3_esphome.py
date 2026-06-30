@@ -171,6 +171,7 @@ class Box3EsphomeMicrophone:
             )
             self._listening_mode = "open_mic"
             await self._finish_voice_assistant_run()
+            self._drain_queued_events("open-mic re-arm")
             await self._execute_api_service(START_OPEN_MIC_LISTENING_SERVICE)
             return
         if isinstance(event, StartFollowUpListening):
@@ -180,6 +181,7 @@ class Box3EsphomeMicrophone:
             )
             self._listening_mode = "follow_up"
             await self._finish_voice_assistant_run()
+            self._drain_queued_events("follow-up re-arm")
             await self._execute_api_service(START_FOLLOW_UP_LISTENING_SERVICE)
             return
         if isinstance(event, ConversationTimeoutCue):
@@ -378,6 +380,7 @@ class Box3EsphomeMicrophone:
         _audio_settings: Any,
         wake_word_phrase: str | None,
     ) -> int:
+        self._drain_queued_events("new voice assistant stream start")
         self._chunks.clear()
         self._pending_audio_chunks.clear()
         self._wake_word = wake_word_phrase
@@ -580,6 +583,7 @@ class Box3EsphomeMicrophone:
     async def _start_wake_word_listening(self) -> None:
         self._logger.debug("starting ESPHome wake-word re-arm state=%s", self._voice_assistant_state())
         await self._finish_voice_assistant_run()
+        self._drain_queued_events("wake-word re-arm")
         if self._client is not None:
             self._unsubscribe_voice_assistant()
             self._subscribe_voice_assistant()
@@ -636,6 +640,22 @@ class Box3EsphomeMicrophone:
             "recovered stale ESPHome voice assistant stream before re-arm state=%s",
             self._voice_assistant_state(),
         )
+
+    def _drain_queued_events(self, reason: str) -> None:
+        counts: dict[str, int] = {}
+        while True:
+            try:
+                event = self._events.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            counts[type(event).__name__] = counts.get(type(event).__name__, 0) + 1
+        if counts:
+            self._logger.debug(
+                "drained stale ESPHome voice assistant events reason=%s counts=%s state=%s",
+                reason,
+                counts,
+                self._voice_assistant_state(),
+            )
 
     def _send_run_end_once(self) -> None:
         if self._run_end_sent:
