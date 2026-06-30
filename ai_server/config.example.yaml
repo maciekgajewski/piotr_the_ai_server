@@ -33,7 +33,8 @@ agent:
 #   domain_agents:
 #     time: {}
 #     wikipedia: {}
-#     weather: {}
+#     weather:
+#       ipgeolocation_api_key: replace-with-ipgeolocation-api-key
 #     system_status:
 #       collection_interval_seconds: 30
 #       baseline_alpha: 0.01

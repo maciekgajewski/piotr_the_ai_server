@@ -86,6 +86,8 @@ def create_domain_agents(
                 ollama_url=ollama_url,
                 location=_optional_domain_string(raw_options, domain, "location", server_config.location),
                 cache_dir=_domain_cache_dir(raw_options, domain, cache_dir),
+                data_store=data_store,
+                ipgeolocation_api_key=_optional_domain_string(raw_options, domain, "ipgeolocation_api_key", None),
                 processing_update_interval_seconds=processing_updates.interval_seconds,
             )
             continue

@@ -17,12 +17,22 @@ from ai_server.domain_agents.weather import (
     WeatherNowRequest,
 )
 from ai_server.domain_agents.weather.agent import WeatherDomainToolSet
+from ai_server.domain_agents.weather.astronomy import (
+    ASTRONOMY_STORE_KEY,
+    IPGeolocationAstronomyClient,
+    AstronomyRecord,
+    AstronomySnapshot,
+    WeatherAstronomyRefresher,
+    WeatherAstronomyStore,
+)
 from ai_server.domain_agents.weather.fast_lane import weather_task_from_utterance
 from ai_server.domain_agents.weather.formatting import format_current_weather
+from ai_server.domain_agents.weather.local_cache import LOCAL_FORECAST_REQUESTS, WeatherLocalCache
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider, _station_slug
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
 from ai_server.interfaces import Conversation
 from ai_server.orchestrator.known_utterances import collect_known_utterance_tasks, known_utterance_task
+from ai_server.utils import JsonFileStore
 
 
 def test_weather_planning_contract_routes_minimal_tasks(tmp_path: Path) -> None:
@@ -211,6 +221,237 @@ def test_open_meteo_provider_parses_daily_forecast(tmp_path: Path) -> None:
     assert forecast.provider == "open_meteo"
     assert [day.date.isoformat() for day in forecast.daily] == ["2026-06-06", "2026-06-07"]
     assert forecast.daily[1].weather_description == "deszcz"
+
+
+def test_weather_astronomy_store_uses_utc_last_pull_date_and_location_freshness(tmp_path: Path) -> None:
+    store = WeatherAstronomyStore(JsonFileStore(tmp_path))
+    snapshot = _astronomy_snapshot(
+        location="Wrocław",
+        last_pull_date="2026-06-30T10:00:00Z",
+    )
+
+    store.store_snapshot(snapshot)
+    loaded = store.load()
+
+    assert loaded == snapshot
+    assert store.load_for_location("Wrocław") == snapshot
+    assert store.load_for_location("Gdańsk") is None
+    assert store.is_fresh(
+        snapshot,
+        location="Wrocław",
+        now_utc=dt.datetime(2026, 6, 30, 21, 59, tzinfo=dt.UTC),
+        max_age_seconds=12 * 60 * 60,
+    )
+    assert not store.is_fresh(
+        snapshot,
+        location="Wrocław",
+        now_utc=dt.datetime(2026, 6, 30, 22, 1, tzinfo=dt.UTC),
+        max_age_seconds=12 * 60 * 60,
+    )
+
+
+def test_json_file_store_omits_none_fields_from_astronomy_data(tmp_path: Path) -> None:
+    store = JsonFileStore(tmp_path)
+    store.store(ASTRONOMY_STORE_KEY, {"location": "Wrocław", "unused": None, "nested": {"empty": None, "value": "ok"}})
+
+    raw = json.loads((tmp_path / f"{ASTRONOMY_STORE_KEY}.json").read_text(encoding="utf-8"))
+
+    assert raw == {"location": "Wrocław", "nested": {"value": "ok"}}
+
+
+def test_ipgeolocation_astronomy_client_fetches_three_configured_location_records() -> None:
+    session = FakeSession(
+        [
+            _ipgeo_response(date="2026-06-30", day_length="16:30", moon_phase="FULL_MOON"),
+            _ipgeo_response(date="2026-06-21", day_length="16:36", moon_phase="WAXING_GIBBOUS"),
+            _ipgeo_response(date="2026-12-21", day_length="7:50", moon_phase="FIRST_QUARTER"),
+        ]
+    )
+    client = IPGeolocationAstronomyClient(api_key="test-key", session=session)
+
+    snapshot = asyncio.run(
+        client.fetch_snapshot(
+            location="Wrocław",
+            now_utc=dt.datetime(2026, 6, 30, 10, 30, tzinfo=dt.UTC),
+        )
+    )
+
+    assert snapshot.location == "Wrocław"
+    assert snapshot.last_pull_date == "2026-06-30T10:30:00Z"
+    assert snapshot.records["today"].moon_phase == "FULL_MOON"
+    assert snapshot.records["june_solstice"].day_length == "16:36"
+    assert snapshot.records["december_solstice"].day_length == "7:50"
+    assert session.urls == [
+        "https://api.ipgeolocation.io/v3/astronomy?apiKey=test-key&location=Wroc%C5%82aw&date=2026-06-30",
+        "https://api.ipgeolocation.io/v3/astronomy?apiKey=test-key&location=Wroc%C5%82aw&date=2026-06-21",
+        "https://api.ipgeolocation.io/v3/astronomy?apiKey=test-key&location=Wroc%C5%82aw&date=2026-12-21",
+    ]
+
+
+def test_weather_astronomy_refresher_refreshes_missing_stale_and_wrong_location_data(tmp_path: Path) -> None:
+    store = WeatherAstronomyStore(JsonFileStore(tmp_path))
+    client = FakeAstronomyClient(
+        _astronomy_snapshot(location="Wrocław", last_pull_date="2026-06-30T10:00:00Z")
+    )
+    refresher = WeatherAstronomyRefresher(
+        location="Wrocław",
+        store=store,
+        client=client,
+        now_factory=lambda: dt.datetime(2026, 6, 30, 10, tzinfo=dt.UTC),
+    )
+
+    missing = asyncio.run(refresher.ensure_fresh())
+    fresh = asyncio.run(refresher.ensure_fresh())
+    store.store_snapshot(_astronomy_snapshot(location="Wrocław", last_pull_date="2026-06-29T10:00:00Z"))
+    stale = asyncio.run(refresher.ensure_fresh())
+    store.store_snapshot(_astronomy_snapshot(location="Gdańsk", last_pull_date="2026-06-30T10:00:00Z"))
+    wrong_location = asyncio.run(refresher.ensure_fresh())
+
+    assert missing.location == "Wrocław"
+    assert fresh.location == "Wrocław"
+    assert stale.location == "Wrocław"
+    assert wrong_location.location == "Wrocław"
+    assert client.fetch_count == 3
+
+
+def test_weather_astronomy_refresher_uses_stale_fallback_when_refresh_fails(tmp_path: Path) -> None:
+    store = WeatherAstronomyStore(JsonFileStore(tmp_path))
+    stale_snapshot = _astronomy_snapshot(location="Wrocław", last_pull_date="2026-06-29T10:00:00Z")
+    store.store_snapshot(stale_snapshot)
+    refresher = WeatherAstronomyRefresher(
+        location="Wrocław",
+        store=store,
+        client=FailingAstronomyClient(),
+        now_factory=lambda: dt.datetime(2026, 6, 30, 10, tzinfo=dt.UTC),
+    )
+
+    snapshot = asyncio.run(refresher.ensure_fresh())
+
+    assert snapshot == stale_snapshot
+
+
+def test_weather_toolset_returns_astronomy_facts() -> None:
+    snapshot = _astronomy_snapshot(location="Wrocław", last_pull_date="2026-06-30T10:00:00Z")
+    toolset = WeatherDomainToolSet([], default_location="Wrocław", astronomy_refresher=StaticAstronomyRefresher(snapshot))
+
+    result = asyncio.run(toolset.get_astronomy_facts())
+
+    assert result["status"] == "ok"
+    assert result["kind"] == "astronomy"
+    assert result["astronomy"]["location"] == "Wrocław"
+    assert result["entities"] == ["astronomy.Wrocław"]
+    assert "słońce wschodzi" in result["formatted_text"]
+    assert "najdłuższy" in result["formatted_text"]
+
+
+def test_weather_toolset_reports_failed_when_astronomy_data_missing() -> None:
+    toolset = WeatherDomainToolSet([], default_location="Wrocław", astronomy_refresher=StaticAstronomyRefresher(None))
+
+    result = asyncio.run(toolset.get_astronomy_facts())
+
+    assert result["status"] == "failed"
+    assert result["text"] == "No astronomy data is available for the configured location."
+
+
+def test_local_weather_cache_refreshes_configured_location_current_and_forecasts() -> None:
+    provider = FakeWeatherProvider(
+        current=_current_weather("Wrocław"),
+        forecast=WeatherForecast(
+            location="Wrocław",
+            provider="fake",
+            timezone="Europe/Warsaw",
+            horizon="today",
+            granularity="daily",
+        ),
+    )
+    cache = WeatherLocalCache(location="Wrocław", providers=[provider])
+
+    asyncio.run(cache.refresh_once())
+
+    assert cache.current_weather(WeatherNowRequest(location="Wrocław")) == provider.current
+    assert cache.current_weather(WeatherNowRequest(location="Gdańsk")) is None
+    assert provider.now_requests == [WeatherNowRequest(location="Wrocław", focus=None)]
+    assert provider.forecast_requests == [
+        WeatherForecastRequest(location="Wrocław", horizon=horizon, granularity=granularity)
+        for horizon, granularity in LOCAL_FORECAST_REQUESTS
+    ]
+
+
+def test_weather_toolset_uses_local_cache_for_configured_location_current_weather() -> None:
+    provider = FakeWeatherProvider(current=_current_weather("Wrocław"))
+    cache = WeatherLocalCache(location="Wrocław", providers=[provider])
+    asyncio.run(cache.refresh_once())
+    provider.now_requests.clear()
+    toolset = WeatherDomainToolSet([provider], default_location="Wrocław", local_weather_cache=cache)
+
+    result = asyncio.run(toolset.get_current_weather())
+
+    assert result["status"] == "ok"
+    assert result["source"] == "local_cache"
+    assert result["weather"]["location"] == "Wrocław"
+    assert provider.now_requests == []
+
+
+def test_weather_toolset_uses_local_cache_for_configured_location_forecast() -> None:
+    forecast = WeatherForecast(
+        location="Wrocław",
+        provider="fake",
+        timezone="Europe/Warsaw",
+        horizon="today",
+        granularity="hourly",
+        hourly=(
+            HourlyForecast(
+                time=dt.datetime(2026, 6, 1, 18, tzinfo=ZoneInfo("Europe/Warsaw")),
+                weather_code=61,
+                weather_description="deszcz",
+                temperature_c=20.0,
+                apparent_temperature_c=20.0,
+                precipitation_mm=1.0,
+                precipitation_probability_percent=80.0,
+                wind_speed_kmh=8.0,
+                wind_gusts_kmh=16.0,
+            ),
+        ),
+    )
+    provider = FakeWeatherProvider(current=_current_weather("Wrocław"), forecast=forecast)
+    cache = WeatherLocalCache(location="Wrocław", providers=[provider])
+    asyncio.run(cache.refresh_once())
+    provider.forecast_requests.clear()
+    toolset = WeatherDomainToolSet([provider], default_location="Wrocław", local_weather_cache=cache)
+
+    result = asyncio.run(toolset.get_weather_forecast(horizon="today", granularity="hourly"))
+
+    assert result["status"] == "ok"
+    assert result["source"] == "local_cache"
+    assert result["forecast"]["location"] == "Wrocław"
+    assert provider.forecast_requests == []
+
+
+def test_weather_domain_agent_fast_lane_uses_local_cache() -> None:
+    provider = FakeWeatherProvider(current=_current_weather("Wrocław"))
+    cache = WeatherLocalCache(location="Wrocław", providers=[provider])
+    asyncio.run(cache.refresh_once())
+    provider.now_requests.clear()
+    agent = WeatherDomainAgent(
+        model="qwen3:4b-instruct",
+        location="Wrocław",
+        cache_dir=Path("/tmp/piotr-test-cache"),
+        providers=[provider],
+        local_weather_cache=cache,
+        ollama_connection=FakeOllamaConnection(),
+    )
+
+    result = asyncio.run(
+        agent.run_task(
+            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
+            {"id": "t1", "domain": "weather", "command": {"tool": "get_weather_now", "query": "Pogoda?"}},
+            {},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["data"]["weather"]["location"] == "Wrocław"
+    assert provider.now_requests == []
 
 
 def test_weather_domain_agent_formats_simple_current_weather() -> None:
@@ -441,6 +682,103 @@ def test_format_current_weather_temperature_focus() -> None:
     )
 
     assert format_current_weather(weather, focus="temperature") == "We Wrocławiu jest szesnaście stopni."
+
+
+def _current_weather(location: str) -> CurrentWeather:
+    return CurrentWeather(
+        location=location,
+        provider="fake",
+        observed_at=dt.datetime(2026, 6, 1, 7, tzinfo=ZoneInfo("Europe/Warsaw")),
+        station_name=location,
+        temperature_c=15.7,
+        humidity_percent=90.0,
+        pressure_hpa=1012.3,
+        wind_speed_kmh=10.8,
+        wind_direction_deg=270,
+        precipitation_mm=1.4,
+    )
+
+
+def _astronomy_snapshot(location: str, last_pull_date: str) -> AstronomySnapshot:
+    return AstronomySnapshot(
+        location=location,
+        last_pull_date=last_pull_date,
+        records={
+            "today": AstronomyRecord(
+                date="2026-06-30",
+                sunrise="04:40",
+                sunset="21:10",
+                moonrise="22:53",
+                moonset="07:59",
+                moon_phase="FULL_MOON",
+                day_length="16:30",
+            ),
+            "june_solstice": AstronomyRecord(
+                date="2026-06-21",
+                sunrise="04:36",
+                sunset="21:12",
+                moonrise="13:30",
+                moonset="00:18",
+                moon_phase="WAXING_GIBBOUS",
+                day_length="16:36",
+            ),
+            "december_solstice": AstronomyRecord(
+                date="2026-12-21",
+                sunrise="07:54",
+                sunset="15:44",
+                moonrise="12:01",
+                moonset="03:33",
+                moon_phase="FIRST_QUARTER",
+                day_length="7:50",
+            ),
+        },
+    )
+
+
+def _ipgeo_response(*, date: str, day_length: str, moon_phase: str) -> dict[str, Any]:
+    return {
+        "astronomy": {
+            "date": date,
+            "sunrise": "04:40",
+            "sunset": "21:10",
+            "moonrise": "22:53",
+            "moonset": "07:59",
+            "moon_phase": moon_phase,
+            "day_length": day_length,
+        }
+    }
+
+
+class FakeAstronomyClient:
+    def __init__(self, snapshot: AstronomySnapshot) -> None:
+        self.snapshot = snapshot
+        self.fetch_count = 0
+
+    async def fetch_snapshot(self, *, location: str, now_utc: dt.datetime) -> AstronomySnapshot:
+        self.fetch_count += 1
+        return self.snapshot
+
+    async def close(self) -> None:
+        pass
+
+
+class FailingAstronomyClient:
+    async def fetch_snapshot(self, *, location: str, now_utc: dt.datetime) -> AstronomySnapshot:
+        raise RuntimeError("boom")
+
+    async def close(self) -> None:
+        pass
+
+
+class StaticAstronomyRefresher:
+    def __init__(self, snapshot: AstronomySnapshot | None) -> None:
+        self.snapshot = snapshot
+
+    async def ensure_fresh(self) -> AstronomySnapshot | None:
+        return self.snapshot
+
+    async def close(self) -> None:
+        pass
 
 
 class FakeSession:

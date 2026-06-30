@@ -12,10 +12,12 @@ from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.ai_tools.calculator import CalculatorTool
 from ai_server.ai_tools.home_assistant import HomeAssistantTool
 from ai_server.config import AgentConfig, ProcessingUpdatesConfig, ServerConfig
+from ai_server.domain_agents import create_domain_agents
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
 from ai_server.domain_agents.system_status import SystemStatusDomainAgent
 from ai_server.domain_agents.weather import WeatherDomainAgent
+from ai_server.domain_agents.weather.local_cache import WeatherLocalCache
 from ai_server.domain_agents.wikipedia import WikipediaDomainAgent
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 from ai_server.utils import JsonFileStore
@@ -97,6 +99,9 @@ def test_create_agent_returns_assistant_agent_with_loaded_tools(monkeypatch) -> 
 
 def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
     async def fake_preload(self) -> None:
+        pass
+
+    async def fake_local_weather_cache_start(self) -> None:
         pass
 
     async def create_and_check_agent() -> None:
@@ -182,6 +187,7 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             await agent.close()
 
     monkeypatch.setattr(OrchestratorAgent, "preload", fake_preload)
+    monkeypatch.setattr(WeatherLocalCache, "start", fake_local_weather_cache_start)
 
     asyncio.run(create_and_check_agent())
 
@@ -222,6 +228,52 @@ def test_create_agent_home_assistant_domain_agent_inherits_orchestrator_models(m
     monkeypatch.setattr(OrchestratorAgent, "preload", fake_preload)
 
     asyncio.run(create_and_check_agent())
+
+
+def test_create_domain_agents_configures_weather_astronomy_refresher(tmp_path: Path) -> None:
+    agents = create_domain_agents(
+        AgentConfig(
+            type="orchestrator",
+            options={
+                "cloud_model": "gpt-oss:20b-cloud",
+                "local_model": "qwen3:4b-instruct",
+                "domain_agents": {
+                    "weather": {"ipgeolocation_api_key": "test-key"},
+                },
+            },
+        ),
+        "http://ollama:11434",
+        server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
+        cache_dir=tmp_path,
+        data_store=JsonFileStore(tmp_path),
+    )
+
+    try:
+        weather = agents["weather"]
+        assert isinstance(weather, WeatherDomainAgent)
+        assert weather._astronomy_refresher is not None
+    finally:
+        asyncio.run(agents["weather"].close())
+
+
+def test_create_domain_agents_rejects_empty_weather_astronomy_api_key(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="agent\\.domain_agents\\.weather\\.ipgeolocation_api_key"):
+        create_domain_agents(
+            AgentConfig(
+                type="orchestrator",
+                options={
+                    "cloud_model": "gpt-oss:20b-cloud",
+                    "local_model": "qwen3:4b-instruct",
+                    "domain_agents": {
+                        "weather": {"ipgeolocation_api_key": ""},
+                    },
+                },
+            ),
+            "http://ollama:11434",
+            server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
+            cache_dir=tmp_path,
+            data_store=JsonFileStore(tmp_path),
+        )
 
 
 def test_assistant_prompt_template_preserves_json_schema_braces() -> None:

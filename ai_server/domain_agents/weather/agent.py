@@ -10,6 +10,13 @@ from aiohttp import ClientSession
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
+from ai_server.domain_agents.weather.astronomy import (
+    IPGeolocationAstronomyClient,
+    WeatherAstronomyRefresher,
+    WeatherAstronomyStore,
+    astronomy_to_json,
+    format_astronomy,
+)
 from ai_server.domain_agents.weather.formatting import format_current_weather, format_forecast, weather_to_json
 from ai_server.domain_agents.weather.interfaces import (
     CurrentWeather,
@@ -19,11 +26,13 @@ from ai_server.domain_agents.weather.interfaces import (
     WeatherProvider,
 )
 from ai_server.domain_agents.weather.fast_lane import fast_lane_command_from_task_command, known_weather_utterances
+from ai_server.domain_agents.weather.local_cache import WeatherLocalCache
 from ai_server.domain_agents.weather.messages import WEATHER_AGENT_SYSTEM_PROMPT
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
 from ai_server.interfaces import Conversation
 from ai_server.ollama_client import OLLAMA_BASE_URL
+from ai_server.utils import JsonFileStore
 from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 from ai_server.utils.polish_numbers import polish_cardinal, polish_decimal
 from ai_server.utils.text import ascii_fold, normalize_text
@@ -32,8 +41,8 @@ from ai_server.utils.text import ascii_fold, normalize_text
 PLANNING_PROMPT = """
 For weather tasks:
 - Only route the utterance to the weather domain. The weather agent owns parsing current versus forecast,
-  forecast horizon, location, and focus.
-- Do not include weather tool names, locations, horizons, granularities, or focus fields.
+  astronomy facts, forecast horizon, location, and focus.
+- Do not include weather tool names, locations, horizons, granularities, astronomy fields, or focus fields.
 
 Command shape:
 {"query": "original weather question"}
@@ -50,8 +59,12 @@ class WeatherDomainAgent:
         fallback_backoff_seconds: float = 300.0,
         location: str | None,
         cache_dir: Path,
+        data_store: JsonFileStore | None = None,
         providers: list[WeatherProvider] | None = None,
+        ipgeolocation_api_key: str | None = None,
         session: ClientSession | None = None,
+        astronomy_refresher: WeatherAstronomyRefresher | None = None,
+        local_weather_cache: WeatherLocalCache | None = None,
         ollama_connection: AgentLoopOllamaConnection | None = None,
         loop_factory: Callable[..., AgentLoop] = AgentLoop,
         processing_update_interval_seconds: float = 5.0,
@@ -65,12 +78,33 @@ class WeatherDomainAgent:
             ImgwWeatherProvider(session=session),
             OpenMeteoWeatherProvider(cache_dir=cache_dir, session=session),
         ]
+        self._astronomy_refresher = astronomy_refresher or _create_astronomy_refresher(
+            location=location,
+            data_store=data_store,
+            api_key=ipgeolocation_api_key,
+            session=session,
+        )
+        self._local_weather_cache = local_weather_cache or WeatherLocalCache(location=location, providers=self._providers)
         self._owns_providers = providers is None
         self._ollama_connection = ollama_connection or AgentLoopOllamaConnection(base_url=ollama_url, session=session)
         self._owns_ollama_connection = ollama_connection is None
         self._loop_factory = loop_factory
         self._processing_update_interval_seconds = processing_update_interval_seconds
+        self._started = False
         self._logger = logging.getLogger(f"{__name__}.WeatherDomainAgent[{model}:{location or 'no-location'}]")
+
+    async def ensure_started(self) -> None:
+        if self._started:
+            return
+        if self._local_weather_cache is not None:
+            self._logger.info("starting local weather cache")
+            await self._local_weather_cache.start()
+            self._logger.info("local weather cache ready")
+        if self._astronomy_refresher is not None:
+            self._logger.info("starting weather astronomy support")
+            await self._astronomy_refresher.start()
+            self._logger.info("weather astronomy support ready")
+        self._started = True
 
     def known_utterances(self) -> dict[str, DomainTask]:
         return known_weather_utterances()
@@ -78,8 +112,11 @@ class WeatherDomainAgent:
     def query_capabilities(self) -> dict[str, QueryCapability]:
         return {
             "weather_state": QueryCapability(
-                name="Current weather and forecast",
-                description="Read current weather conditions or forecast state for the default location or an explicitly named place.",
+                name="Current weather, forecast, and sky facts",
+                description=(
+                    "Read current weather, forecasts, sunrise, sunset, moonrise, moonset, moon phase, "
+                    "or day-length facts for the default location or an explicitly named place."
+                ),
                 command_template={
                     "query": "original weather question",
                 },
@@ -118,6 +155,8 @@ class WeatherDomainAgent:
         toolset = WeatherDomainToolSet(
             self._providers,
             default_location=self._location,
+            local_weather_cache=self._local_weather_cache,
+            astronomy_refresher=self._astronomy_refresher,
             logger_name=f"{__name__}.WeatherDomainToolSet[{conversation.conversation_id}:{task.get('id', 'unknown')}]",
         )
         loop_config = AgentLoopConfig(
@@ -205,6 +244,10 @@ class WeatherDomainAgent:
         return result
 
     async def close(self) -> None:
+        if self._local_weather_cache is not None:
+            await self._local_weather_cache.close()
+        if self._astronomy_refresher is not None:
+            await self._astronomy_refresher.close()
         if self._owns_providers:
             for provider in self._providers:
                 await provider.close()
@@ -242,6 +285,11 @@ class WeatherDomainAgent:
         return _result_for_forecast(forecast)
 
     async def _get_weather_now(self, request: WeatherNowRequest) -> CurrentWeather | None:
+        if self._local_weather_cache is not None:
+            cached = self._local_weather_cache.current_weather(request)
+            if cached is not None:
+                self._logger.debug("serving current weather from local cache request=%s", request)
+                return cached
         for provider in self._providers:
             try:
                 weather = await provider.get_weather_now(request)
@@ -253,6 +301,11 @@ class WeatherDomainAgent:
         return None
 
     async def _get_weather_forecast(self, request: WeatherForecastRequest) -> WeatherForecast | None:
+        if self._local_weather_cache is not None:
+            cached = self._local_weather_cache.weather_forecast(request)
+            if cached is not None:
+                self._logger.debug("serving weather forecast from local cache request=%s", request)
+                return cached
         for provider in self._providers:
             try:
                 forecast = await provider.get_weather_forecast(request)
@@ -265,9 +318,19 @@ class WeatherDomainAgent:
 
 
 class WeatherDomainToolSet(AgentCallableSet):
-    def __init__(self, providers: list[WeatherProvider], *, default_location: str | None, logger_name: str | None = None) -> None:
+    def __init__(
+        self,
+        providers: list[WeatherProvider],
+        *,
+        default_location: str | None,
+        local_weather_cache: WeatherLocalCache | None = None,
+        astronomy_refresher: WeatherAstronomyRefresher | None = None,
+        logger_name: str | None = None,
+    ) -> None:
         self._providers = providers
         self._default_location = default_location
+        self._local_weather_cache = local_weather_cache
+        self._astronomy_refresher = astronomy_refresher
         self._logger = logging.getLogger(logger_name or f"{__name__}.{type(self).__name__}")
 
     @AgentCallableSet.tool(
@@ -288,6 +351,18 @@ class WeatherDomainToolSet(AgentCallableSet):
         if focus is not None and normalized_focus is None:
             return _tool_invalid("focus", "Use focus='temperature' or omit focus.")
         request = WeatherNowRequest(location=resolved_location, focus=normalized_focus)
+        if self._local_weather_cache is not None:
+            cached_weather = self._local_weather_cache.current_weather(request)
+            if cached_weather is not None:
+                data = weather_to_json(cached_weather)
+                return {
+                    "status": "ok",
+                    "kind": "current",
+                    "formatted_text": format_current_weather(cached_weather, focus=normalized_focus),
+                    "weather": data,
+                    "entities": [f"weather.{cached_weather.location}"],
+                    "source": "local_cache",
+                }
         for provider in self._providers:
             try:
                 weather = await provider.get_weather_now(request)
@@ -339,6 +414,19 @@ class WeatherDomainToolSet(AgentCallableSet):
             horizon=normalized_horizon,
             granularity=normalized_granularity,
         )
+        if self._local_weather_cache is not None:
+            cached_forecast = self._local_weather_cache.weather_forecast(request)
+            if cached_forecast is not None:
+                data = weather_to_json(cached_forecast)
+                return {
+                    "status": "ok",
+                    "kind": "forecast",
+                    "formatted_text": format_forecast(cached_forecast),
+                    "forecast": data,
+                    "focus": normalized_focus,
+                    "entities": [f"weather.{cached_forecast.location}"],
+                    "source": "local_cache",
+                }
         for provider in self._providers:
             try:
                 forecast = await provider.get_weather_forecast(request)
@@ -356,6 +444,27 @@ class WeatherDomainToolSet(AgentCallableSet):
                     "entities": [f"weather.{forecast.location}"],
                 }
         return _tool_not_found(resolved_location)
+
+    @AgentCallableSet.tool(
+        description=(
+            "Fetch configured-location astronomy facts: sunrise, sunset, moonrise, moonset, moon phase, "
+            "day length, and comparison with the year's shortest and longest days. Use for sun, moon, or day-length questions."
+        )
+    )
+    async def get_astronomy_facts(self) -> dict[str, Any]:
+        if self._astronomy_refresher is None:
+            return _tool_failed("Astronomy data source is not configured.")
+        snapshot = await self._astronomy_refresher.ensure_fresh()
+        if snapshot is None:
+            return _tool_failed("No astronomy data is available for the configured location.")
+        data = astronomy_to_json(snapshot)
+        return {
+            "status": "ok",
+            "kind": "astronomy",
+            "formatted_text": format_astronomy(snapshot),
+            "astronomy": data,
+            "entities": [f"astronomy.{snapshot.location}"],
+        }
 
     def _resolved_location(self, location: str | None) -> str | None:
         if isinstance(location, str) and location.strip():
@@ -424,6 +533,34 @@ def _not_found_result(location: str) -> dict[str, Any]:
 
 
 def _failed_result(text: str) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "text": text,
+        "needs_clarification": False,
+        "clarification_question": None,
+        "entities": [],
+    }
+
+
+def _create_astronomy_refresher(
+    *,
+    location: str | None,
+    data_store: JsonFileStore | None,
+    api_key: str | None,
+    session: ClientSession | None,
+) -> WeatherAstronomyRefresher | None:
+    if api_key is None:
+        return None
+    if not isinstance(api_key, str) or not api_key.strip():
+        raise ValueError("agent.domain_agents.weather.ipgeolocation_api_key must be a non-empty string when provided")
+    if data_store is None:
+        raise ValueError("weather astronomy support requires a JsonFileStore")
+    client = IPGeolocationAstronomyClient(api_key=api_key.strip(), session=session)
+    store = WeatherAstronomyStore(data_store)
+    return WeatherAstronomyRefresher(location=location, store=store, client=client)
+
+
+def _tool_failed(text: str) -> dict[str, Any]:
     return {
         "status": "failed",
         "text": text,
