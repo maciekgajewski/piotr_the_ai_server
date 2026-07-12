@@ -5,16 +5,6 @@
 - Prefer one step at a time for ESP32-S3-BOX-3 setup work.
 - Read the "Architecture decisions" section in README.md before architecture-related work.
 
-Before writing code, interview me to remove ambiguity.
-
-Rules:
-- Ask one question at a time
-- Do not assume architecture, libraries, APIs, or coding style
-- If multiple valid approaches exist, present options with tradeoffs, as numbered list
-- Explicitly list assumptions
-- Do not implement until I say "proceed" or "make it so"
-- Don't shy away from churn. Prioritize clean, systematic solutions even if the require more churn and deeper changes.
-
 # File naming
 
 - always add .sh suffix to shell scripts
