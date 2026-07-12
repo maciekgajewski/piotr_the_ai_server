@@ -10,13 +10,15 @@ from dataclasses import replace
 from pathlib import Path
 import sys
 import wave
+import uuid
 
 import yaml
 
 from ai_server.config import MicrophoneConfig, load_config_from_yaml
 from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.interfaces import Microphone
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, StartFollowUpListening
+from ai_server.microphones.messages import AudioChunk, ListeningMode, ListeningStarted, SpeechEnded, SpeechStarted
+from ai_server.microphones.messages import StartListening
 
 
 DEFAULT_RATE = 16000
@@ -230,11 +232,11 @@ def next_sample_path(output_dir: Path, index: int) -> Path:
     return output_dir / f"{index:04d}.wav"
 
 
-def audio_format_from_start(event: AudioStart) -> AudioFormat:
+def audio_format_from_start(event: SpeechStarted) -> AudioFormat:
     return AudioFormat(
-        rate=event.rate or DEFAULT_RATE,
-        width=event.width or DEFAULT_WIDTH,
-        channels=event.channels or DEFAULT_CHANNELS,
+        rate=event.rate,
+        width=event.width,
+        channels=event.channels,
     )
 
 
@@ -299,10 +301,14 @@ async def capture_samples(
     assembler: VoiceSampleAssembler,
 ) -> None:
     print("Starting microphone follow-up listening. Press Ctrl-C to stop.", flush=True)
-    await microphone.send_output_event(StartFollowUpListening())
+    listen = StartListening(str(uuid.uuid4()), ListeningMode.FOLLOW_UP)
+    await microphone.send_output_event(listen)
     while True:
         event = await microphone.wait_for_event()
-        if isinstance(event, AudioStart):
+        if isinstance(event, ListeningStarted):
+            assert event == ListeningStarted(listen.listen_id, listen.mode)
+            continue
+        if isinstance(event, SpeechStarted):
             assembler.update_audio_format(audio_format_from_start(event))
             print(
                 "audio started "
@@ -317,7 +323,7 @@ async def capture_samples(
             if saved_paths or assembler.should_print_progress():
                 print_progress(assembler)
             continue
-        if isinstance(event, AudioEnd):
+        if isinstance(event, SpeechEnded):
             saved_paths = assembler.flush()
             for path in saved_paths:
                 print(f"saved learning sample path={path}", flush=True)

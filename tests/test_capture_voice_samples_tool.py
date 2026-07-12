@@ -7,7 +7,7 @@ import sys
 import wave
 
 from ai_server.config import MicrophoneConfig
-from ai_server.microphones.messages import AudioEnd, AudioStart, StartFollowUpListening
+from ai_server.microphones.messages import ListeningMode, ListeningStarted, SpeechEnded, SpeechStarted, StartListening
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "lib"))
@@ -113,10 +113,18 @@ def test_capture_samples_does_not_rearm_after_audio_end(tmp_path: Path) -> None:
     class FakeMicrophone:
         def __init__(self) -> None:
             self.sent = []
-            self.events = [AudioStart(), AudioEnd()]
+            self.events = []
 
         async def send_output_event(self, event) -> None:
             self.sent.append(event)
+            if isinstance(event, StartListening):
+                self.events.extend(
+                    [
+                        ListeningStarted(event.listen_id, event.mode),
+                        SpeechStarted(event.listen_id, "utterance-1", 16000, 2, 1),
+                        SpeechEnded(event.listen_id, "utterance-1", "completed"),
+                    ]
+                )
 
         async def wait_for_event(self):
             return self.events.pop(0)
@@ -135,4 +143,6 @@ def test_capture_samples_does_not_rearm_after_audio_end(tmp_path: Path) -> None:
 
     microphone = asyncio.run(run())
 
-    assert microphone.sent == [StartFollowUpListening()]
+    assert len(microphone.sent) == 1
+    assert isinstance(microphone.sent[0], StartListening)
+    assert microphone.sent[0].mode is ListeningMode.FOLLOW_UP

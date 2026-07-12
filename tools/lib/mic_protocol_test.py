@@ -10,12 +10,14 @@ from pathlib import Path
 import signal
 import struct
 import sys
+import uuid
 
 from ai_server.config import Config, MicrophoneConfig, load_config_from_yaml
 from ai_server.microphones.drivers import create_microphone
 from ai_server.microphones.interfaces import Microphone
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioStart, ConversationTimeoutCue, MessageEndCue
-from ai_server.microphones.messages import StartFollowUpListening, StartWakeWordListening
+from ai_server.microphones.messages import AudioChunk, CueFinished, CueType, ListeningMode, ListeningStarted
+from ai_server.microphones.messages import PlaybackBegin, PlaybackChunk, PlaybackEnd, PlaybackFinished, PlayCue
+from ai_server.microphones.messages import SpeechEnded, SpeechStarted, StartListening
 
 
 DEFAULT_AUDIO_START_TIMEOUT_SECONDS = 90.0
@@ -33,7 +35,7 @@ PCM16_MIN_NEGATIVE = -32768
 @dataclass(frozen=True)
 class RecordedUtterance:
     label: str
-    start: AudioStart
+    start: SpeechStarted
     chunks: tuple[bytes, ...]
     rate: int
     width: int
@@ -98,17 +100,17 @@ class Operator:
             print("Please answer y or n.")
 
 
-async def wait_for_audio_start(
+async def wait_for_speech_start(
     microphone: Microphone,
     timeout_seconds: float,
-) -> AudioStart | None:
+) -> SpeechStarted | None:
     while True:
         try:
             event = await asyncio.wait_for(microphone.wait_for_event(), timeout=timeout_seconds)
         except TimeoutError:
             return None
 
-        if isinstance(event, AudioStart):
+        if isinstance(event, SpeechStarted):
             return event
 
         print(f"Ignored microphone event before audio start: {type(event).__name__}")
@@ -121,14 +123,14 @@ async def capture_utterance(
     stream_event_timeout_seconds: float,
 ) -> RecordedUtterance | None:
     print(f"Waiting for audio start: {label}")
-    start = await wait_for_audio_start(microphone, start_timeout_seconds)
+    start = await wait_for_speech_start(microphone, start_timeout_seconds)
     if start is None:
         print(f"No audio start received within {start_timeout_seconds:g}s.")
         return None
 
-    rate = start.rate or DEFAULT_PLAYBACK_RATE
-    width = start.width or DEFAULT_PLAYBACK_WIDTH
-    channels = start.channels or DEFAULT_PLAYBACK_CHANNELS
+    rate = start.rate
+    width = start.width
+    channels = start.channels
     chunks: list[bytes] = []
     print(
         "Audio started "
@@ -148,7 +150,7 @@ async def capture_utterance(
             if len(chunks) == 1 or len(chunks) % 50 == 0:
                 print(f"Captured chunks={len(chunks)} bytes={sum(len(chunk) for chunk in chunks)}")
             continue
-        if isinstance(event, AudioEnd):
+        if isinstance(event, SpeechEnded):
             utterance = RecordedUtterance(
                 label=label,
                 start=start,
@@ -163,8 +165,8 @@ async def capture_utterance(
                 f"duration={utterance.duration_seconds:.2f}s"
             )
             return utterance
-        if isinstance(event, AudioStart):
-            raise RuntimeError("received nested AudioStart before AudioEnd")
+        if isinstance(event, SpeechStarted):
+            raise RuntimeError("received nested SpeechStarted before SpeechEnded")
 
         print(f"Ignored microphone event while recording: {type(event).__name__}")
 
@@ -192,8 +194,10 @@ async def replay_utterance(
         "Replaying captured audio "
         f"label={utterance.label!r} bytes={utterance.byte_count} duration={utterance.duration_seconds:.2f}s"
     )
+    playback_id = str(uuid.uuid4())
     await microphone.send_output_event(
-        AudioStart(
+        PlaybackBegin(
+            playback_id=playback_id,
             rate=utterance.rate,
             width=utterance.width,
             channels=utterance.channels,
@@ -201,8 +205,9 @@ async def replay_utterance(
         )
     )
     for chunk in replay_chunks:
-        await microphone.send_output_event(AudioChunk(data=chunk))
-    await microphone.send_output_event(AudioEnd())
+        await microphone.send_output_event(PlaybackChunk(playback_id, chunk))
+    await microphone.send_output_event(PlaybackEnd(playback_id))
+    assert await microphone.wait_for_event() == PlaybackFinished(playback_id)
 
 
 def normalize_pcm16_chunks(chunks: tuple[bytes, ...], width: int, target_peak: float) -> tuple[bytes, ...]:
@@ -266,7 +271,9 @@ async def capture_cue_and_replay_step(
     if utterance is None:
         return None
 
-    await microphone.send_output_event(MessageEndCue())
+    cue_id = str(uuid.uuid4())
+    await microphone.send_output_event(PlayCue(cue_id, CueType.UTTERANCE_ACCEPTED))
+    assert await microphone.wait_for_event() == CueFinished(cue_id)
 
     if wake_word_expected:
         await operator.ask_yes_no("Was the wake word detected?")
@@ -292,8 +299,10 @@ async def run_timeout_step(
         "Timeout step: after the next follow-up chime, stay silent. "
         "The tool will wait for the configured follow-up timeout."
     )
-    await microphone.send_output_event(StartFollowUpListening())
-    start = await wait_for_audio_start(microphone, timeout_seconds)
+    listen = StartListening(str(uuid.uuid4()), ListeningMode.FOLLOW_UP)
+    await microphone.send_output_event(listen)
+    assert await microphone.wait_for_event() == ListeningStarted(listen.listen_id, listen.mode)
+    start = await wait_for_speech_start(microphone, timeout_seconds)
     if start is not None:
         print(
             "The microphone opened an audio stream during the silence timeout step "
@@ -309,22 +318,24 @@ async def run_timeout_step(
                         chunks += 1
                         bytes_seen += len(event.data)
                         continue
-                    if isinstance(event, AudioEnd):
+                    if isinstance(event, SpeechEnded):
                         print(
                             "Silence stream ended before the tool timeout "
                             f"chunks={chunks} bytes={bytes_seen}."
                         )
                         break
-                    if isinstance(event, AudioStart):
-                        print("Received nested AudioStart during timeout step.")
+                    if isinstance(event, SpeechStarted):
+                        print("Received nested SpeechStarted during timeout step.")
                         return False
         except TimeoutError:
             print(
-                "No AudioEnd arrived during the timeout step "
+                "No SpeechEnded arrived during the timeout step "
                 f"chunks={chunks} bytes={bytes_seen}. Sending the timeout cue anyway."
             )
 
-    await microphone.send_output_event(ConversationTimeoutCue())
+    cue_id = str(uuid.uuid4())
+    await microphone.send_output_event(PlayCue(cue_id, CueType.FOLLOW_UP_TIMEOUT))
+    assert await microphone.wait_for_event() == CueFinished(cue_id)
     await operator.ask_yes_no("Was the timeout-step follow-up chime audible?")
     await operator.ask_yes_no("Was the timeout chime audible?")
     return True
@@ -381,7 +392,9 @@ async def run(args: argparse.Namespace) -> int:
             "Initial wake-word step: the microphone should be waiting for a wake word. "
             "After pressing Enter, say the wake word and a short phrase."
         )
-        await microphone.send_output_event(StartWakeWordListening())
+        listen = StartListening(str(uuid.uuid4()), ListeningMode.WAKE_WORD)
+        await microphone.send_output_event(listen)
+        assert await microphone.wait_for_event() == ListeningStarted(listen.listen_id, listen.mode)
         first = await capture_cue_and_replay_step(
             microphone=microphone,
             operator=operator,
@@ -399,7 +412,9 @@ async def run(args: argparse.Namespace) -> int:
         await operator.pause(
             "Follow-up step: after the next chime, speak a short phrase without saying the wake word."
         )
-        await microphone.send_output_event(StartFollowUpListening())
+        listen = StartListening(str(uuid.uuid4()), ListeningMode.FOLLOW_UP)
+        await microphone.send_output_event(listen)
+        assert await microphone.wait_for_event() == ListeningStarted(listen.listen_id, listen.mode)
         follow_up = await capture_cue_and_replay_step(
             microphone=microphone,
             operator=operator,
@@ -430,7 +445,9 @@ async def run(args: argparse.Namespace) -> int:
                 "Final wake-word check: the tool will now explicitly return the mic to wake-word mode. "
                 "After pressing Enter, say the wake word and one short phrase."
             )
-            await microphone.send_output_event(StartWakeWordListening())
+            listen = StartListening(str(uuid.uuid4()), ListeningMode.WAKE_WORD)
+            await microphone.send_output_event(listen)
+            assert await microphone.wait_for_event() == ListeningStarted(listen.listen_id, listen.mode)
             final = await capture_cue_and_replay_step(
                 microphone=microphone,
                 operator=operator,

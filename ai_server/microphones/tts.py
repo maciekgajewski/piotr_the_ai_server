@@ -11,7 +11,8 @@ import time
 from typing import Any
 
 from ai_server.config import TtsConfig
-from ai_server.microphones.messages import AudioChunk, AudioEnd, AudioEvent, AudioStart
+from ai_server.microphones.messages import SynthesizedAudioChunk, SynthesizedAudioEnd, SynthesizedAudioEvent
+from ai_server.microphones.messages import SynthesizedAudioStart
 from ai_server.microphones.types import PlaybackTarget
 
 try:
@@ -96,7 +97,7 @@ class PiperTextToSpeech:
             volume=self._config.volume,
         )
 
-    async def synthesize(self, text: str) -> AsyncIterator[AudioEvent]:
+    async def synthesize(self, text: str) -> AsyncIterator[SynthesizedAudioEvent]:
         if not self._started:
             await self.start()
         _require_wyoming()
@@ -113,7 +114,7 @@ class PiperTextToSpeech:
                 if WyomingAudioStart.is_type(event.type):
                     audio_start = WyomingAudioStart.from_event(event)
                     self._logger.debug("received Wyoming audio start event=%s", event)
-                    yield AudioStart(
+                    yield SynthesizedAudioStart(
                         rate=audio_start.rate,
                         width=audio_start.width,
                         channels=audio_start.channels,
@@ -123,12 +124,12 @@ class PiperTextToSpeech:
 
                 if WyomingAudioChunk.is_type(event.type):
                     self._logger.debug("received Wyoming audio chunk event=%s", event.data)
-                    yield AudioChunk(data=WyomingAudioChunk.from_event(event).audio)
+                    yield SynthesizedAudioChunk(data=WyomingAudioChunk.from_event(event).audio)
                     continue
 
                 if WyomingAudioStop.is_type(event.type):
                     self._logger.debug("received Wyoming audio stop event=%s", event)
-                    yield AudioEnd()
+                    yield SynthesizedAudioEnd()
                     return
         finally:
             await client.disconnect()

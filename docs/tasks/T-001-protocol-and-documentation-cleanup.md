@@ -20,7 +20,7 @@ Stage 3 must not begin until the normative documents produced by Stage 2 have be
 
 - **Stage 1:** Completed on 2026-07-12. Added the documentation index, agent routing, authority labels, and the protocol documentation standard.
 - **Stage 2:** Completed on 2026-07-12. Approved normative Conversation and Microphone protocols, their mapping, and the conformance catalogue are indexed under `docs/`.
-- **Stage 3:** In progress and intentionally checkpointed for continuation. The Conversation/websocket milestone is implemented and green. Explicit microphone visual commands and early open-mic candidate feedback are partially implemented. The correlated Microphone Protocol event migration, firmware conformance work, and final verification remain incomplete.
+- **Stage 3:** In progress. The Conversation/websocket milestone is implemented and green. The canonical correlated Microphone Protocol vocabulary, manager-side protocol state machine, manager mapping, Box3 Python driver, explicit visual commands, and early open-mic candidate feedback are implemented. Exhaustive reusable driver conformance, firmware conformance, and final system/hardware verification remain incomplete.
 
 ## Fresh-session continuation handoff
 
@@ -63,20 +63,29 @@ Partial microphone and visual milestone:
 - Added those services to `firmware/esphome/packages/piotr-voice-satellite-api-services.yaml`.
 - Added initial Box3 bitmap-phase and Voice Preview LED-phase scripts for the three connected visual states.
 
+Correlated microphone Python milestone completed on 2026-07-12:
+
+- Replaced the overloaded legacy capture/playback/listening events with the canonical correlated Microphone Protocol vocabulary; no compatibility aliases remain.
+- Added `ai_server/microphones/protocol.py` with explicit driver protocol states, correlation validation, identifier reuse protection, half-duplex command validation, and playback-drain ordering.
+- Separated synthesized TTS events from manager-to-driver playback commands.
+- Migrated `MicrophoneManager` to generate and validate `listen_id`, `utterance_id`, `cue_id`, and `playback_id`, use the Session-supplied follow-up deadline, join stop/cue/playback completions, and recreate an unavailable driver protocol boundary.
+- Removed open-mic idle timeout/re-arm behavior: idle open-mic listening now waits indefinitely for `SpeechStarted`; liveness timeout begins only for an active segment.
+- Migrated `Box3EsphomeMicrophone` to the canonical Python interface. Existing ESPHome callbacks are correlated privately to the single active driver operation until firmware-native correlation is implemented.
+- Migrated microphone operational tools and replaced legacy-sequence tests with focused protocol, manager, and Box3 contract tests.
+
 ### Important discoveries and decisions
 
 - The original Stage 2 draft incorrectly implied that agents should construct `FollowUpRequested(timeout_seconds)`. Agents cannot know websocket or per-microphone timeout policy. The approved correction is `ConversationEndpoint.request_follow_up()`; Session owns and emits the effective timeout. The normative Conversation Protocol, catalogue, and this plan were updated.
 - `ConversationEnded` must be an explicit endpoint event as well as the internal termination signal. `Session` preserves endpoint reasons such as `follow_up_timeout`, emits the end event, and only then emits `ReadyForConversation`.
 - Random message IDs made value-based event assertions noisy. Message dataclasses retain and serialize IDs, while their dataclass equality excludes `message_id`; protocol conformance tests must inspect IDs explicitly when testing correlation.
-- The existing full pytest suite can be green while Stage 3 remains incomplete because most legacy microphone tests exercise the old event vocabulary. Green tests are therefore not evidence that the normative Microphone Protocol is implemented.
+- The full pytest suite can be green while Stage 3 remains incomplete. The canonical Python vocabulary and core state validation now have focused tests, but exhaustive state/event matrices, firmware checks, and hardware evidence are still required.
 - Focused socket-using test commands must be run as a standalone approved pytest command. Combining several commands with shell separators caused sandboxed socket `PermissionError: [Errno 1] Operation not permitted`; this was an execution-environment artifact, not a repository failure.
 
 ### Deviations from the original plan
 
 - The Conversation milestone introduced `ConversationEndpoint.request_follow_up()` before the originally listed event-only migration because this was required to preserve the sealed agent/adapter boundary.
 - The microphone work was checkpointed after visual-state control and candidate UX, before replacing overloaded legacy microphone audio/listening events.
-- Legacy `AudioStart`, `AudioEnd`, `StartWakeWordListening`, `StartOpenMicListening`, `StartFollowUpListening`, `MessageEndCue`, and related manager/driver behavior remain temporarily in use. This is not an accepted compatibility layer; they still must be removed by the remaining Stage 3 migration.
-- Existing microphone tests currently use `_without_visual_events()` for legacy sequence assertions. This keeps old behavior tests readable but is not sufficient visual conformance coverage. Replace or supplement it with explicit ordered visual-state tests.
+- The legacy microphone event vocabulary and visual-filtering assertions were removed during the correlated Python migration.
 - Firmware services and scripts were added but ESPHome config validation, compile, generated-source inspection, and hardware deployment were not started.
 
 ### Exact tests and checks run
@@ -99,24 +108,36 @@ passed with no output
 
 The 28 warnings are aiohttp `NotAppKeyWarning` reports for `app["session_manager"]` and `app["websockets"]` in `ai_server/websocket_server.py`; they are not introduced protocol failures.
 
+Successful checks after the correlated microphone Python migration:
+
+```text
+.venv/bin/python -m pytest tests/test_microphone_protocol.py tests/test_microphones.py tests/test_box3_esphome_microphone.py tests/test_capture_voice_samples_tool.py tests/test_mic_protocol_test.py -q
+49 passed in 0.30s
+
+.venv/bin/python -m pytest -q
+468 passed, 28 warnings in 1.48s
+
+.venv/bin/python -m py_compile ai_server/microphones/*.py ai_server/microphones/drivers/*.py tools/lib/capture_voice_samples.py tools/lib/mic_protocol_test.py ai_server/speaker_recognition/client.py
+passed with no output
+```
+
+The first behavior-suite attempt encountered repeated Ollama request timeouts and was stopped during case 9. A clean retry then passed all cases:
+
+```text
+orchestrator_and_dsa_tests/run.sh --no-transcript
+PASS 45/45 using qwen3:14b in 234.77s after the Python conformance expansion
+```
+
 One combined shell invocation of focused pytest commands produced socket `PermissionError` failures because command segments were sandboxed. Re-running each exact pytest command independently produced the passing results above. Do not diagnose those combined-command failures as code defects.
 
 ### Current failures and incomplete conformance
 
 There are no currently reproducible pytest failures. The following acceptance failures remain:
 
-- The normative correlated Microphone Protocol event vocabulary is not implemented.
-- No `listen_id`, `utterance_id`, `playback_id`, or `cue_id` correlation exists at the manager/driver boundary.
-- Driver states `DISARMED`, `ARMING`, `LISTENING`, `CAPTURING`, `STOPPING`, `PLAYING_CUE`, `PLAYING_AUDIO`, and `CLOSED` are not enforced as a formal state machine.
-- Capture still overloads `AudioStart`/`AudioEnd`, and playback uses the same event types.
-- Listening readiness, speech-segment boundaries, cue completion, and playback drain completion are not represented by the normative typed events.
-- Open-mic idle still uses the legacy progress/idle-timeout recovery behavior, contrary to `MP-TIMEOUT-001`.
 - Firmware voice-assistant callbacks may still infer and overwrite visual phases; explicit server ownership is not yet sealed.
 - Reconnection behavior has not been proven to keep firmware `ERROR` until the first server visual command.
-- No explicit tests yet prove the partial candidate visual command occurs before `SpeechEnded` and final transcription.
-- No reusable driver conformance state/event matrix exists.
+- The reusable black-box driver harness covers listening/capture modes, cue correlation, and playback drain against Box3. Exhaustive command/event rejection coverage remains concentrated in the protocol-model tests and must stay synchronized with the normative matrix.
 - ESPHome validation, compilation, and generated-source inspection have not run.
-- `orchestrator_and_dsa_tests/run.sh --no-transcript` has not run for this checkpoint.
 - Real websocket client/server smoke testing has not run for this checkpoint.
 - No firmware was flashed and no hardware visual sequence was tested.
 
@@ -140,17 +161,13 @@ All incomplete requirements in `docs/protocol-conformance-catalogue.md` remain b
 
 ### Next concrete implementation steps
 
-1. Re-read the normative Microphone Protocol and catalogue; build a requirement checklist for `MP-ID-*`, `MP-EVENT-001`, `MP-STATE-001`, `MP-AUDIO-001`, and `MP-TIMEOUT-001`.
-2. Replace `ai_server/microphones/messages.py` with the canonical directional types, enums, and correlation fields. Do not add legacy aliases.
-3. Update `ai_server/microphones/interfaces.py` and reusable fake drivers to expose only the canonical protocol.
-4. Split or restructure `MicrophoneManager` so driver state management and Conversation mapping are explicit, then migrate wake-word, open-mic, follow-up, cue, and playback paths one at a time.
-5. Add focused correlation/state tests before migrating `Box3EsphomeMicrophone`; verify stale callbacks cannot affect a new generation.
-6. Migrate Box3 and Voice Preview firmware services so callbacks no longer infer the connected main visual state.
-7. Add ordered tests for early candidate `LISTENING`, rejection to `IDLE`, acceptance to `PROCESSING`, playback retention, follow-up transition, and disconnected `ERROR` precedence.
-8. Run focused and full Python verification.
-9. Run `orchestrator_and_dsa_tests/run.sh --no-transcript` with the currently configured model.
-10. Run ESPHome config, compile, and generated-source checks using the Box3 skill workflow. Do not flash until they pass.
-11. Perform hardware validation one satellite at a time and record results. Append to `notes/setting-up-esp-box.md` only when firmware is actually built/flashed or hardware evidence is collected.
+1. Finish ordered manager/mapping visual tests for rejection, acceptance, playback retention, follow-up, and output-drain/re-arm behavior.
+2. Add remaining mapping exact-sequence and observability coverage from the conformance catalogue.
+3. Migrate Box3 and Voice Preview firmware so voice-assistant callbacks cannot infer or overwrite the connected main visual state.
+4. Implement and verify disconnected `ERROR`, reconnect-before-first-command behavior, and the local-indicator precedence rules.
+5. Run the real websocket client/server smoke test.
+6. Run ESPHome config, compile, and generated-source checks for every affected entrypoint. Do not flash until they pass.
+7. Perform hardware validation one satellite at a time and record results. Append to `notes/setting-up-esp-box.md` only when firmware is actually built/flashed or hardware evidence is collected.
 
 ## Design assumptions
 

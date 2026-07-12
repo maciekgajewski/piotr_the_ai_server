@@ -46,12 +46,12 @@ Additional exhaustive coverage:
 
 | Requirement | Summary | Implementation owner | Required conformance test |
 |---|---|---|---|
-| `MP-OWNER-001` | Driver does not own STT, Conversation, or re-arm | abstract interface and drivers | reusable driver conformance test; architecture review |
-| `MP-ID-001` | Every listening generation has a new ID | manager | consecutive and retry generation tests |
-| `MP-ID-002` | Every segment has a new associated utterance ID | drivers and manager | multiple open-mic segments have distinct IDs |
-| `MP-ID-003` | Stale events cannot mutate state | manager and drivers | stale listen/utterance/playback/cue event tests |
-| `MP-EVENT-001` | Capture and playback event vocabularies are separate | messages and interfaces | type-union and driver conformance tests |
-| `MP-STATE-001` | Driver transition table is enforced | every driver | reusable state/event matrix tests |
+| `MP-OWNER-001` | Driver does not own STT, Conversation, or re-arm | abstract interface and drivers | reusable black-box harness in `tests/microphone_driver_conformance.py`; architecture review |
+| `MP-ID-001` | Every listening generation has a new ID | manager | `tests/test_microphones.py`; `tests/test_microphone_protocol.py` |
+| `MP-ID-002` | Every segment has a new associated utterance ID | drivers and manager | `tests/test_microphone_protocol.py`: multiple open-mic segments have distinct IDs |
+| `MP-ID-003` | Stale events cannot mutate state | manager and drivers | `tests/test_microphone_protocol.py`: stale listen/playback/cue and ID-reuse cases |
+| `MP-EVENT-001` | Capture and playback event vocabularies are separate | messages and interfaces | `tests/test_microphone_protocol.py`; `tests/test_box3_esphome_microphone.py` |
+| `MP-STATE-001` | Driver transition table is enforced | every driver | `tests/test_microphone_protocol.py`; reusable Box3 contract exercised from `tests/test_box3_esphome_microphone.py` |
 | `MP-VISUAL-001` | `ERROR` is firmware-owned, not commandable | messages, drivers, firmware | reject `SetVisualState(ERROR)`; disconnect firmware validation |
 | `MP-VISUAL-002` | Visual commands are state-independent and idempotent | drivers | duplicate commands in each connected driver state |
 | `MP-VISUAL-003` | Manager explicitly commands connected visuals | manager | all normal sequences assert visual commands |
@@ -59,13 +59,13 @@ Additional exhaustive coverage:
 | `MP-VISUAL-005` | Reconnect remains error until initial command | driver and firmware | disconnect/reconnect/first-command sequence |
 | `MP-VISUAL-006` | Local indicators do not replace main visual | firmware | ESPHome generated-config checks and hardware acceptance |
 | `MP-VISUAL-007` | Processing remains through playback | manager and drivers | visual sequence around begin/end/finished playback |
-| `MP-OPENMIC-001` | First partial candidate immediately shows listening | manager partial-STT path | controlled timing test before speech/final end |
+| `MP-OPENMIC-001` | First partial candidate immediately shows listening | manager partial-STT path | `tests/test_microphones.py`: controlled timing before final text |
 | `MP-OPENMIC-002` | Rejection resets candidate and idle, without re-arm | manager and driver | candidate rejection ordering and unchanged `listen_id` |
 | `MP-OPENMIC-003` | Acceptance follows final validation | manager | order test: final result before processing/cue/forwarding |
-| `MP-AUDIO-001` | Half-duplex output starts only when disarmed | manager and drivers | cue/playback rejected while listening/capturing |
-| `MP-TIMEOUT-001` | Idle open mic has no segment timeout | manager | long idle listening remains armed without progress events |
-| `MP-ERROR-001` | Untrusted protocol state is closed/recreated | manager | mismatch causes teardown, not guessed recovery |
-| `MP-OBS-001` | Commands/events include state and correlation logs | manager and drivers | `caplog` command/event context tests |
+| `MP-AUDIO-001` | Half-duplex output starts only when disarmed | manager and drivers | `tests/test_microphone_protocol.py`: cue/playback rejected while listening/capturing |
+| `MP-TIMEOUT-001` | Idle open mic has no segment timeout | manager | `tests/test_microphones.py`: asynchronous idle generation remains armed |
+| `MP-ERROR-001` | Untrusted protocol state is closed/recreated | manager | `tests/test_microphones.py`: unavailable boundary closes and recreates protocol state |
+| `MP-OBS-001` | Commands/events include state and correlation logs | manager and drivers | `tests/test_microphones.py`: `caplog` command/event context |
 | `MP-OBS-002` | Visual transitions include old/new/cause logs | manager and drivers | `caplog` visual transition test |
 
 Additional exhaustive coverage:
