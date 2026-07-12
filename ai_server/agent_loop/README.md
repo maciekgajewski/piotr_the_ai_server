@@ -1,5 +1,11 @@
 # Agent Loop
 
+## Document status
+
+- **Authority:** Component reference
+- **Audience:** Agents changing `ai_server.agent_loop`
+- **Read when:** Modifying the Ollama agent loop, fallback policy, or tool conventions
+
 `ai_server.agent_loop` is an Ollama `/api/chat` loop with tool calling.
 It keeps loop-specific fallback/backoff policy in `AgentLoopOllamaConnection`
 and uses `ai_server.ollama_client.OllamaClient` for the HTTP transport.

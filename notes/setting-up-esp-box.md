@@ -1,5 +1,13 @@
 # Setting Up ESP32-S3-BOX-3
 
+## Document status
+
+- **Authority:** Historical record
+- **Audience:** Agents researching prior Box3 experiments and decisions
+- **Read when:** Timestamped historical evidence is needed; verify all commands and behavior against current operational and normative documents
+
+This file is not a current setup guide or protocol specification.
+
 ## 2026-05-20T13:31:47Z
 
 Started setup notes for the ESP32-S3-BOX-3 satellite work.

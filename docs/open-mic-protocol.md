@@ -1,5 +1,13 @@
 # Open-Mic Streaming Protocol
 
+## Document status
+
+- **Authority:** Draft normative; scheduled to be superseded by or made an explicit extension of the Microphone Protocol
+- **Audience:** Agents changing open-mic capture, streaming STT, wake-candidate handling, acceptance, rejection, or re-arming
+- **Read when:** Working on open-mic behavior in `ai_server/microphones/`, microphone drivers, or their tests
+
+Known ambiguities and implementation drift are tracked in [Protocol and Documentation Cleanup](tasks/protocol-and-documentation-cleanup.md). Do not extend this protocol by inference before the Stage 2 design is approved.
+
 Open-mic mode is a separate microphone conversation layer. It does not change the
 old wake-word and follow-up protocol used by microphones without `open_mic: true`.
 

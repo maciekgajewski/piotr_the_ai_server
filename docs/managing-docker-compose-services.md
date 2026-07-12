@@ -1,5 +1,11 @@
 # Managing Docker Compose Services
 
+## Document status
+
+- **Authority:** Operational guide
+- **Audience:** Operators and agents managing the repository's Compose services
+- **Read when:** Inspecting, stopping, removing, or restarting Compose services
+
 Run these commands from the repository root.
 
 Show running services:

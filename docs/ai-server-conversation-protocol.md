@@ -1,5 +1,13 @@
 # AI Server Conversation Protocol
 
+## Document status
+
+- **Authority:** Draft normative; known drift is tracked in [Protocol and Documentation Cleanup](tasks/protocol-and-documentation-cleanup.md)
+- **Audience:** Agents changing sessions, conversation endpoints, websocket communication, or microphone-to-session behavior
+- **Read when:** Working on `ai_server/messages.py`, `ai_server/interfaces.py`, `ai_server/sessions.py`, websocket clients, or the websocket server
+
+This document describes the current intended protocol but is not yet the approved Stage 2 specification. Where it conflicts with code or another document, record and resolve the design decision through the cleanup task rather than silently treating either source as authoritative.
+
 This document describes the state machine shared by websocket and microphone input methods. The Session owns lifecycle state. Agents only handle an active Conversation through a limited ConversationEndpoint.
 
 ## Entities

@@ -1,5 +1,11 @@
 # Wake Word Training
 
+## Document status
+
+- **Authority:** Component reference and operational guide
+- **Audience:** Agents training or evaluating custom wake words
+- **Read when:** Changing wake-word datasets, generation, training, models, or local evaluation
+
 Custom on-device wake words for ESPHome must be `micro_wake_word` TensorFlow Lite Micro models.
 
 Target phrase:

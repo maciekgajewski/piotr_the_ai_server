@@ -1,5 +1,11 @@
 # Home Assistant Voice PE Bedroom Setup
 
+## Document status
+
+- **Authority:** Operational guide
+- **Audience:** Operators and agents provisioning the bedroom Voice Preview satellite
+- **Read when:** Building, flashing, configuring, or checking that device
+
 This setup turns a factory-fresh Home Assistant Voice Preview Edition into a Piotr network satellite for the bedroom.
 
 ## Firmware

@@ -1,5 +1,11 @@
 # Project-Standard Satellite Behavior
 
+## Document status
+
+- **Authority:** Normative device behavior, subject to the future normative Microphone Protocol
+- **Audience:** Agents changing shared satellite behavior, ESPHome packages, wake words, cues, or controls
+- **Read when:** Changing behavior intended to remain consistent across satellite hardware
+
 All Piotr voice satellites should expose the same behavior to the user and to the AI server unless hardware support makes a behavior impossible.
 
 ## Wake Words

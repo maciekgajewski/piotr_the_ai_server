@@ -1,5 +1,13 @@
 # ESP32-S3-BOX-3 Satellite Plan
 
+## Document status
+
+- **Authority:** Historical plan
+- **Audience:** Agents researching the original Box3 satellite direction
+- **Read when:** Historical context is needed; do not use this as the current firmware or protocol specification
+
+Current shared behavior is documented in [Project-Standard Satellite Behavior](project-standard-satellite-behavior.md), and current documentation authority is listed in [the documentation index](README.md).
+
 Goal: make each ESP32-S3-BOX-3 a Wi-Fi satellite for the Piotr server.
 
 ## Target Behavior

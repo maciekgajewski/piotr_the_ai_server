@@ -1,5 +1,11 @@
 # Ollama Cloud Models
 
+## Document status
+
+- **Authority:** Operational guide
+- **Audience:** Operators and agents configuring or testing Ollama cloud models
+- **Read when:** Signing in to Ollama, pulling a cloud model, selecting it temporarily, or smoke-testing it
+
 Piotr runs Ollama in Docker Compose and the AI server talks to that local
 Ollama endpoint. Cloud models do not require AI server code changes: sign in to
 Ollama inside the `ollama` container, pull a cloud model, then use a model name

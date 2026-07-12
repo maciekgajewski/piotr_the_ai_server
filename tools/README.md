@@ -1,5 +1,11 @@
 # ESP32-S3-BOX-3 Tools
 
+## Document status
+
+- **Authority:** Component reference and operational guide
+- **Audience:** Operators and agents using repository tools
+- **Read when:** Running Box3, audio, wake-word, TTS, STT, deployment, or model utilities
+
 Small Piotr-side utilities for the ESPHome-flashed Box satellite.
 
 Current device:

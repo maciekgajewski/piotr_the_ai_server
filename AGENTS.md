@@ -4,6 +4,7 @@
 - When a task requires `sudo`, ask the user to run the exact command manually and wait for confirmation.
 - Prefer one step at a time for ESP32-S3-BOX-3 setup work.
 - Read the "Architecture decisions" section in README.md before architecture-related work.
+- Use `docs/README.md` as the project documentation index. It identifies normative, operational, planned, and historical documents.
 
 # File naming
 
@@ -17,6 +18,12 @@
 - A config file is required ot start the server. The config file always has to be provided by user in the command-line parameters, regardless if launched directly or trough a wrapper script. Do not hardcode config values in the code. Test tools are the only exception.
 - Abstract components must stay sealed behind their abstract interfaces. DSAs, input modules, microphones, and similar pluggable components must expose behavior only through their interface methods; other parts of the system must not hardcode knowledge of concrete component types, prompts, commands, or shortcuts.
 - Before changing orchestrator or DSA planning architecture, read `docs/orchestrator-dsa-architecture.md`.
+- Before changing `ai_server/messages.py`, `ai_server/interfaces.py`, `ai_server/sessions.py`, websocket clients, or the websocket server, read `docs/ai-server-conversation-protocol.md`.
+- Before changing `ai_server/microphones/`, microphone configuration, or satellite microphone firmware, read `docs/microphone-protocol.md` when it exists. Until Stage 2 of `docs/tasks/protocol-and-documentation-cleanup.md` creates it, read both `docs/ai-server-conversation-protocol.md` and `docs/open-mic-protocol.md`, and treat their documented known drift as unresolved design work rather than silently choosing current behavior.
+- Before changing microphone-to-session behavior, read the Conversation Protocol, the Microphone Protocol when it exists, and `docs/microphone-conversation-mapping.md` when it exists.
+- Protocol documents define the intended contract once marked `Normative`. Implementation drift from an approved normative protocol is a defect.
+- Protocol changes must update the applicable documentation and conformance tests in the same change.
+- Concrete microphone service names, display assets, and LED behavior belong inside drivers and firmware. Other components use only the abstract microphone interface.
 
 
 # Python coding guidelines
