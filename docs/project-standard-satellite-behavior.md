@@ -2,11 +2,13 @@
 
 ## Document status
 
-- **Authority:** Normative device behavior, subject to the future normative Microphone Protocol
+- **Authority:** Normative device behavior subordinate to the Microphone Protocol
 - **Audience:** Agents changing shared satellite behavior, ESPHome packages, wake words, cues, or controls
 - **Read when:** Changing behavior intended to remain consistent across satellite hardware
 
 All Piotr voice satellites should expose the same behavior to the user and to the AI server unless hardware support makes a behavior impossible.
+
+The abstract server-to-device contract, including visual state, is defined by the [Microphone Protocol](microphone-protocol.md). This document defines shared satellite policy and firmware realization without exposing firmware details through the abstract interface.
 
 ## Wake Words
 
@@ -28,31 +30,35 @@ Satellites use the shared cue files in `firmware/esphome/sounds/`:
 
 Hardware-specific system sounds, such as factory reset, mute switch, jack plug, and timer sounds, may stay hardware-specific.
 
-## AI Server Control Services
+## Main Visual States
 
-ESPHome satellites must expose these API services when the hardware can play local sounds and start a voice assistant run:
+All satellites implement the four semantic states from the Microphone Protocol:
 
-- `play_message_end_cue`
-- `play_conversation_timeout_cue`
-- `start_follow_up_listening`
-- `start_open_mic_listening`
-- `reset_open_mic_wake_candidate`
+| State | Voice Preview | Box3 |
+|---|---|---|
+| `ERROR` | Low-light red LEDs | Error bitmap |
+| `IDLE` | LEDs off | Idle bitmap |
+| `LISTENING` | Pulsing blue LEDs | Listening bitmap |
+| `PROCESSING` | Pulsing white LEDs | Processing bitmap |
 
-The AI server uses these service names to keep follow-up conversations and end-of-message feedback consistent across satellite models.
-The open-mic service is used only for microphones configured with `open_mic: true`; other microphones continue to use local wake-word mode.
-In open-mic mode, satellites should not play a wake-recognized cue when the wake phrase is first detected in partial STT. The server plays `play_message_end_cue` only after end-of-speech and wake-phrase acceptance.
-When a partial STT segment is rejected as a wake candidate, the server calls `reset_open_mic_wake_candidate`; the satellite should keep continuous capture active and reset only its local waiting/listening UI.
+While connected, the AI server explicitly controls `IDLE`, `LISTENING`, and `PROCESSING`. Firmware controls `ERROR` when disconnected. Voice-assistant callbacks must not infer or overwrite the connected main state. Mute, setup, timer, volume, and other local indicators may be shown orthogonally but must not replace the main visual.
+
+## Firmware Control Services
+
+ESPHome API service names and script IDs are implementation details behind each microphone driver. They are not part of the abstract Microphone Protocol and must not be invoked outside a concrete driver.
+
+The shared firmware package may define common service names for Piotr satellite implementations. Stage 3 will replace the current implicit service contract with explicit commands for:
+
+- starting and stopping each listening mode;
+- setting `IDLE`, `LISTENING`, and `PROCESSING`;
+- resetting a rejected open-mic wake candidate;
+- playing semantic cues;
+- acknowledging operation completion where required by the protocol.
+
+Open-mic firmware keeps continuous capture active after a rejected candidate. The server commands `LISTENING` as soon as partial STT finds a wake candidate, then commands `IDLE` after final rejection or `PROCESSING` after final acceptance.
 
 The shared service contract lives in `firmware/esphome/packages/piotr-voice-satellite-api-services.yaml`.
-Hardware packages include that file and implement the script IDs it calls:
-
-- `play_message_end_cue`
-- `play_conversation_timeout_cue`
-- `start_follow_up_listening`
-- `start_open_mic_listening`
-- `reset_open_mic_wake_candidate`
-
-Keep hardware-specific behavior inside the hardware package. For example, the Box updates its display and text sensors, while Voice PE updates LED state and uses its own media-player playback path.
+Hardware packages include that file and implement its script IDs. Keep hardware-specific behavior inside the hardware package. For example, Box3 maps visual commands to bitmaps, while Voice Preview maps them to LED animations.
 
 ## Silence Calibration
 

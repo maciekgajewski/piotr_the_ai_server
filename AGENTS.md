@@ -19,8 +19,8 @@
 - Abstract components must stay sealed behind their abstract interfaces. DSAs, input modules, microphones, and similar pluggable components must expose behavior only through their interface methods; other parts of the system must not hardcode knowledge of concrete component types, prompts, commands, or shortcuts.
 - Before changing orchestrator or DSA planning architecture, read `docs/orchestrator-dsa-architecture.md`.
 - Before changing `ai_server/messages.py`, `ai_server/interfaces.py`, `ai_server/sessions.py`, websocket clients, or the websocket server, read `docs/ai-server-conversation-protocol.md`.
-- Before changing `ai_server/microphones/`, microphone configuration, or satellite microphone firmware, read `docs/microphone-protocol.md` when it exists. Until Stage 2 of `docs/tasks/protocol-and-documentation-cleanup.md` creates it, read both `docs/ai-server-conversation-protocol.md` and `docs/open-mic-protocol.md`, and treat their documented known drift as unresolved design work rather than silently choosing current behavior.
-- Before changing microphone-to-session behavior, read the Conversation Protocol, the Microphone Protocol when it exists, and `docs/microphone-conversation-mapping.md` when it exists.
+- Before changing `ai_server/microphones/`, microphone configuration, or satellite microphone firmware, read `docs/microphone-protocol.md`.
+- Before changing microphone-to-session behavior, read `docs/ai-server-conversation-protocol.md`, `docs/microphone-protocol.md`, and `docs/microphone-conversation-mapping.md`.
 - Protocol documents define the intended contract once marked `Normative`. Implementation drift from an approved normative protocol is a defect.
 - Protocol changes must update the applicable documentation and conformance tests in the same change.
 - Concrete microphone service names, display assets, and LED behavior belong inside drivers and firmware. Other components use only the abstract microphone interface.

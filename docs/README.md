@@ -21,10 +21,10 @@ Normative protocol documents follow [the protocol documentation standard](protoc
 
 | Document | Authority | Audience and required use | Implementation and tests |
 |---|---|---|---|
-| [AI Server Conversation Protocol](ai-server-conversation-protocol.md) | Draft normative; known drift is tracked by the cleanup plan | Read before changing sessions, conversation endpoints, websocket protocol, websocket clients, or microphone-to-session mapping | `ai_server/messages.py`, `ai_server/interfaces.py`, `ai_server/sessions.py`, `ai_server/websocket_server.py`; `tests/test_messages.py`, `tests/test_websocket_server.py` |
-| [Open-Mic Streaming Protocol](open-mic-protocol.md) | Draft normative; scheduled to be superseded or made an explicit extension | Read before changing open-mic capture, partial STT wake detection, acceptance, rejection, or re-arming | `ai_server/microphones/manager.py`, microphone drivers; `tests/test_microphones.py` |
-| `microphone-protocol.md` | Planned normative document | Stage 2 will create the manager-to-driver, visual-state, capture, playback, timeout, and recovery contract | Planned by the cleanup task |
-| `microphone-conversation-mapping.md` | Planned normative document | Stage 2 will define the adapter between accepted microphone utterances and Conversation events | Planned by the cleanup task |
+| [AI Server Conversation Protocol](ai-server-conversation-protocol.md) | Normative | Read before changing sessions, conversation endpoints, websocket protocol, websocket clients, or microphone-to-session mapping | `ai_server/messages.py`, `ai_server/interfaces.py`, `ai_server/sessions.py`, `ai_server/websocket_server.py`; focused Session, message, and websocket tests |
+| [Microphone Protocol](microphone-protocol.md) | Normative | Read before changing manager-to-driver behavior, capture, playback, cues, visual state, timeouts, recovery, microphone drivers, or satellite firmware | `ai_server/microphones/`, satellite firmware; microphone and driver conformance tests |
+| [Microphone-Conversation Mapping](microphone-conversation-mapping.md) | Normative | Read before changing how accepted speech, follow-up, processing, playback, termination, or re-arm crosses the two protocols | `ai_server/microphones/manager.py`, microphone Session endpoint; mapping tests |
+| [Protocol Conformance Catalogue](protocol-conformance-catalogue.md) | Normative conformance plan | Read before implementing or reviewing protocol requirements and tests | Requirement-to-owner and requirement-to-test traceability |
 | [Orchestrator and DSA Architecture](orchestrator-dsa-architecture.md) | Normative | Read before changing orchestrator or DSA planning, routing, ownership, or prompt architecture | `ai_server/orchestrator/`, DSA implementations; `tests/test_orchestrator_agent.py`, `orchestrator_and_dsa_tests/` |
 | [Project-Standard Satellite Behavior](project-standard-satellite-behavior.md) | Normative device behavior, subject to the future Microphone Protocol | Read before changing shared satellite behavior, firmware services, wake words, cues, or controls | `firmware/esphome/`; firmware validation and device checks |
 
@@ -51,6 +51,7 @@ Normative protocol documents follow [the protocol documentation standard](protoc
 | Document | Authority | Use |
 |---|---|---|
 | [Setting Up ESP32-S3-BOX-3](../notes/setting-up-esp-box.md) | Historical | Timestamped experiment and setup record. Do not use as a current protocol or operational procedure without verification. |
+| [Open-Mic Streaming Protocol](open-mic-protocol.md) | Superseded historical protocol | Redirects agents to the normative Microphone Protocol and mapping; retained as a stable old link |
 
 ## Agent reading rules
 

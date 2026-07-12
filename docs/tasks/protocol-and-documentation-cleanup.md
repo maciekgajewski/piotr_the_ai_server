@@ -19,8 +19,8 @@ Stage 3 must not begin until the normative documents produced by Stage 2 have be
 ## Progress
 
 - **Stage 1:** Completed on 2026-07-12. Added the documentation index, agent routing, authority labels, and the protocol documentation standard.
-- **Stage 2:** Not started.
-- **Stage 3:** Not started and blocked on Stage 2 approval.
+- **Stage 2:** Completed on 2026-07-12. Approved normative Conversation and Microphone protocols, their mapping, and the conformance catalogue are indexed under `docs/`.
+- **Stage 3:** Not started. Implementation must follow the Stage 2 normative documents; event lists and examples in this planning document are superseded where the final specifications refined them.
 
 ## Design assumptions
 
