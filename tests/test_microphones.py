@@ -6,12 +6,13 @@ import logging
 from ai_server.microphones.manager import MicrophoneManager
 from ai_server.microphones.messages import CueFinished, CueType, ListeningMode, ListeningStarted, ListeningStopped
 from ai_server.microphones.messages import PlaybackBegin, PlaybackChunk, PlaybackEnd, PlaybackFinished, PlayCue
-from ai_server.microphones.messages import SetVisualState, StartListening, StopListening, SynthesizedAudioChunk
+from ai_server.microphones.messages import AudioChunk, ResetWakeCandidate, SetVisualState, SpeechEnded, SpeechStarted
+from ai_server.microphones.messages import StartListening, StopListening, SynthesizedAudioChunk
 from ai_server.microphones.messages import SynthesizedAudioEnd, SynthesizedAudioStart
 from ai_server.microphones.messages import VisualState
 from ai_server.microphones.protocol import DriverState
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
-from ai_server.speech_to_text.messages import TextEnd, TextPartial
+from ai_server.speech_to_text.messages import TextEnd, TextFragment, TextPartial
 
 
 class FakeMicrophone:
@@ -21,10 +22,12 @@ class FakeMicrophone:
     def __init__(self) -> None:
         self.events = asyncio.Queue()
         self.commands = []
+        self.trace = []
         self.close_count = 0
 
     async def send_output_event(self, command) -> None:
         self.commands.append(command)
+        self.trace.append(("microphone", command))
         if isinstance(command, StartListening):
             self.events.put_nowait(ListeningStarted(command.listen_id, command.mode))
         elif isinstance(command, StopListening):
@@ -174,6 +177,72 @@ class FakeStreamingSttSession:
         return await self.events.get()
 
 
+class ScriptedStreamingSttSession(FakeStreamingSttSession):
+    def __init__(self, final_text: str) -> None:
+        super().__init__()
+        self.final_text = final_text
+        self.audio = []
+        self.closed = False
+
+    async def send_audio(self, chunk) -> None:
+        self.audio.append(chunk)
+
+    async def end_audio(self) -> None:
+        return None
+
+    async def transcribe_final(self) -> str:
+        return self.final_text
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class ScriptedStreamingStt(FakeLifecycle):
+    def __init__(self, sessions: list[ScriptedStreamingSttSession]) -> None:
+        self.sessions = sessions
+
+    async def create_streaming_session(self, _microphone_name: str) -> ScriptedStreamingSttSession:
+        return self.sessions.pop(0)
+
+
+class ScriptedSttSession:
+    def __init__(self, fragments: tuple[str, ...]) -> None:
+        self.events = asyncio.Queue()
+        for fragment in fragments:
+            self.events.put_nowait(TextFragment(fragment))
+        self.events.put_nowait(TextEnd())
+
+    async def send_audio(self, _chunk) -> None:
+        return None
+
+    async def end_audio(self) -> None:
+        return None
+
+    async def receive_text(self):
+        return await self.events.get()
+
+    async def close(self) -> None:
+        return None
+
+
+class ScriptedStt(FakeLifecycle):
+    def __init__(self, fragments: tuple[str, ...]) -> None:
+        self.fragments = fragments
+
+    async def create_session(self, _microphone_name: str) -> ScriptedSttSession:
+        return ScriptedSttSession(self.fragments)
+
+
+class RecordingEndpoint:
+    def __init__(self, trace: list) -> None:
+        self.events = []
+        self.trace = trace
+
+    async def send_to_session(self, event) -> None:
+        self.events.append(event)
+        self.trace.append(("session", event))
+
+
 def test_open_mic_idle_has_no_segment_timeout() -> None:
     """MP-TIMEOUT-001: silence before SpeechStarted remains normally armed."""
 
@@ -195,6 +264,187 @@ def test_open_mic_idle_has_no_segment_timeout() -> None:
         except asyncio.CancelledError:
             pass
         assert manager._protocols["fake"].snapshot.state is DriverState.LISTENING
+
+    asyncio.run(run())
+
+
+def test_open_mic_acceptance_has_exact_visual_stop_cue_and_message_order() -> None:
+    """MP-OPENMIC-003/MAP-OPENMIC-001: final acceptance is forwarded exactly once."""
+
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        stt_session = ScriptedStreamingSttSession("Ryszardzie jaka pogoda")
+        manager = _manager(microphone, open_mic=True)
+        manager._stt = ScriptedStreamingStt([stt_session])
+        endpoint = RecordingEndpoint(microphone.trace)
+        logger = logging.getLogger("test")
+        listen = StartListening("listen-1", ListeningMode.OPEN_MIC)
+        await manager._send_command(microphone, listen, logger)
+        await manager._await_listening_started(microphone, listen, logger)
+        microphone.trace.clear()
+
+        microphone.events.put_nowait(SpeechStarted("listen-1", "utterance-1", 16000, 2, 1))
+        microphone.events.put_nowait(AudioChunk("listen-1", "utterance-1", b"audio"))
+        microphone.events.put_nowait(SpeechEnded("listen-1", "utterance-1", "completed"))
+        stt_session.events.put_nowait(TextPartial("Ryszardzie jaka", 0.0, 0.5, 0.5))
+        stt_session.events.put_nowait(TextEnd())
+
+        captured = await manager._capture_open_mic_utterance(
+            microphone, endpoint, logger, listen.listen_id
+        )
+
+        assert captured.text_fragments == ("jaka pogoda",)
+        assert [type(item).__name__ for _, item in microphone.trace] == [
+            "SetVisualState",
+            "SetVisualState",
+            "StopListening",
+            "PlayCue",
+            "NewConversation",
+            "MessageBegin",
+            "MessageFragment",
+            "MessageEnd",
+        ]
+        assert microphone.trace[0] == ("microphone", SetVisualState(VisualState.LISTENING))
+        assert microphone.trace[1] == ("microphone", SetVisualState(VisualState.PROCESSING))
+        assert sum(type(event).__name__ == "NewConversation" for event in endpoint.events) == 1
+
+    asyncio.run(run())
+
+
+def test_wake_word_acceptance_sets_processing_and_finishes_cue_before_message() -> None:
+    """MAP-INPUT-001: accepted new input follows the complete normative order."""
+
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = _manager(microphone)
+        manager._stt = ScriptedStt(("jaka pogoda",))
+        endpoint = RecordingEndpoint(microphone.trace)
+        logger = logging.getLogger("test")
+        listen = StartListening("listen-1", ListeningMode.WAKE_WORD)
+        await manager._send_command(microphone, listen, logger)
+        await manager._await_listening_started(microphone, listen, logger)
+        microphone.trace.clear()
+        microphone.events.put_nowait(
+            SpeechStarted("listen-1", "utterance-1", 16000, 2, 1, "Ryszardzie")
+        )
+        microphone.events.put_nowait(AudioChunk("listen-1", "utterance-1", b"audio"))
+        microphone.events.put_nowait(SpeechEnded("listen-1", "utterance-1", "completed"))
+
+        captured = await manager._capture_utterance(
+            microphone,
+            endpoint,
+            logger,
+            starts_new_conversation=True,
+            timeout_seconds=None,
+            listen_id=listen.listen_id,
+        )
+
+        assert captured.text_fragments == ("jaka pogoda",)
+        assert [type(item).__name__ for _, item in microphone.trace] == [
+            "SetVisualState",
+            "SetVisualState",
+            "PlayCue",
+            "NewConversation",
+            "MessageBegin",
+            "MessageFragment",
+            "MessageEnd",
+        ]
+        assert microphone.trace[0] == ("microphone", SetVisualState(VisualState.LISTENING))
+        assert microphone.trace[1] == ("microphone", SetVisualState(VisualState.PROCESSING))
+
+    asyncio.run(run())
+
+
+def test_follow_up_acceptance_sets_processing_without_new_conversation_cue() -> None:
+    """MAP-FOLLOWUP-001: follow-up text stays in the existing Conversation."""
+
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = _manager(microphone)
+        manager._stt = ScriptedStt(("jutro",))
+        endpoint = RecordingEndpoint(microphone.trace)
+        logger = logging.getLogger("test")
+        listen = StartListening("listen-1", ListeningMode.FOLLOW_UP)
+        await manager._send_command(microphone, listen, logger)
+        await manager._await_listening_started(microphone, listen, logger)
+        microphone.trace.clear()
+        microphone.events.put_nowait(SpeechStarted("listen-1", "utterance-1", 16000, 2, 1))
+        microphone.events.put_nowait(SpeechEnded("listen-1", "utterance-1", "completed"))
+
+        await manager._capture_utterance(
+            microphone,
+            endpoint,
+            logger,
+            starts_new_conversation=False,
+            timeout_seconds=10,
+            listen_id=listen.listen_id,
+        )
+
+        assert [type(item).__name__ for _, item in microphone.trace] == [
+            "SetVisualState",
+            "SetVisualState",
+            "MessageBegin",
+            "MessageFragment",
+            "MessageEnd",
+        ]
+        assert not any(isinstance(event, PlayCue) for event in microphone.commands)
+        assert not any(type(event).__name__ == "NewConversation" for event in endpoint.events)
+
+    asyncio.run(run())
+
+
+def test_open_mic_rejection_resets_candidate_and_idle_without_rearming() -> None:
+    """MP-OPENMIC-002/MAP-INVARIANT-002: rejected text stays private."""
+
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        first_session = ScriptedStreamingSttSession("ordinary speech")
+        second_session = ScriptedStreamingSttSession("")
+        manager = _manager(microphone, open_mic=True)
+        manager._stt = ScriptedStreamingStt([first_session, second_session])
+        endpoint = RecordingEndpoint(microphone.trace)
+        logger = logging.getLogger("test")
+        listen = StartListening("listen-1", ListeningMode.OPEN_MIC)
+        await manager._send_command(microphone, listen, logger)
+        await manager._await_listening_started(microphone, listen, logger)
+        microphone.trace.clear()
+
+        microphone.events.put_nowait(SpeechStarted("listen-1", "utterance-1", 16000, 2, 1))
+        microphone.events.put_nowait(SpeechEnded("listen-1", "utterance-1", "completed"))
+        first_session.events.put_nowait(TextPartial("Ryszardzie", 0.0, 0.5, 0.5))
+        first_session.events.put_nowait(TextEnd())
+        task = asyncio.create_task(
+            manager._capture_open_mic_utterance(microphone, endpoint, logger, listen.listen_id)
+        )
+
+        async def rejection_visible() -> bool:
+            return any(isinstance(command, ResetWakeCandidate) for command in microphone.commands)
+
+        for _ in range(100):
+            if await rejection_visible():
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("candidate rejection commands were not emitted")
+
+        rejection_commands = [
+            command
+            for command in microphone.commands
+            if isinstance(command, (ResetWakeCandidate, SetVisualState, StartListening))
+        ]
+        assert rejection_commands[-2:] == [
+            ResetWakeCandidate("listen-1", "utterance-1"),
+            SetVisualState(VisualState.IDLE),
+        ]
+        assert sum(isinstance(command, StartListening) for command in microphone.commands) == 1
+        assert endpoint.events == []
+        assert manager._protocols["fake"].snapshot.listen_id == "listen-1"
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     asyncio.run(run())
 

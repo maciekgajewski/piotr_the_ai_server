@@ -203,6 +203,12 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
+  # True only after the controlling server explicitly selects IDLE, LISTENING, or PROCESSING.
+  # Reconnection keeps the firmware-owned ERROR phase until one of those commands arrives.
+  - id: server_visual_received
+    type: bool
+    restore_value: no
+    initial_value: 'false'
 
 switch:
   # This is the master mute switch. It is exposed to Home Assistant. The user can only turn it on and off if the hardware switch is off. (The hardware switch overrides the software one)
@@ -1073,6 +1079,14 @@ script:
             id(control_leds_init_state).execute();
           } else if (!id(wifi_id).is_connected() || !id(api_id).is_connected()){
             id(control_leds_no_ha_connection_state).execute();
+          } else if (!id(server_visual_received)) {
+            // A connection alone does not establish an idle conversation state.
+            // Keep ERROR visible until the AI server explicitly selects a state.
+            id(control_leds_voice_assistant_not_ready_phase).execute();
+          } else if (id(voice_assistant_phase) == ${voice_assist_listening_for_command_phase_id}) {
+            id(control_leds_voice_assistant_listening_for_command_phase).execute();
+          } else if (id(voice_assistant_phase) == ${voice_assist_thinking_phase_id}) {
+            id(control_leds_voice_assistant_thinking_phase).execute();
           } else if (id(center_button).state) {
             id(control_leds_center_button_touched).execute();
           } else if (id(jack_plugged_recently)) {
@@ -1085,10 +1099,6 @@ script:
             id(control_leds_timer_ringing).execute();
           } else if (id(voice_assistant_phase) == ${voice_assist_waiting_for_command_phase_id}) {
             id(control_leds_voice_assistant_waiting_for_command_phase).execute();
-          } else if (id(voice_assistant_phase) == ${voice_assist_listening_for_command_phase_id}) {
-            id(control_leds_voice_assistant_listening_for_command_phase).execute();
-          } else if (id(voice_assistant_phase) == ${voice_assist_thinking_phase_id}) {
-            id(control_leds_voice_assistant_thinking_phase).execute();
           } else if (id(voice_assistant_phase) == ${voice_assist_replying_phase_id}) {
             id(control_leds_voice_assistant_replying_phase).execute();
           } else if (id(voice_assistant_phase) == ${voice_assist_error_phase_id}) {
@@ -1466,12 +1476,6 @@ script:
   - id: play_message_end_cue
     mode: restart
     then:
-      - if:
-          condition:
-            lambda: return id(server_controlled_open_mic_active);
-          then:
-            - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
-            - script.execute: control_leds
       - script.execute:
           id: play_sound
           priority: true
@@ -1480,30 +1484,31 @@ script:
   - id: set_visual_idle
     mode: restart
     then:
-      - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+      - lambda: |-
+          id(server_visual_received) = true;
+          id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
       - script.execute: control_leds
 
   - id: set_visual_listening
     mode: restart
     then:
-      - lambda: id(voice_assistant_phase) = ${voice_assist_listening_for_command_phase_id};
+      - lambda: |-
+          id(server_visual_received) = true;
+          id(voice_assistant_phase) = ${voice_assist_listening_for_command_phase_id};
       - script.execute: control_leds
 
   - id: set_visual_processing
     mode: restart
     then:
-      - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+      - lambda: |-
+          id(server_visual_received) = true;
+          id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
       - script.execute: control_leds
 
   - id: reset_open_mic_wake_candidate
     mode: restart
     then:
-      - if:
-          condition:
-            lambda: return id(server_controlled_open_mic_active);
-          then:
-            - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
-            - script.execute: control_leds
+      - logger.log: "Wake-candidate reset received; main visual remains server-controlled"
 
   - id: play_conversation_timeout_cue
     mode: restart
@@ -1919,24 +1924,17 @@ voice_assistant:
   on_client_connected:
     - lambda: id(init_in_progress) = false;
     - micro_wake_word.start:
-    - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+    - lambda: |-
+        id(server_visual_received) = false;
+        id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
     - script.execute: control_leds
   on_client_disconnected:
     - voice_assistant.stop:
-    - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
+    - lambda: |-
+        id(server_visual_received) = false;
+        id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
     - script.execute: control_leds
   on_error:
-    # Only set the error phase if the error code is different than duplicate_wake_up_detected or stt-no-text-recognized
-    # These two are ignored for a better user experience
-    - if:
-        condition:
-          and:
-            - lambda: return !id(init_in_progress);
-            - lambda: return code != "duplicate_wake_up_detected";
-            - lambda: return code != "stt-no-text-recognized";
-        then:
-          - lambda: id(voice_assistant_phase) = ${voice_assist_error_phase_id};
-          - script.execute: control_leds
     # If the error code is cloud-auth-failed, serve a local audio file guiding the user.
     - if:
         condition:
@@ -1953,34 +1951,22 @@ voice_assistant:
         decibel_reduction: 20  # Number of dB quieter; higher implies more quiet, 0 implies full volume
         duration: 0.0s         # The duration of the transition (default is no transition)
   on_listening:
-    - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
-    - script.execute: control_leds
+    - logger.log: "Voice-assistant listening callback; main visual remains server-controlled"
   on_stt_vad_start:
-    - lambda: id(voice_assistant_phase) = ${voice_assist_listening_for_command_phase_id};
-    - script.execute: control_leds
+    - logger.log: "Voice-assistant VAD start; main visual remains server-controlled"
   on_stt_vad_end:
-    - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
-    - script.execute: control_leds
+    - logger.log: "Voice-assistant VAD end; main visual remains server-controlled"
   on_intent_progress:
     - if:
         condition:
           # A nonempty x variable means a streaming TTS url was sent to the media player
           lambda: 'return !x.empty();'
         then:
-          - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
-          - script.execute: control_leds
           # Start a script that would potentially enable the stop word if the response is longer than a second
           - script.execute: activate_stop_word_once
   on_tts_start:
-    - if:
-        condition:
-          # The intent_progress trigger didn't start the TTS Reponse
-          lambda: 'return id(voice_assistant_phase) != ${voice_assist_replying_phase_id};'
-        then:
-          - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
-          - script.execute: control_leds
-          # Start a script that would potentially enable the stop word if the response is longer than a second
-          - script.execute: activate_stop_word_once
+    # Main visual remains server-controlled; still enable the local stop word for long playback.
+    - script.execute: activate_stop_word_once
   # When the voice assistant ends ...
   on_end:
     - wait_until:
@@ -1991,15 +1977,6 @@ voice_assistant:
         id: media_mixing_input
         decibel_reduction: 0
         duration: 1.0s
-    # If the end happened because of an error, let the error phase on for a second
-    - if:
-        condition:
-          lambda: return id(voice_assistant_phase) == ${voice_assist_error_phase_id};
-        then:
-          - delay: 1s
-    # Reset the voice assistant phase id and reset the LED animations.
-    - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
-    - script.execute: control_leds
   on_timer_finished:
     - switch.turn_on: timer_ringing
   on_timer_started:

@@ -270,14 +270,14 @@ class MicrophoneManager:
             logger.info("audio stream ended without transcript")
             return captured
 
+        await self._send_command(microphone, SetVisualState(VisualState.PROCESSING), logger)
         if starts_new_conversation:
+            await self._play_cue(microphone, CueType.UTTERANCE_ACCEPTED, logger)
             attributes = {}
             if captured.speaker_result is not None and captured.speaker_result.recognized_user:
                 attributes["user"] = captured.speaker_result.recognized_user
             await endpoint.send_to_session(NewConversation(attributes=attributes))
         await self._send_captured_text(endpoint, captured.text_fragments)
-
-        await self._play_cue(microphone, CueType.UTTERANCE_ACCEPTED, logger)
         return captured
 
     async def _capture_open_mic_utterance(

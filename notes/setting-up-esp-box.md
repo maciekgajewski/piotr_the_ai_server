@@ -965,3 +965,30 @@ No firmware flashing has been done yet.
 - Flashed the new Voice PE over USB on `/dev/ttyACM0`; esptool verified written hashes and ESPHome reported `Successfully uploaded program`.
 - Post-flash name resolution:
   - `piotr-voice-pe-03.local` -> `192.168.0.153`
+
+## 2026-07-12T15:46:22Z - Voice Preview server-owned visual states built
+
+- Updated the shared Voice Preview firmware so connected `IDLE`, `LISTENING`, and `PROCESSING` are selected only by the explicit AI-server services.
+- Voice-assistant callbacks no longer infer or overwrite the connected main visual state.
+- Connect and disconnect now select not-ready `ERROR`; reconnect remains in that fail-safe until the first explicit server visual command.
+- Gave reconnect `ERROR` and active server `LISTENING`/`PROCESSING` precedence over local LED indicators. Local indicators remain available in server `IDLE`.
+- Validated and compiled successfully:
+  - `firmware/esphome/voice-pe-bedroom.yaml` (`config_hash=0xda414d69`)
+  - `firmware/esphome/voice-pe-02.yaml` (`config_hash=0x7a50cdf4`)
+  - `firmware/esphome/voice-pe-03.yaml` (`config_hash=0x7a7fd168`)
+- Inspected all three generated `main.cpp` files and confirmed the visual API services, connected-state assignments, reconnect guard, and precedence order.
+- Firmware was built only; it was not flashed, and no hardware behavior was tested.
+
+## 2026-07-12T16:47:09Z - Available Voice Preview units flashed OTA
+
+- Checked all three Voice Preview targets before deployment.
+- `piotr-voice-pe-bedroom-01.local` did not resolve and its last recorded address, `192.168.0.13`, did not respond; it was not flashed.
+- `piotr-voice-pe-02.local` resolved to `192.168.0.166` and was reachable.
+  - Uploaded the previously validated `voice-pe-02.yaml` build over OTA.
+  - ESPHome reported `OTA successful` and `Successfully uploaded program.`
+  - Post-reboot ping to `192.168.0.166` succeeded.
+- `piotr-voice-pe-03.local` resolved to `192.168.0.150` and was reachable.
+  - Uploaded the previously validated `voice-pe-03.yaml` build over OTA.
+  - ESPHome reported `OTA successful` and `Successfully uploaded program.`
+  - Post-reboot ping to `192.168.0.150` succeeded.
+- Network return was verified; visual-state behavior was not tested in this step.

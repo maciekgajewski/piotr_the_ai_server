@@ -20,7 +20,7 @@ Stage 3 must not begin until the normative documents produced by Stage 2 have be
 
 - **Stage 1:** Completed on 2026-07-12. Added the documentation index, agent routing, authority labels, and the protocol documentation standard.
 - **Stage 2:** Completed on 2026-07-12. Approved normative Conversation and Microphone protocols, their mapping, and the conformance catalogue are indexed under `docs/`.
-- **Stage 3:** In progress. The Conversation/websocket milestone is implemented and green. The canonical correlated Microphone Protocol vocabulary, manager-side protocol state machine, manager mapping, Box3 Python driver, explicit visual commands, and early open-mic candidate feedback are implemented. Exhaustive reusable driver conformance, firmware conformance, and final system/hardware verification remain incomplete.
+- **Stage 3:** In progress. The Conversation/websocket milestone is implemented and green. The canonical correlated Microphone Protocol vocabulary, manager-side protocol state machine, manager mapping, Box3 Python driver, explicit visual commands, early open-mic candidate feedback, and Voice Preview firmware visual ownership are implemented. Box3 firmware conformance and final system/hardware verification remain incomplete.
 
 ## Fresh-session continuation handoff
 
@@ -73,6 +73,13 @@ Correlated microphone Python milestone completed on 2026-07-12:
 - Migrated `Box3EsphomeMicrophone` to the canonical Python interface. Existing ESPHome callbacks are correlated privately to the single active driver operation until firmware-native correlation is implemented.
 - Migrated microphone operational tools and replaced legacy-sequence tests with focused protocol, manager, and Box3 contract tests.
 
+Voice Preview firmware visual milestone completed on 2026-07-12:
+
+- Sealed connected `IDLE`, `LISTENING`, and `PROCESSING` behind the explicit server visual services; voice-assistant callbacks no longer infer or overwrite those states.
+- Added a non-restored `server_visual_received` guard. Connect and disconnect clear it and select not-ready `ERROR`; only an explicit server visual command clears the fail-safe.
+- Made reconnect `ERROR`, server `LISTENING`, and server `PROCESSING` take precedence over local button, jack, dial, timer, and mute indicators. Local indicators remain available while server state is `IDLE`.
+- Validated, compiled, and inspected generated C++ for `voice-pe-bedroom.yaml`, `voice-pe-02.yaml`, and `voice-pe-03.yaml`. Flashed the available Voice PE 02 and Voice PE 03 units over OTA; the bedroom unit was unavailable.
+
 ### Important discoveries and decisions
 
 - The original Stage 2 draft incorrectly implied that agents should construct `FollowUpRequested(timeout_seconds)`. Agents cannot know websocket or per-microphone timeout policy. The approved correction is `ConversationEndpoint.request_follow_up()`; Session owns and emits the effective timeout. The normative Conversation Protocol, catalogue, and this plan were updated.
@@ -86,7 +93,7 @@ Correlated microphone Python milestone completed on 2026-07-12:
 - The Conversation milestone introduced `ConversationEndpoint.request_follow_up()` before the originally listed event-only migration because this was required to preserve the sealed agent/adapter boundary.
 - The microphone work was checkpointed after visual-state control and candidate UX, before replacing overloaded legacy microphone audio/listening events.
 - The legacy microphone event vocabulary and visual-filtering assertions were removed during the correlated Python migration.
-- Firmware services and scripts were added but ESPHome config validation, compile, generated-source inspection, and hardware deployment were not started.
+- Firmware services and scripts were added before validation. Voice Preview validation, compile, generated-source inspection, and deployment to the two available units are complete; Box3 firmware migration and behavioral hardware validation remain outstanding.
 
 ### Exact tests and checks run
 
@@ -121,11 +128,59 @@ Successful checks after the correlated microphone Python migration:
 passed with no output
 ```
 
+Automated conformance expansion on 2026-07-12:
+
+- Added visual-command idempotence coverage in every connected driver state.
+- Added stale and mismatched correlation coverage for listening start, capture events, candidate reset, cue completion, and playback completion; rejected events are also asserted not to mutate the active snapshot.
+- Added exact ordered open-mic acceptance and rejection sequences, including exact-once Conversation forwarding and unchanged open-mic `listen_id` after rejection.
+- Added exact ordered wake-word acceptance and follow-up acceptance sequences.
+- Corrected wake/follow-up mapping drift found by those tests: accepted new-conversation text now enters `PROCESSING` and completes `UTTERANCE_ACCEPTED` before Conversation events; accepted follow-up enters `PROCESSING` without creating a Conversation or playing the new-conversation cue.
+
+```text
+.venv/bin/python -m pytest tests/test_microphone_protocol.py tests/test_microphones.py tests/test_box3_esphome_microphone.py -q
+58 passed in 0.30s
+
+.venv/bin/python -m pytest -q
+487 passed, 28 warnings in 1.51s
+```
+
 The first behavior-suite attempt encountered repeated Ollama request timeouts and was stopped during case 9. A clean retry then passed all cases:
 
 ```text
 orchestrator_and_dsa_tests/run.sh --no-transcript
 PASS 45/45 using qwen3:14b in 234.77s after the Python conformance expansion
+```
+
+Successful Voice Preview firmware checks after sealing server visual ownership:
+
+```text
+.venv/bin/esphome config firmware/esphome/voice-pe-bedroom.yaml
+.venv/bin/esphome config firmware/esphome/voice-pe-02.yaml
+.venv/bin/esphome config firmware/esphome/voice-pe-03.yaml
+all configurations valid
+
+.venv/bin/esphome compile firmware/esphome/voice-pe-bedroom.yaml
+SUCCESS, config_hash=0xda414d69
+.venv/bin/esphome compile firmware/esphome/voice-pe-02.yaml
+SUCCESS, config_hash=0x7a50cdf4
+.venv/bin/esphome compile firmware/esphome/voice-pe-03.yaml
+SUCCESS, config_hash=0x7a7fd168
+
+Generated main.cpp inspection for all three builds confirmed:
+- API user-service triggers for set_visual_idle, set_visual_listening, and set_visual_processing
+- only those services assign connected phases 1, 3, and 4
+- connect and disconnect assign phase 10 and clear server_visual_received
+- !server_visual_received, phase 3, and phase 4 precede local indicator branches
+```
+
+ESPHome also reported existing upstream/configuration warnings for `voice_kit.flash` synchronous metadata, GPIO strapping pins, merged OTA configuration, and deprecated wake-loop support; none prevented validation or compilation.
+
+Voice Preview OTA deployment on 2026-07-12:
+
+```text
+voice-pe-02: OTA successful at 192.168.0.166; post-reboot ping succeeded
+voice-pe-03: OTA successful at 192.168.0.150; post-reboot ping succeeded
+voice-pe-bedroom: hostname unresolved and 192.168.0.13 unreachable; not flashed
 ```
 
 One combined shell invocation of focused pytest commands produced socket `PermissionError` failures because command segments were sandboxed. Re-running each exact pytest command independently produced the passing results above. Do not diagnose those combined-command failures as code defects.
@@ -134,12 +189,12 @@ One combined shell invocation of focused pytest commands produced socket `Permis
 
 There are no currently reproducible pytest failures. The following acceptance failures remain:
 
-- Firmware voice-assistant callbacks may still infer and overwrite visual phases; explicit server ownership is not yet sealed.
-- Reconnection behavior has not been proven to keep firmware `ERROR` until the first server visual command.
-- The reusable black-box driver harness covers listening/capture modes, cue correlation, and playback drain against Box3. Exhaustive command/event rejection coverage remains concentrated in the protocol-model tests and must stay synchronized with the normative matrix.
-- ESPHome validation, compilation, and generated-source inspection have not run.
+- Box3 firmware voice-assistant callbacks still require a final ownership audit and migration; Voice Preview ownership is sealed.
+- Box3 reconnect-before-first-command `ERROR` behavior has not been proven. Voice Preview generated source proves this ordering but still requires hardware validation.
+- The reusable black-box driver harness covers listening/capture modes, cue correlation, and playback drain against Box3. The protocol model now covers stale correlations and visual idempotence across its states; reusable concrete-driver rejection coverage still needs expansion where the driver owns additional internals.
+- ESPHome validation, compilation, and generated-source inspection are complete for all three Voice Preview entrypoints, but remain outstanding for affected Box3 firmware.
 - Real websocket client/server smoke testing has not run for this checkpoint.
-- No firmware was flashed and no hardware visual sequence was tested.
+- Voice PE 02 and Voice PE 03 were flashed and returned to the network. The bedroom unit remains unflashed, and no hardware visual sequence has been tested.
 
 ### Remaining acceptance criteria
 
@@ -161,12 +216,12 @@ All incomplete requirements in `docs/protocol-conformance-catalogue.md` remain b
 
 ### Next concrete implementation steps
 
-1. Finish ordered manager/mapping visual tests for rejection, acceptance, playback retention, follow-up, and output-drain/re-arm behavior.
-2. Add remaining mapping exact-sequence and observability coverage from the conformance catalogue.
-3. Migrate Box3 and Voice Preview firmware so voice-assistant callbacks cannot infer or overwrite the connected main visual state.
-4. Implement and verify disconnected `ERROR`, reconnect-before-first-command behavior, and the local-indicator precedence rules.
+1. Finish ordered manager/mapping tests for playback retention, follow-up timeout, and output-drain/re-arm behavior. Rejection, new-conversation acceptance, and accepted follow-up ordering are covered.
+2. Add remaining mapping observability coverage from the conformance catalogue, especially visual old/new/cause logs and full cross-protocol correlation context.
+3. Migrate Box3 firmware so voice-assistant callbacks cannot infer or overwrite the connected main visual state; Voice Preview is complete.
+4. Implement and verify Box3 disconnected `ERROR`, reconnect-before-first-command behavior, and local-indicator precedence. Hardware-verify the completed Voice Preview behavior.
 5. Run the real websocket client/server smoke test.
-6. Run ESPHome config, compile, and generated-source checks for every affected entrypoint. Do not flash until they pass.
+6. Run ESPHome config, compile, and generated-source checks for affected Box3 entrypoints; the three Voice Preview entrypoints pass. Do not flash until they pass.
 7. Perform hardware validation one satellite at a time and record results. Append to `notes/setting-up-esp-box.md` only when firmware is actually built/flashed or hardware evidence is collected.
 
 ## Design assumptions

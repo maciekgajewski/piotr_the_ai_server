@@ -1,8 +1,10 @@
 import pytest
 
-from ai_server.microphones.messages import AudioChunk, Close, CueFinished, CueType, ListeningMode, ListeningStarted
+from ai_server.microphones.messages import AudioChunk, AudioProgress, Close, CueFinished, CueType, ListeningMode
+from ai_server.microphones.messages import ListeningStarted
 from ai_server.microphones.messages import ListeningStopped, PlaybackBegin, PlaybackEnd, PlaybackFinished, PlayCue
-from ai_server.microphones.messages import MicrophoneUnavailable, PlaybackChunk, SetVisualState, SpeechEnded
+from ai_server.microphones.messages import MicrophoneUnavailable, PlaybackChunk, ResetWakeCandidate, SetVisualState
+from ai_server.microphones.messages import SpeechEnded
 from ai_server.microphones.messages import SpeechStarted, StartListening, StopListening
 from ai_server.microphones.messages import VisualState
 from ai_server.microphones.protocol import DriverState, MicrophoneProtocolState
@@ -148,8 +150,114 @@ def test_playback_rejects_chunk_after_end() -> None:
         protocol.command(PlaybackChunk("playback-1", b"late"))
 
 
+@pytest.mark.parametrize("state", list(DriverState)[:-1])
+def test_visual_commands_are_idempotent_in_every_connected_state(state: DriverState) -> None:
+    """MP-VISUAL-002: visuals are independent of every non-closed audio state."""
+    protocol = _protocol_in_state(state)
+    before = protocol.snapshot
+
+    protocol.command(SetVisualState(VisualState.PROCESSING))
+    protocol.command(SetVisualState(VisualState.PROCESSING))
+
+    assert protocol.snapshot == before
+
+
+@pytest.mark.parametrize(
+    ("event", "error"),
+    [
+        (ListeningStarted("stale-listen", ListeningMode.OPEN_MIC), "mismatched listen_id"),
+        (ListeningStarted("listen-1", ListeningMode.FOLLOW_UP), "mismatched mode"),
+    ],
+)
+def test_arming_rejects_stale_or_wrong_listening_started(event, error: str) -> None:
+    """MP-ID-003/MP-STATE-001: delayed start callbacks cannot arm a generation."""
+    protocol = MicrophoneProtocolState()
+    protocol.command(StartListening("listen-1", ListeningMode.OPEN_MIC))
+
+    with pytest.raises(AssertionError, match=error):
+        protocol.event(event)
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        AudioChunk("stale-listen", "utterance-1", b"audio"),
+        AudioProgress("listen-1", "stale-utterance", 1, 5),
+        SpeechEnded("listen-1", "stale-utterance", "completed"),
+    ],
+)
+def test_capturing_rejects_every_stale_segment_event(event) -> None:
+    """MP-ID-003: no stale segment event can complete or mutate active capture."""
+    protocol = _listening_protocol()
+    protocol.event(SpeechStarted("listen-1", "utterance-1", 16000, 2, 1))
+    before = protocol.snapshot
+
+    with pytest.raises(AssertionError, match="mismatched"):
+        protocol.event(event)
+
+    assert protocol.snapshot == before
+
+
+@pytest.mark.parametrize(
+    ("event", "error"),
+    [
+        (CueFinished("stale-cue"), "mismatched cue_id"),
+        (PlaybackFinished("stale-playback"), "mismatched playback_id"),
+    ],
+)
+def test_output_completion_rejects_stale_identifiers(event, error: str) -> None:
+    """MP-ID-003: delayed output completion cannot drain a newer operation."""
+    protocol = MicrophoneProtocolState()
+    if isinstance(event, CueFinished):
+        protocol.command(PlayCue("cue-1", CueType.FOLLOW_UP_READY))
+    else:
+        protocol.command(PlaybackBegin("playback-1", 22050, 2, 1))
+        protocol.command(PlaybackEnd("playback-1"))
+    before = protocol.snapshot
+
+    with pytest.raises(AssertionError, match=error):
+        protocol.event(event)
+
+    assert protocol.snapshot == before
+
+
+def test_reset_candidate_rejects_unknown_utterance_without_mutating_generation() -> None:
+    """MP-OPENMIC-002/MP-ID-003: reset is correlated to a completed active segment."""
+    protocol = _listening_protocol()
+    before = protocol.snapshot
+
+    with pytest.raises(AssertionError, match="unknown utterance_id"):
+        protocol.command(ResetWakeCandidate("listen-1", "stale-utterance"))
+
+    assert protocol.snapshot == before
+
+
 def _listening_protocol() -> MicrophoneProtocolState:
     protocol = MicrophoneProtocolState()
     protocol.command(StartListening("listen-1", ListeningMode.OPEN_MIC))
     protocol.event(ListeningStarted("listen-1", ListeningMode.OPEN_MIC))
     return protocol
+
+
+def _protocol_in_state(state: DriverState) -> MicrophoneProtocolState:
+    protocol = MicrophoneProtocolState()
+    if state is DriverState.DISARMED:
+        return protocol
+    if state is DriverState.ARMING:
+        protocol.command(StartListening("listen-1", ListeningMode.OPEN_MIC))
+        return protocol
+    if state in (DriverState.LISTENING, DriverState.CAPTURING, DriverState.STOPPING):
+        protocol.command(StartListening("listen-1", ListeningMode.OPEN_MIC))
+        protocol.event(ListeningStarted("listen-1", ListeningMode.OPEN_MIC))
+        if state is DriverState.CAPTURING:
+            protocol.event(SpeechStarted("listen-1", "utterance-1", 16000, 2, 1))
+        elif state is DriverState.STOPPING:
+            protocol.command(StopListening("listen-1", "test"))
+        return protocol
+    if state is DriverState.PLAYING_CUE:
+        protocol.command(PlayCue("cue-1", CueType.FOLLOW_UP_READY))
+        return protocol
+    if state is DriverState.PLAYING_AUDIO:
+        protocol.command(PlaybackBegin("playback-1", 22050, 2, 1))
+        return protocol
+    raise AssertionError(f"unsupported test state: {state}")
