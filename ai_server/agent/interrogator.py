@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import uuid
 
 from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, RequestFollowUp
+from ai_server.messages import MessageBegin, MessageEnd, MessageFragment
 
 
 class InterrogatorAgent:
@@ -24,15 +25,16 @@ class InterrogatorAgent:
                 endpoint,
                 f"Twoja wiadomość numer {message_number} to: {message.text}",
             )
-            await endpoint.send(RequestFollowUp())
+            await endpoint.request_follow_up()
 
     async def close(self) -> None:
         pass
 
 
 async def _send_streamed_text(endpoint: ConversationEndpoint, text: str) -> None:
-    await endpoint.send(MessageBegin())
+    message_id = str(uuid.uuid4())
+    await endpoint.send(MessageBegin(message_id=message_id))
     midpoint = len(text) // 2
-    await endpoint.send(MessageFragment(text=text[:midpoint]))
-    await endpoint.send(MessageFragment(text=text[midpoint:]))
-    await endpoint.send(MessageEnd())
+    await endpoint.send(MessageFragment(message_id=message_id, text=text[:midpoint]))
+    await endpoint.send(MessageFragment(message_id=message_id, text=text[midpoint:]))
+    await endpoint.send(MessageEnd(message_id=message_id))

@@ -435,6 +435,24 @@ script:
                   speaker.is_playing:
           timeout: 2s
 
+  - id: set_visual_idle
+    mode: restart
+    then:
+      - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+      - script.execute: draw_display
+
+  - id: set_visual_listening
+    mode: restart
+    then:
+      - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+      - script.execute: draw_display
+
+  - id: set_visual_processing
+    mode: restart
+    then:
+      - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+      - script.execute: draw_display
+
   - id: reset_open_mic_wake_candidate
     mode: restart
     then:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import TypeAlias
 
 from ai_server.speech_to_text.messages import TextEnd, TextEvent, TextFragment
@@ -61,6 +62,17 @@ class OpenMicWakeCandidateRejected:
     pass
 
 
+class VisualState(Enum):
+    IDLE = "idle"
+    LISTENING = "listening"
+    PROCESSING = "processing"
+
+
+@dataclass(frozen=True)
+class SetVisualState:
+    state: VisualState
+
+
 AudioEvent: TypeAlias = AudioStart | AudioChunk | AudioEnd | AudioProgress
 MicrophoneOutputEvent: TypeAlias = (
     AudioStart
@@ -72,4 +84,5 @@ MicrophoneOutputEvent: TypeAlias = (
     | StartFollowUpListening
     | ConversationTimeoutCue
     | OpenMicWakeCandidateRejected
+    | SetVisualState
 )

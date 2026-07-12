@@ -21,6 +21,7 @@ Requirement identifiers use the `CP-` prefix.
 - An agent MUST receive only an active `Conversation` and a limited `ConversationEndpoint`.
 - An agent MUST NOT create, replace, or re-arm Sessions or Conversations.
 - `ConversationEndpoint` MUST enforce active-conversation message ordering and conversational-floor ownership.
+- Session MUST own the effective follow-up timeout. Agents express follow-up intent through `ConversationEndpoint.request_follow_up()` and MUST NOT select endpoint timeout policy.
 
 ## Terminology
 
@@ -76,7 +77,7 @@ External endpoints MUST send `SessionAttributes` during `HANDSHAKE`. A trusted l
 | Event | Fields | Constraints | Meaning |
 |---|---|---|---|
 | `ReadyForConversation` | none | Emitted once on entry to `IDLE` | Endpoint may start a Conversation |
-| `FollowUpRequested` | `timeout_seconds` | Positive finite number | Agent returned the floor for one follow-up message |
+| `FollowUpRequested` | `timeout_seconds` | Positive finite number supplied by Session | Agent returned the floor for one follow-up message |
 | `ProcessingUpdate` | none | No assistant message open | Agent is still working; carries no response content |
 | `MessageBegin` | `message_id` | Non-empty and unique within the Conversation | Begin one assistant message |
 | `MessageFragment` | `message_id`, `text` | ID matches the open assistant message | Append assistant text |
@@ -162,7 +163,7 @@ Terminal state. No further events are accepted or emitted.
 | `AGENT_ACTIVE` | agent `MessageBegin` | Open assistant message | `AGENT_ACTIVE` |
 | `AGENT_ACTIVE` | matching agent `MessageFragment` | Send fragment | `AGENT_ACTIVE` |
 | `AGENT_ACTIVE` | matching agent `MessageEnd` | Close assistant message | `AGENT_ACTIVE` |
-| `AGENT_ACTIVE` | agent `FollowUpRequested` | Send request and arm deadline | `AWAITING_FOLLOW_UP` |
+| `AGENT_ACTIVE` | agent calls `request_follow_up()` | Emit `FollowUpRequested` with Session timeout and arm deadline | `AWAITING_FOLLOW_UP` |
 | `AGENT_ACTIVE` | agent returns | Begin cleanup | `ENDING_CONVERSATION` |
 | `AGENT_ACTIVE` | endpoint closure | Cancel agent and Session | `CLOSED` |
 | `AWAITING_FOLLOW_UP` | `MessageBegin` | Cancel deadline and open user message | `RECEIVING_USER_MESSAGE` |
@@ -174,17 +175,17 @@ Terminal state. No further events are accepted or emitted.
 | `ENDING_CONVERSATION` | endpoint closure | Destroy state | `CLOSED` |
 | `CLOSED` | any event | No action; event is inapplicable | `CLOSED` |
 
-While an assistant message is open in `AGENT_ACTIVE`, only its matching `MessageFragment`, matching `MessageEnd`, or endpoint closure is valid. `ProcessingUpdate`, `FollowUpRequested`, another `MessageBegin`, and agent return are internal failures. (`CP-MESSAGE-005`)
+While an assistant message is open in `AGENT_ACTIVE`, only its matching `MessageFragment`, matching `MessageEnd`, or endpoint closure is valid. `ProcessingUpdate`, `request_follow_up()`, another `MessageBegin`, and agent return are internal failures. (`CP-MESSAGE-005`)
 
 ## Conversational floor
 
 - The endpoint owns the floor in `AWAITING_USER_MESSAGE` and `RECEIVING_USER_MESSAGE`.
 - The agent owns the floor in `AGENT_ACTIVE`.
-- The endpoint regains the floor only after `FollowUpRequested`. (`CP-FLOOR-002`)
+- The endpoint regains the floor only after Session emits `FollowUpRequested`. (`CP-FLOOR-002`)
 - Endpoint message input while the agent owns the floor is a protocol violation.
-- The agent MUST NOT request follow-up before a complete user message or while an assistant message is open. (`CP-FOLLOWUP-001`)
+- The agent MUST NOT call `request_follow_up()` before a complete user message or while an assistant message is open. (`CP-FOLLOWUP-001`)
 - At most one follow-up request MAY be outstanding. (`CP-FOLLOWUP-002`)
-- `FollowUpRequested.timeout_seconds` is the sole follow-up deadline. An adapter MUST NOT substitute a separate duration. (`CP-FOLLOWUP-003`)
+- Session supplies `FollowUpRequested.timeout_seconds`; it is the sole follow-up deadline. An agent or adapter MUST NOT substitute a separate duration. (`CP-FOLLOWUP-003`)
 
 ## Conversation termination
 
@@ -258,7 +259,8 @@ Endpoint                                 Session                         Agent
 ```text
 complete user message
 complete assistant message
-FollowUpRequested(timeout_seconds=60)
+agent calls request_follow_up()
+Session emits FollowUpRequested(timeout_seconds=60)
 complete follow-up user message
 complete assistant message
 ConversationEnded(completed)
@@ -288,7 +290,7 @@ The following are protocol violations or internal failures:
 - endpoint message input in `AGENT_ACTIVE`;
 - `ProcessingUpdate` inside an assistant message;
 - agent return with an assistant message open;
-- duplicate `FollowUpRequested`;
+- duplicate `request_follow_up()`;
 - follow-up input after its deadline;
 - reusing a message ID in the same Conversation.
 
@@ -333,7 +335,7 @@ async def run_conversation(
     ...
 ```
 
-High-level helpers MAY assemble complete text messages, but they MUST preserve protocol ordering and unique IDs. An agent that needs another user message MUST send `FollowUpRequested` before awaiting it.
+High-level helpers MAY assemble complete text messages, but they MUST preserve protocol ordering and unique IDs. An agent that needs another user message MUST call `ConversationEndpoint.request_follow_up()` before awaiting it. Session then emits `FollowUpRequested` with the configured Session timeout.
 
 ## Observability requirements
 

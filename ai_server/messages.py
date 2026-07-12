@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import math
+import uuid
+from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
 
@@ -23,23 +25,22 @@ class NewConversation:
 class ConversationEnded(Exception):
     """Raised or sent when the input side ends the active conversation."""
 
+    def __init__(self, reason: str = "endpoint_ended") -> None:
+        super().__init__(reason)
+        self.reason = reason
+
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, ConversationEnded)
+        return isinstance(other, ConversationEnded) and self.reason == other.reason
 
 
 @dataclass(frozen=True)
-class WaitForNewConversation:
+class ReadyForConversation:
     pass
 
 
 @dataclass(frozen=True)
-class WaitForNewMessage:
-    pass
-
-
-@dataclass(frozen=True)
-class RequestFollowUp:
-    timeout_seconds: float | None = None
+class FollowUpRequested:
+    timeout_seconds: float
 
 
 @dataclass(frozen=True)
@@ -54,28 +55,29 @@ class SessionRejected:
 
 @dataclass(frozen=True)
 class MessageBegin:
-    pass
+    message_id: str = field(compare=False)
 
 
 @dataclass(frozen=True)
 class MessageFragment:
+    message_id: str = field(compare=False)
     text: str
 
 
 @dataclass(frozen=True)
 class MessageEnd:
-    pass
+    message_id: str = field(compare=False)
 
 
 ConversationInputEvent: TypeAlias = MessageBegin | MessageFragment | MessageEnd
-ConversationOutputEvent: TypeAlias = MessageBegin | MessageFragment | MessageEnd | RequestFollowUp | ProcessingUpdate
+ConversationOutputEvent: TypeAlias = MessageBegin | MessageFragment | MessageEnd | ProcessingUpdate
 EndpointToSessionEvent: TypeAlias = (
     SessionAttributes | NewConversation | ConversationEnded | MessageBegin | MessageFragment | MessageEnd
 )
 SessionToEndpointEvent: TypeAlias = (
-    WaitForNewConversation
-    | WaitForNewMessage
-    | RequestFollowUp
+    ReadyForConversation
+    | FollowUpRequested
+    | ConversationEnded
     | ProcessingUpdate
     | SessionRejected
     | MessageBegin
@@ -107,20 +109,19 @@ def endpoint_event_from_mapping(raw_event: dict[str, Any]) -> EndpointToSessionE
     if event_type == "new_conversation":
         return NewConversation(attributes=_parse_attributes(raw_event, "new_conversation.attributes"))
     if event_type == "conversation_ended":
-        _reject_extra_keys(raw_event, {"type"})
-        return ConversationEnded()
+        return ConversationEnded(_parse_non_empty_string(raw_event, "reason", "conversation_ended.reason"))
     if event_type == "message_begin":
-        _reject_extra_keys(raw_event, {"type"})
-        return MessageBegin()
+        return MessageBegin(message_id=_parse_message_id(raw_event, "message_begin"))
     if event_type == "message_fragment":
         text = raw_event.get("text")
         if not isinstance(text, str):
             raise ValueError("message_fragment.text must be a string")
-        _reject_extra_keys(raw_event, {"type", "text"})
-        return MessageFragment(text=text)
+        return MessageFragment(
+            message_id=_parse_message_id(raw_event, "message_fragment", {"text"}),
+            text=text,
+        )
     if event_type == "message_end":
-        _reject_extra_keys(raw_event, {"type"})
-        return MessageEnd()
+        return MessageEnd(message_id=_parse_message_id(raw_event, "message_end"))
 
     raise ValueError(f"unsupported endpoint event type: {event_type}")
 
@@ -142,25 +143,20 @@ def session_event_from_mapping(raw_event: dict[str, Any]) -> SessionToEndpointEv
     if not isinstance(event_type, str):
         raise ValueError("event.type must be a string")
 
-    if event_type == "wait_for_new_conversation":
+    if event_type == "ready_for_conversation":
         _reject_extra_keys(raw_event, {"type"})
-        return WaitForNewConversation()
-    if event_type == "wait_for_new_message":
-        _reject_extra_keys(raw_event, {"type"})
-        return WaitForNewMessage()
-    if event_type == "request_follow_up":
+        return ReadyForConversation()
+    if event_type == "follow_up_requested":
         timeout_seconds = raw_event.get("timeout_seconds")
-        if timeout_seconds is None:
-            _reject_extra_keys(raw_event, {"type"})
-            return RequestFollowUp()
         if (
             not isinstance(timeout_seconds, (int, float))
             or isinstance(timeout_seconds, bool)
             or timeout_seconds <= 0
+            or not math.isfinite(timeout_seconds)
         ):
-            raise ValueError("request_follow_up.timeout_seconds must be a positive number")
+            raise ValueError("follow_up_requested.timeout_seconds must be a positive finite number")
         _reject_extra_keys(raw_event, {"type", "timeout_seconds"})
-        return RequestFollowUp(timeout_seconds=float(timeout_seconds))
+        return FollowUpRequested(timeout_seconds=float(timeout_seconds))
     if event_type == "processing_update":
         _reject_extra_keys(raw_event, {"type"})
         return ProcessingUpdate()
@@ -171,17 +167,19 @@ def session_event_from_mapping(raw_event: dict[str, Any]) -> SessionToEndpointEv
         _reject_extra_keys(raw_event, {"type", "reason"})
         return SessionRejected(reason=reason)
     if event_type == "message_begin":
-        _reject_extra_keys(raw_event, {"type"})
-        return MessageBegin()
+        return MessageBegin(message_id=_parse_message_id(raw_event, "message_begin"))
     if event_type == "message_fragment":
         text = raw_event.get("text")
         if not isinstance(text, str):
             raise ValueError("message_fragment.text must be a string")
-        _reject_extra_keys(raw_event, {"type", "text"})
-        return MessageFragment(text=text)
+        return MessageFragment(
+            message_id=_parse_message_id(raw_event, "message_fragment", {"text"}),
+            text=text,
+        )
     if event_type == "message_end":
-        _reject_extra_keys(raw_event, {"type"})
-        return MessageEnd()
+        return MessageEnd(message_id=_parse_message_id(raw_event, "message_end"))
+    if event_type == "conversation_ended":
+        return ConversationEnded(_parse_non_empty_string(raw_event, "reason", "conversation_ended.reason"))
 
     raise ValueError(f"unsupported session event type: {event_type}")
 
@@ -196,13 +194,13 @@ def endpoint_event_to_mapping(event: EndpointToSessionEvent) -> dict[str, Any]:
     if isinstance(event, NewConversation):
         return {"type": "new_conversation", "attributes": dict(event.attributes)}
     if isinstance(event, ConversationEnded):
-        return {"type": "conversation_ended"}
+        return {"type": "conversation_ended", "reason": event.reason}
     if isinstance(event, MessageBegin):
-        return {"type": "message_begin"}
+        return {"type": "message_begin", "message_id": event.message_id}
     if isinstance(event, MessageFragment):
-        return {"type": "message_fragment", "text": event.text}
+        return {"type": "message_fragment", "message_id": event.message_id, "text": event.text}
     if isinstance(event, MessageEnd):
-        return {"type": "message_end"}
+        return {"type": "message_end", "message_id": event.message_id}
 
     raise ValueError(f"unsupported endpoint event: {type(event).__name__}")
 
@@ -212,35 +210,50 @@ def session_event_to_json(event: SessionToEndpointEvent) -> str:
 
 
 def session_event_to_mapping(event: SessionToEndpointEvent) -> dict[str, Any]:
-    if isinstance(event, WaitForNewConversation):
-        return {"type": "wait_for_new_conversation"}
-    if isinstance(event, WaitForNewMessage):
-        return {"type": "wait_for_new_message"}
-    if isinstance(event, RequestFollowUp):
-        payload = {"type": "request_follow_up"}
-        if event.timeout_seconds is not None:
-            payload["timeout_seconds"] = event.timeout_seconds
-        return payload
+    if isinstance(event, ReadyForConversation):
+        return {"type": "ready_for_conversation"}
+    if isinstance(event, FollowUpRequested):
+        return {"type": "follow_up_requested", "timeout_seconds": event.timeout_seconds}
+    if isinstance(event, ConversationEnded):
+        return {"type": "conversation_ended", "reason": event.reason}
     if isinstance(event, ProcessingUpdate):
         return {"type": "processing_update"}
     if isinstance(event, SessionRejected):
         return {"type": "session_rejected", "reason": event.reason}
     if isinstance(event, MessageBegin):
-        return {"type": "message_begin"}
+        return {"type": "message_begin", "message_id": event.message_id}
     if isinstance(event, MessageFragment):
-        return {"type": "message_fragment", "text": event.text}
+        return {"type": "message_fragment", "message_id": event.message_id, "text": event.text}
     if isinstance(event, MessageEnd):
-        return {"type": "message_end"}
+        return {"type": "message_end", "message_id": event.message_id}
 
     raise ValueError(f"unsupported session event: {type(event).__name__}")
 
 
-def text_message_to_events(message: TextMessage) -> tuple[ConversationOutputEvent, ...]:
+def text_message_to_events(message: TextMessage, message_id: str | None = None) -> tuple[ConversationOutputEvent, ...]:
+    effective_message_id = message_id or str(uuid.uuid4())
     return (
-        MessageBegin(),
-        MessageFragment(text=message.text),
-        MessageEnd(),
+        MessageBegin(message_id=effective_message_id),
+        MessageFragment(message_id=effective_message_id, text=message.text),
+        MessageEnd(message_id=effective_message_id),
     )
+
+
+def _parse_message_id(raw_event: dict[str, Any], event_name: str, extra_keys: set[str] | None = None) -> str:
+    return _parse_non_empty_string(raw_event, "message_id", f"{event_name}.message_id", extra_keys)
+
+
+def _parse_non_empty_string(
+    raw_event: dict[str, Any],
+    key: str,
+    field_name: str,
+    extra_keys: set[str] | None = None,
+) -> str:
+    value = raw_event.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    _reject_extra_keys(raw_event, {"type", key} | (extra_keys or set()))
+    return value
 
 
 def _parse_attributes(raw_event: dict[str, Any], field_name: str) -> dict[str, str]:

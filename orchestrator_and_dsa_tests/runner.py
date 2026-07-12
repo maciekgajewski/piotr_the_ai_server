@@ -205,6 +205,9 @@ class FakeConversationEndpoint(ConversationEndpoint):
         for event in text_message_to_events(message):
             await self.send(event)
 
+    async def request_follow_up(self) -> None:
+        raise AssertionError("behavior test endpoint does not support follow-up")
+
 
 class FakeTimezoneResolver:
     def __init__(self, mapping: dict[str, str]) -> None:

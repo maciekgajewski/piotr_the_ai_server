@@ -4,8 +4,8 @@ import logging
 import pytest
 
 from ai_server.config import ConversationConfig, MicrophoneConfig, SpeakerRecognitionConfig, SttConfig, TtsConfig
-from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, ProcessingUpdate, RequestFollowUp, TextMessage
-from ai_server.messages import WaitForNewConversation
+from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, ProcessingUpdate, FollowUpRequested, TextMessage
+from ai_server.messages import ReadyForConversation
 from ai_server.microphones.agent_endpoint import MicrophoneAgentEndpoint
 from ai_server.microphones.interfaces import MicrophoneUnavailable
 from ai_server.microphones.manager import MicrophoneManager, _MicrophoneAvailabilityLogger, init_mics
@@ -14,11 +14,16 @@ from ai_server.microphones.messages import OpenMicWakeCandidateRejected
 from ai_server.microphones.messages import StartFollowUpListening
 from ai_server.microphones.messages import StartOpenMicListening
 from ai_server.microphones.messages import StartWakeWordListening
+from ai_server.microphones.messages import SetVisualState
 from ai_server.microphones.messages import TextEnd, TextFragment
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 from ai_server.speech_to_text.messages import TextPartial
 from ai_server.speech_to_text.types import PcmAudioChunk
 from ai_server.speaker_recognition.client import SpeakerRecognitionResult
+
+
+def _without_visual_events(events):
+    return [event for event in events if not isinstance(event, SetVisualState)]
 
 
 class FakeAgent:
@@ -41,7 +46,7 @@ class FakeFollowUpAgent(FakeAgent):
         async for message in endpoint.messages():
             self.messages.append(message.text)
             await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
-            await endpoint.send(RequestFollowUp())
+            await endpoint.request_follow_up()
 
 
 class FakeProcessingAgent(FakeAgent):
@@ -310,16 +315,16 @@ def test_microphone_agent_endpoint_exchanges_one_message() -> None:
     async def run() -> None:
         endpoint = MicrophoneAgentEndpoint()
 
-        await endpoint.send_to_session(MessageBegin())
-        await endpoint.send_to_session(MessageFragment(text="hello"))
-        await endpoint.send_to_session(MessageEnd())
+        await endpoint.send_to_session(MessageBegin(message_id="user-1"))
+        await endpoint.send_to_session(MessageFragment(message_id="user-1", text="hello"))
+        await endpoint.send_to_session(MessageEnd(message_id="user-1"))
 
-        assert await endpoint.receive() == MessageBegin()
-        assert await endpoint.receive() == MessageFragment(text="hello")
-        assert await endpoint.receive() == MessageEnd()
+        assert await endpoint.receive() == MessageBegin(message_id="user-1")
+        assert await endpoint.receive() == MessageFragment(message_id="user-1", text="hello")
+        assert await endpoint.receive() == MessageEnd(message_id="user-1")
 
-        await endpoint.send(WaitForNewConversation())
-        assert await endpoint.receive_from_session() == WaitForNewConversation()
+        await endpoint.send(ReadyForConversation())
+        assert await endpoint.receive_from_session() == ReadyForConversation()
 
     asyncio.run(run())
 
@@ -350,7 +355,7 @@ def test_microphone_manager_sends_transcript_to_agent_and_speaks_reply() -> None
         assert stt.sessions[0].audio_chunks == [PcmAudioChunk(data=b"audio")]
         assert stt.sessions[0].ended is True
         assert tts.synthesized == ["reply:cześć"]
-        assert microphone.sent_audio_events == [
+        assert _without_visual_events(microphone.sent_audio_events) == [
             StartWakeWordListening(),
             MessageEndCue(),
             AudioStart(rate=22050, width=2, channels=1, volume=1.0),
@@ -387,7 +392,7 @@ def test_microphone_manager_opens_configured_microphone_in_open_mic_mode() -> No
         assert stt.streaming_sessions[0].audio_chunks == [PcmAudioChunk(data=b"audio")]
         assert stt.streaming_sessions[0].ended is True
         assert stt.streaming_sessions[0].final_transcribed is True
-        assert microphone.sent_audio_events == [
+        assert _without_visual_events(microphone.sent_audio_events) == [
             StartOpenMicListening(),
             MessageEndCue(),
             AudioStart(rate=22050, width=2, channels=1, volume=1.0),
@@ -441,7 +446,7 @@ def test_microphone_manager_discards_open_mic_speech_without_wake_phrase() -> No
 
         assert agent.messages == []
         assert not any(isinstance(event, MessageEndCue) for event in microphone.sent_audio_events)
-        assert microphone.sent_audio_events == [StartOpenMicListening()]
+        assert _without_visual_events(microphone.sent_audio_events) == [StartOpenMicListening()]
 
     asyncio.run(run())
 
@@ -488,7 +493,7 @@ def test_microphone_manager_resets_open_mic_state_after_rejected_wake_candidate(
 
         assert agent.messages == []
         assert not any(isinstance(event, MessageEndCue) for event in microphone.sent_audio_events)
-        assert microphone.sent_audio_events == [
+        assert _without_visual_events(microphone.sent_audio_events) == [
             StartOpenMicListening(),
             OpenMicWakeCandidateRejected(),
         ]
@@ -654,7 +659,7 @@ def test_microphone_manager_rearms_open_mic_when_idle_stream_stalls(caplog) -> N
 
         assert agent.messages == []
         assert len(stt.streaming_sessions) == 1
-        assert microphone.sent_audio_events == [StartOpenMicListening()]
+        assert _without_visual_events(microphone.sent_audio_events) == [StartOpenMicListening()]
 
     asyncio.run(run())
 
@@ -699,7 +704,7 @@ def test_microphone_manager_keeps_open_mic_progress_stream_open(caplog) -> None:
 
         assert agent.messages == []
         assert len(stt.streaming_sessions) == 1
-        assert microphone.sent_audio_events == [StartOpenMicListening()]
+        assert _without_visual_events(microphone.sent_audio_events) == [StartOpenMicListening()]
 
     asyncio.run(run())
 
@@ -735,8 +740,8 @@ def test_microphone_manager_accepts_open_mic_wake_phrase_found_only_in_final() -
         await manager.close()
 
         assert agent.messages == ["włącz muzykę"]
-        assert microphone.sent_audio_events[0] == StartOpenMicListening()
-        assert microphone.sent_audio_events[1] == MessageEndCue()
+        assert _without_visual_events(microphone.sent_audio_events)[0] == StartOpenMicListening()
+        assert _without_visual_events(microphone.sent_audio_events)[1] == MessageEndCue()
 
     asyncio.run(run())
 
@@ -839,7 +844,7 @@ def test_microphone_manager_rearms_wake_word_after_empty_wake_transcript() -> No
         assert stt.sessions[1].audio_chunks == [PcmAudioChunk(data=b"audio")]
         assert stt.sessions[1].ended is True
         assert tts.synthesized == ["reply:cześć"]
-        assert microphone.sent_audio_events == [
+        assert _without_visual_events(microphone.sent_audio_events) == [
             StartWakeWordListening(),
             StartWakeWordListening(),
             MessageEndCue(),
@@ -938,7 +943,7 @@ def test_microphone_manager_treats_empty_follow_up_as_timeout() -> None:
 
         assert agent.messages == ["cześć"]
         assert tts.synthesized == ["reply:cześć"]
-        assert microphone.sent_audio_events == [
+        assert _without_visual_events(microphone.sent_audio_events) == [
             StartWakeWordListening(),
             MessageEndCue(),
             AudioStart(rate=22050, width=2, channels=1, volume=1.0),

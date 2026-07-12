@@ -1,6 +1,7 @@
 import asyncio
 import socket
 from dataclasses import dataclass
+from unittest.mock import ANY
 
 from aiohttp import ClientError, ClientSession, WSCloseCode, WSMsgType
 from aiohttp import web
@@ -14,8 +15,8 @@ from ai_server.batch_ws_client import BatchWsClientOptions, run_batch_ws_client
 from ai_server.chat_client import ChatClientOptions
 from ai_server.config import AgentConfig, Config, WebsocketConfig
 from ai_server.interfaces import Conversation, ConversationEndpoint, ConversationMedium
-from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, ProcessingUpdate, RequestFollowUp
-from ai_server.messages import SessionAttributes, SessionRejected, TextMessage, WaitForNewConversation, endpoint_event_from_json, endpoint_event_to_json
+from ai_server.messages import ConversationEnded, MessageBegin, MessageEnd, MessageFragment, NewConversation, ProcessingUpdate, FollowUpRequested
+from ai_server.messages import SessionAttributes, SessionRejected, TextMessage, ReadyForConversation, endpoint_event_from_json, endpoint_event_to_json
 from ai_server.messages import session_event_from_json, session_event_to_json, text_message_to_events
 from ai_server.websocket_server import create_app
 from ai_server.ws_client_common import WebsocketSessionRejected, handle_websocket_message
@@ -61,7 +62,7 @@ class FollowUpAgent:
     async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
         async for message in endpoint.messages():
             await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
-            await endpoint.send(RequestFollowUp())
+            await endpoint.request_follow_up()
 
     async def close(self) -> None:
         pass
@@ -138,16 +139,17 @@ def test_websocket_applies_user_settings_from_provider_to_conversation() -> None
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
                     await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text", "user": "Maciek"})))
 
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
 
                     await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
                     for event in text_message_to_events(TextMessage(text="hello")):
                         await websocket.send_str(endpoint_event_to_json(event))
 
-                    assert await _receive_session_event(websocket) == MessageBegin()
-                    assert await _receive_session_event(websocket) == MessageFragment(text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd()
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
+                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
+                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
+                    assert await _receive_session_event(websocket) == ConversationEnded(reason="completed")
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
         finally:
             await runner.cleanup()
 
@@ -178,16 +180,16 @@ def test_websocket_forwards_processing_update() -> None:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
                     await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
 
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
 
                     await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
                     for event in text_message_to_events(TextMessage(text="hello")):
                         await websocket.send_str(endpoint_event_to_json(event))
 
                     assert await _receive_session_event(websocket) == ProcessingUpdate()
-                    assert await _receive_session_event(websocket) == MessageBegin()
-                    assert await _receive_session_event(websocket) == MessageFragment(text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd()
+                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
+                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
+                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
         finally:
             await runner.cleanup()
 
@@ -212,16 +214,17 @@ def test_websocket_stays_open_during_slow_agent_with_client_heartbeat() -> None:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat", heartbeat=0.05) as websocket:
                     await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
 
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
 
                     await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
                     for event in text_message_to_events(TextMessage(text="hello")):
                         await websocket.send_str(endpoint_event_to_json(event))
 
-                    assert await _receive_session_event(websocket) == MessageBegin()
-                    assert await _receive_session_event(websocket) == MessageFragment(text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd()
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
+                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
+                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
+                    assert await _receive_session_event(websocket) == ConversationEnded(reason="completed")
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
         finally:
             await runner.cleanup()
 
@@ -247,14 +250,15 @@ def test_websocket_drops_empty_message_before_agent() -> None:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
                     await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
 
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
 
                     await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
-                    await websocket.send_str(endpoint_event_to_json(MessageBegin()))
-                    await websocket.send_str(endpoint_event_to_json(MessageFragment(text="  ")))
-                    await websocket.send_str(endpoint_event_to_json(MessageEnd()))
+                    await websocket.send_str(endpoint_event_to_json(MessageBegin(message_id="user-empty")))
+                    await websocket.send_str(endpoint_event_to_json(MessageFragment(message_id="user-empty", text="  ")))
+                    await websocket.send_str(endpoint_event_to_json(MessageEnd(message_id="user-empty")))
 
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == ConversationEnded(reason="completed")
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
         finally:
             await runner.cleanup()
 
@@ -360,16 +364,17 @@ def test_websocket_returns_to_new_conversation_without_requested_follow_up() -> 
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
                     await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
 
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
 
                     await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
                     for event in text_message_to_events(TextMessage(text="hello")):
                         await websocket.send_str(endpoint_event_to_json(event))
 
-                    assert await _receive_session_event(websocket) == MessageBegin()
-                    assert await _receive_session_event(websocket) == MessageFragment(text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd()
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
+                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
+                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
+                    assert await _receive_session_event(websocket) == ConversationEnded(reason="completed")
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
         finally:
             await runner.cleanup()
 
@@ -396,16 +401,17 @@ def test_websocket_applies_explicit_user_and_user_settings_to_conversation() -> 
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
                     await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text", "user": "Maciek"})))
 
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
 
                     await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
                     for event in text_message_to_events(TextMessage(text="hello")):
                         await websocket.send_str(endpoint_event_to_json(event))
 
-                    assert await _receive_session_event(websocket) == MessageBegin()
-                    assert await _receive_session_event(websocket) == MessageFragment(text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd()
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
+                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
+                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
+                    assert await _receive_session_event(websocket) == ConversationEnded(reason="completed")
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
         finally:
             await runner.cleanup()
 
@@ -510,19 +516,20 @@ def test_websocket_request_follow_up_times_out_to_new_conversation() -> None:
                 async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
                     await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
 
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
 
                     await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
                     for event in text_message_to_events(TextMessage(text="hello")):
                         await websocket.send_str(endpoint_event_to_json(event))
 
-                    assert await _receive_session_event(websocket) == MessageBegin()
-                    assert await _receive_session_event(websocket) == MessageFragment(text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd()
-                    assert await _receive_session_event(websocket) == RequestFollowUp(
+                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
+                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
+                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
+                    assert await _receive_session_event(websocket) == FollowUpRequested(
                         timeout_seconds=0.05,
                     )
-                    assert await _receive_session_event(websocket) == WaitForNewConversation()
+                    assert await _receive_session_event(websocket) == ConversationEnded(reason="follow_up_timeout")
+                    assert await _receive_session_event(websocket) == ReadyForConversation()
         finally:
             await runner.cleanup()
 
@@ -660,7 +667,7 @@ def test_ws_client_raises_terminal_error_on_session_rejected() -> None:
 def test_chat_client_suppresses_initial_wait_for_new_conversation_notice(capsys) -> None:
     async def run():
         websocket = StrictReceiveWebsocket()
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(WaitForNewConversation())))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(ReadyForConversation())))
         return await chat_client._read_next_wait_state(
             websocket,
             asyncio.Event(),
@@ -676,12 +683,11 @@ def test_chat_client_suppresses_initial_wait_for_new_conversation_notice(capsys)
 def test_chat_client_dims_visible_wait_for_new_conversation_notice(capsys) -> None:
     result = handle_websocket_message(
         None,
-        FakeWebsocketMessage(session_event_to_json(WaitForNewConversation())),
+        FakeWebsocketMessage(session_event_to_json(ConversationEnded(reason="completed"))),
         system_message_printer=chat_client._print_client_message,
     )
 
-    assert result is not None
-    assert result.starts_new_conversation is True
+    assert result is None
     assert capsys.readouterr().out == chat_client._style_client_text(
         "Conversation ended; waiting for a new conversation."
     ) + "\n"
@@ -712,11 +718,12 @@ def test_interactive_chat_suppresses_only_first_new_conversation_notice(capsys) 
         input_session = FakeInteractiveInputSession()
         stop_event = asyncio.Event()
 
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(WaitForNewConversation())))
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageBegin())))
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageFragment(text="reply"))))
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageEnd())))
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(WaitForNewConversation())))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(ReadyForConversation())))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageBegin(message_id="assistant-1"))))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageFragment(message_id="assistant-1", text="reply"))))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageEnd(message_id="assistant-1"))))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(ConversationEnded(reason="completed"))))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(ReadyForConversation())))
         await input_session._lines.put("hello")
         await input_session._lines.put(None)
 
@@ -1005,7 +1012,7 @@ def test_interactive_chat_exits_when_server_closes_established_connection(monkey
             await websocket.prepare(request)
             websockets.add(websocket)
             await websocket.receive()
-            await websocket.send_str(session_event_to_json(WaitForNewConversation()))
+            await websocket.send_str(session_event_to_json(ReadyForConversation()))
             accepted.set()
             try:
                 await close_connection.wait()
@@ -1076,7 +1083,7 @@ def test_interactive_chat_does_not_cancel_websocket_receive_while_waiting_for_in
         )
 
         await asyncio.sleep(0.03)
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(WaitForNewConversation())))
+        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(ReadyForConversation())))
 
         wait_state = await asyncio.wait_for(wait_state_task, timeout=1)
 

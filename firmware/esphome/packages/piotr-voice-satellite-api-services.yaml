@@ -20,3 +20,12 @@ api:
       then:
         - script.execute: reset_open_mic_wake_candidate
         - script.wait: reset_open_mic_wake_candidate
+    - service: set_visual_idle
+      then:
+        - script.execute: set_visual_idle
+    - service: set_visual_listening
+      then:
+        - script.execute: set_visual_listening
+    - service: set_visual_processing
+      then:
+        - script.execute: set_visual_processing

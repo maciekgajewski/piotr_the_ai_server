@@ -39,6 +39,10 @@ class ConversationEndpoint(ABC):
     async def send_message(self, message: TextMessage) -> None:
         raise NotImplementedError
 
+    @abstractmethod
+    async def request_follow_up(self) -> None:
+        raise NotImplementedError
+
 
 class ConversationMedium(Enum):
     VOICE = "voice"

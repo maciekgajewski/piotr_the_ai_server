@@ -7,9 +7,9 @@ from dataclasses import dataclass
 
 from aiohttp import WSMsgType
 
-from ai_server.messages import MessageBegin, MessageEnd, MessageFragment, NewConversation, ProcessingUpdate, SessionAttributes
+from ai_server.messages import ConversationEnded, FollowUpRequested, MessageBegin, MessageEnd, MessageFragment
+from ai_server.messages import NewConversation, ProcessingUpdate, ReadyForConversation, SessionAttributes
 from ai_server.messages import SessionRejected, TextMessage
-from ai_server.messages import RequestFollowUp, WaitForNewConversation, WaitForNewMessage
 from ai_server.messages import endpoint_event_to_json, session_event_from_json, text_message_to_events
 
 DEFAULT_WEBSOCKET_URL = "ws://127.0.0.1:2137/chat"
@@ -76,22 +76,19 @@ def handle_websocket_message(
             return None
         if isinstance(event, SessionRejected):
             raise WebsocketSessionRejected(event.reason)
-        if isinstance(event, WaitForNewConversation):
+        if isinstance(event, ConversationEnded):
             if show_wait_for_new_conversation_message:
                 print_system_message("Conversation ended; waiting for a new conversation.")
+            return None
+        if isinstance(event, ReadyForConversation):
             return WaitState(starts_new_conversation=True)
-        if isinstance(event, RequestFollowUp):
-            if event.timeout_seconds is None:
-                print_system_message("Follow-up requested.")
-            else:
-                print_system_message(f"Follow-up requested; timeout is {event.timeout_seconds:g}s.")
+        if isinstance(event, FollowUpRequested):
+            print_system_message(f"Follow-up requested; timeout is {event.timeout_seconds:g}s.")
             return WaitState(
                 starts_new_conversation=False,
                 follow_up_requested=True,
                 timeout_seconds=event.timeout_seconds,
             )
-        if isinstance(event, WaitForNewMessage):
-            return WaitState(starts_new_conversation=False)
         raise RuntimeError(f"unsupported server event: {type(event).__name__}")
 
     if message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):

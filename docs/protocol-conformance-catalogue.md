@@ -27,9 +27,9 @@ Test filenames marked **new** are planned Stage 3 targets; implementation MAY ch
 | `CP-MESSAGE-005` | No control/update/return inside assistant stream | `sessions.py`, `ConversationEndpoint` | each forbidden agent action fails invariant |
 | `CP-FLOOR-001` | User and assistant streams do not overlap | `sessions.py` | reject endpoint input while output open |
 | `CP-FLOOR-002` | Endpoint regains floor only after follow-up | `ConversationEndpoint` | read without follow-up fails/ends as specified; requested read succeeds |
-| `CP-FOLLOWUP-001` | Follow-up only after complete input and closed output | `ConversationEndpoint` | forbidden-state assertions |
-| `CP-FOLLOWUP-002` | Only one follow-up is outstanding | `ConversationEndpoint` | duplicate request assertion |
-| `CP-FOLLOWUP-003` | Supplied timeout is the sole deadline | Session and transport adapter | websocket and voice adapter use exact supplied value |
+| `CP-FOLLOWUP-001` | `request_follow_up()` only after complete input and closed output | `ConversationEndpoint` | forbidden-state assertions |
+| `CP-FOLLOWUP-002` | Only one follow-up is outstanding | `ConversationEndpoint` | duplicate method-call assertion |
+| `CP-FOLLOWUP-003` | Session supplies the sole effective deadline | Session and adapters | agents supply no timeout; websocket and voice adapters receive the exact Session value |
 | `CP-ERROR-001` | External violation rejects and closes | websocket adapter, Session | `SessionRejected` precedes protocol close |
 | `CP-ERROR-002` | Internal violation fails invariant | Session and trusted adapters | representative impossible internal events assert |
 | `CP-OBS-001` | Every Session transition is context-logged | `sessions.py` | `caplog` verifies session, old/new state, event |

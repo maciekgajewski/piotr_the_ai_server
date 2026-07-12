@@ -9,7 +9,7 @@ from aiohttp import ClientConnectionResetError, WSCloseCode, WSMsgType, web
 from ai_server.agent import Agent
 from ai_server.config import Config
 from ai_server.interfaces import CommunicationEndpoint, EndpointClosed
-from ai_server.messages import ConversationEnded, EndpointToSessionEvent, RequestFollowUp, SessionRejected, SessionToEndpointEvent
+from ai_server.messages import ConversationEnded, EndpointToSessionEvent, FollowUpRequested, SessionRejected, SessionToEndpointEvent
 from ai_server.messages import endpoint_event_from_json, session_event_to_json
 from ai_server.sessions import SessionManager
 from ai_server.user_settings import UserSettingsProvider
@@ -34,7 +34,7 @@ class WebsocketCommunicationEndpoint(CommunicationEndpoint):
                 event = await asyncio.wait_for(self._events.get(), timeout=timeout_seconds)
         except asyncio.TimeoutError:
             self._logger.info("follow-up timed out; ending conversation")
-            return ConversationEnded()
+            return ConversationEnded(reason="follow_up_timeout")
 
         if isinstance(event, BaseException):
             raise event
@@ -77,9 +77,8 @@ class WebsocketCommunicationEndpoint(CommunicationEndpoint):
         raise ValueError(f"unsupported websocket message type: {message.type}")
 
     async def send(self, event: SessionToEndpointEvent) -> None:
-        if isinstance(event, RequestFollowUp):
-            self._next_receive_timeout_seconds = self._follow_up_timeout_seconds
-            event = RequestFollowUp(timeout_seconds=self._follow_up_timeout_seconds)
+        if isinstance(event, FollowUpRequested):
+            self._next_receive_timeout_seconds = event.timeout_seconds
         payload = session_event_to_json(event)
         self._logger.debug("sending websocket event: %s", payload)
         try:
@@ -118,6 +117,7 @@ def create_app(
                 require_session_attributes=True,
                 user_settings=config.users,
                 user_settings_provider=user_settings_provider,
+                follow_up_timeout_seconds=config.websocket.follow_up_timeout_seconds,
             )
             return websocket
         except AssertionError as exc:

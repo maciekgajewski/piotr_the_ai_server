@@ -32,7 +32,7 @@ Normative protocol documents follow [the protocol documentation standard](protoc
 
 | Document | Authority | Purpose |
 |---|---|---|
-| [Protocol and Documentation Cleanup](tasks/protocol-and-documentation-cleanup.md) | Active plan | Defines the three-stage documentation, protocol-design, and implementation migration. It records known protocol-document drift and the approval gate before implementation. |
+| [T-001 Protocol and Documentation Cleanup](tasks/T-001-protocol-and-documentation-cleanup.md) | Active plan | Defines the three-stage documentation, protocol-design, and implementation migration. It records known protocol-document drift and the approval gate before implementation. |
 | [ESP32-S3-BOX-3 Satellite Plan](esp32-s3-box-3-satellite.md) | Historical plan | Records the original satellite direction. Use current firmware and normative satellite behavior for present requirements. |
 
 ## Operational guides

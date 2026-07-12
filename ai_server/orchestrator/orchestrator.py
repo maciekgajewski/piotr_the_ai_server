@@ -13,7 +13,7 @@ from ai_server.config import ServerConfig
 from ai_server.domain_agents import DomainAgent, DomainTask, QueryCapability
 from ai_server.home_assistant.interfaces import HomeAssistantInventory
 from ai_server.interfaces import Conversation, ConversationEndpoint, ConversationMedium
-from ai_server.messages import ProcessingUpdate, RequestFollowUp, TextMessage
+from ai_server.messages import ProcessingUpdate, TextMessage
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
 from ai_server.orchestrator.known_utterances import KnownUtteranceTasks, collect_known_utterance_tasks, known_utterance_task
 from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
@@ -184,7 +184,7 @@ class OrchestratorAgent:
                 )
                 await endpoint.send_message(TextMessage(text=reply_text))
                 if _has_pending_clarification(conversation):
-                    await endpoint.send(RequestFollowUp())
+                    await endpoint.request_follow_up()
         finally:
             conversation.processing_update_callback = previous_processing_update_callback
             conversation.processing_update_interval_seconds = previous_processing_update_interval_seconds

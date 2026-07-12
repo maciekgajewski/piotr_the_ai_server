@@ -20,6 +20,7 @@ from ai_server.microphones.messages import MessageEndCue, MicrophoneOutputEvent,
 from ai_server.microphones.messages import OpenMicWakeCandidateRejected
 from ai_server.microphones.messages import StartOpenMicListening
 from ai_server.microphones.messages import StartWakeWordListening
+from ai_server.microphones.messages import SetVisualState, VisualState
 from ai_server.microphones.interfaces import MicrophoneUnavailable
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 
@@ -45,6 +46,11 @@ PLAY_CONVERSATION_TIMEOUT_CUE_SERVICE = "play_conversation_timeout_cue"
 START_FOLLOW_UP_LISTENING_SERVICE = "start_follow_up_listening"
 START_OPEN_MIC_LISTENING_SERVICE = "start_open_mic_listening"
 RESET_OPEN_MIC_WAKE_CANDIDATE_SERVICE = "reset_open_mic_wake_candidate"
+VISUAL_STATE_SERVICES = {
+    VisualState.IDLE: "set_visual_idle",
+    VisualState.LISTENING: "set_visual_listening",
+    VisualState.PROCESSING: "set_visual_processing",
+}
 FOLLOW_UP_WAKE_WORD = "follow_up"
 OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL = 50
 
@@ -197,6 +203,10 @@ class Box3EsphomeMicrophone:
                 self._voice_assistant_state(),
             )
             await self._execute_optional_api_service(RESET_OPEN_MIC_WAKE_CANDIDATE_SERVICE)
+            return
+        if isinstance(event, SetVisualState):
+            self._logger.debug("setting visual state state=%s", event.state.value)
+            await self._execute_api_service(VISUAL_STATE_SERVICES[event.state])
             return
         raise ValueError(f"unsupported microphone output event: {type(event).__name__}")
 

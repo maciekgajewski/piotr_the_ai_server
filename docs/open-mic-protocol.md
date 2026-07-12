@@ -6,7 +6,7 @@
 - **Audience:** Agents researching the previous open-mic design
 - **Read when:** Historical context is needed; do not implement from this document
 
-This document was superseded during Stage 2 of [Protocol and Documentation Cleanup](tasks/protocol-and-documentation-cleanup.md).
+This document was superseded during Stage 2 of [T-001 Protocol and Documentation Cleanup](tasks/T-001-protocol-and-documentation-cleanup.md).
 
 The current normative requirements are:
 
