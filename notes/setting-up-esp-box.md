@@ -992,3 +992,36 @@ No firmware flashing has been done yet.
   - ESPHome reported `OTA successful` and `Successfully uploaded program.`
   - Post-reboot ping to `192.168.0.150` succeeded.
 - Network return was verified; visual-state behavior was not tested in this step.
+
+## 2026-07-12T18:59:32Z - Box3 server-owned visual firmware built
+
+- Migrated the Box3 main display state to the same explicit server-owned `IDLE`, `LISTENING`, and `PROCESSING` contract as Voice Preview.
+- Authoritative voice-assistant client connect and disconnect now select firmware-owned `ERROR`; generic API clients only redraw. Reconnect remains in `ERROR` until the first explicit server visual command.
+- Voice-assistant, cue, media, mute, and timer callbacks no longer overwrite the server-owned main phase.
+- Display precedence gives reconnect `ERROR` and active server `LISTENING`/`PROCESSING` priority over local timer and mute pages; local pages remain available in server `IDLE`.
+- Validated `firmware/esphome/box3-satellite.yaml` successfully with ESPHome 2026.4.5.
+- Compiled the final connection-boundary implementation successfully with `config_hash=0x96b56234`.
+- Generated `main.cpp` inspection confirmed:
+  - API services `set_visual_idle`, `set_visual_listening`, and `set_visual_processing`;
+  - only connect/disconnect and those services assign the main phase;
+  - the reconnect guard and display precedence;
+  - both wake-word models and their boot enable actions;
+  - GT911 red touch button index `0` and its voice-assistant script.
+- Firmware was built only; it was not flashed, and no hardware behavior was tested.
+
+## 2026-07-13T06:14:09Z - Box3 protocol review verification repeated
+
+- Revalidated and compiled `firmware/esphome/box3-satellite.yaml` with ESPHome 2026.4.5; compilation succeeded with `config_hash=0x96b56234`.
+- Reinspected generated `main.cpp` and confirmed the explicit visual services, controller connect/disconnect guard assignments, reconnect `ERROR` precedence, wake-word models, and GT911 red touch button index `0`.
+- The protocol-focused Python tests passed 132/132, the full Python suite passed 502/502, and the orchestrator/DSA behavior suite passed 45/45 using `qwen3:14b`.
+- No actionable software or firmware review defects remained. Firmware was not flashed and hardware behavior was not tested.
+
+## 2026-07-13T09:35:33Z - Box3 server-owned visual firmware flashed OTA
+
+- Confirmed USB serial was unavailable and the Box3 was reachable at `192.168.0.180`.
+- Revalidated and compiled `firmware/esphome/box3-satellite.yaml` with ESPHome 2026.4.5; compilation succeeded with `config_hash=0x96b56234`.
+- Reinspected generated `main.cpp` before deployment and confirmed the exclusive server visual phase writers, authoritative voice-assistant connection guard, generic API redraw-only callbacks, display precedence, both wake words, and GT911 red touch button index `0`.
+- Uploaded the 4,469,296-byte firmware image over OTA to `192.168.0.180`.
+- ESPHome reported `OTA successful` and `Successfully uploaded program.`
+- Post-reboot ping succeeded with 3/3 replies and 0% packet loss.
+- Network return was verified; physical visual-state and local-indicator precedence sequences were not tested in this step.

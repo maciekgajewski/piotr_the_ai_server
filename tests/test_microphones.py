@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from ai_server.messages import ConversationEnded, FollowUpRequested
 from ai_server.microphones.manager import MicrophoneManager
 from ai_server.microphones.messages import CueFinished, CueType, ListeningMode, ListeningStarted, ListeningStopped
 from ai_server.microphones.messages import PlaybackBegin, PlaybackChunk, PlaybackEnd, PlaybackFinished, PlayCue
@@ -42,6 +43,18 @@ class FakeMicrophone:
 
     async def close(self) -> None:
         self.close_count += 1
+
+
+class DelayedPlaybackMicrophone(FakeMicrophone):
+    async def send_output_event(self, command) -> None:
+        self.commands.append(command)
+        self.trace.append(("microphone", command))
+        if isinstance(command, StartListening):
+            self.events.put_nowait(ListeningStarted(command.listen_id, command.mode))
+        elif isinstance(command, StopListening):
+            self.events.put_nowait(ListeningStopped(command.listen_id, command.reason))
+        elif isinstance(command, PlayCue):
+            self.events.put_nowait(CueFinished(command.cue_id))
 
 
 class FakeLifecycle:
@@ -165,6 +178,45 @@ def test_follow_up_speech_start_timeout_stops_generation() -> None:
         assert result is None
         assert microphone.commands[-1] == StopListening("listen-1", "speech_start_timeout")
         assert manager._protocols["fake"].snapshot.state is DriverState.DISARMED
+
+    asyncio.run(run())
+
+
+def test_follow_up_timeout_uses_event_deadline_and_orders_cues_before_end() -> None:
+    """MAP-FOLLOWUP-001/002: the Session deadline owns the complete timeout sequence."""
+
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = _manager(microphone)
+        endpoint = RecordingEndpoint(microphone.trace)
+        event = FollowUpRequested(timeout_seconds=0.001)
+
+        captured = await manager._handle_follow_up(
+            microphone, endpoint, event, logging.getLogger("test")
+        )
+
+        assert not captured.captured
+        trace_types = [type(item).__name__ for _, item in microphone.trace]
+        assert trace_types == [
+            "SetVisualState",
+            "PlayCue",
+            "StartListening",
+            "StopListening",
+            "PlayCue",
+            "SetVisualState",
+            "ConversationEnded",
+        ]
+        cues = [item for _, item in microphone.trace if isinstance(item, PlayCue)]
+        assert [cue.cue_type for cue in cues] == [CueType.FOLLOW_UP_READY, CueType.FOLLOW_UP_TIMEOUT]
+        assert endpoint.events == [ConversationEnded(reason="follow_up_timeout")]
+        timeout_cue_index = next(
+            index
+            for index, (_, item) in enumerate(microphone.trace)
+            if isinstance(item, PlayCue) and item.cue_type is CueType.FOLLOW_UP_TIMEOUT
+        )
+        idle_index = microphone.trace.index(("microphone", SetVisualState(VisualState.IDLE)))
+        assert timeout_cue_index < idle_index < len(microphone.trace) - 1
+        assert not any(isinstance(command, StartListening) for command in microphone.commands[3:])
 
     asyncio.run(run())
 
@@ -467,6 +519,55 @@ def test_protocol_command_and_event_logs_include_state_and_correlations(caplog) 
     asyncio.run(run())
 
 
+def test_visual_transition_logs_old_new_cause_and_active_correlations(caplog) -> None:
+    """MP-OBS-002/MAP-OBS-001: visual logs explain the transition in context."""
+
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = _manager(microphone)
+        logger = logging.getLogger("test.microphone.visual_observability")
+        listen = StartListening("listen-1", ListeningMode.OPEN_MIC)
+        await manager._send_command(microphone, listen, logger)
+        await manager._await_listening_started(microphone, listen, logger)
+
+        with caplog.at_level(logging.DEBUG, logger=logger.name):
+            await manager._set_visual_state(
+                microphone, VisualState.IDLE, "ready_for_conversation", logger
+            )
+            await manager._set_visual_state(
+                microphone, VisualState.LISTENING, "open_mic_wake_candidate", logger
+            )
+
+        assert "visual transition old=unknown new=idle cause=ready_for_conversation" in caplog.text
+        assert "visual transition old=idle new=listening cause=open_mic_wake_candidate" in caplog.text
+        assert "listen_id='listen-1'" in caplog.text
+
+    asyncio.run(run())
+
+
+def test_cross_protocol_message_log_carries_session_and_message_id(caplog) -> None:
+    """MAP-OBS-001: a captured-text translation is traceable without transcript content."""
+
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = _manager(microphone)
+        endpoint = RecordingEndpoint(microphone.trace)
+        logger = logging.getLogger(
+            "ai_server.microphones.manager.MicrophoneManager[test/fake].Session[mic-fake-session-1]"
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=logger.name):
+            await manager._send_captured_text(endpoint, ("private transcript",), logger)
+
+        message_begin = next(event for event in endpoint.events if type(event).__name__ == "MessageBegin")
+        assert "Session[mic-fake-session-1]" in caplog.records[0].name
+        assert f"message_id={message_begin.message_id}" in caplog.text
+        assert "fragments=1" in caplog.text
+        assert "private transcript" not in caplog.text
+
+    asyncio.run(run())
+
+
 def test_unavailable_boundary_is_closed_and_protocol_state_is_recreated() -> None:
     """MP-ERROR-001: recovery recreates state instead of guessing."""
 
@@ -505,6 +606,50 @@ def test_tts_playback_is_correlated_and_waits_for_drain_completion() -> None:
         assert playback[1] == PlaybackChunk(playback[0].playback_id, b"audio")
         assert playback[2] == PlaybackEnd(playback[0].playback_id)
         assert manager._protocols["fake"].snapshot.state is DriverState.DISARMED
+
+    asyncio.run(run())
+
+
+def test_ready_rearm_waits_for_playback_finished_and_then_orders_idle_before_listening() -> None:
+    """MAP-END-001/MAP-INVARIANT-003: queued readiness cannot cross pending output."""
+
+    async def run() -> None:
+        microphone = DelayedPlaybackMicrophone()
+        manager = _manager(microphone, open_mic=True, tts=FakeTts())
+        logger = logging.getLogger("test")
+        await manager._set_visual_state(
+            microphone, VisualState.PROCESSING, "assistant_message", logger
+        )
+        playback_task = asyncio.create_task(
+            manager._speak_tts_text(microphone, "reply", logger, volume=None)
+        )
+
+        for _ in range(100):
+            if any(isinstance(command, PlaybackEnd) for command in microphone.commands):
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("playback did not reach PlaybackEnd")
+
+        assert not playback_task.done()
+        assert manager._visual_states["fake"] is VisualState.PROCESSING
+        assert not any(isinstance(command, StartListening) for command in microphone.commands)
+        playback_id = next(
+            command.playback_id for command in microphone.commands if isinstance(command, PlaybackBegin)
+        )
+        microphone.events.put_nowait(PlaybackFinished(playback_id))
+        await playback_task
+
+        await manager._begin_new_conversation_listening(microphone, logger)
+        relevant = [
+            command
+            for command in microphone.commands
+            if isinstance(command, (SetVisualState, PlaybackBegin, PlaybackChunk, PlaybackEnd, StartListening))
+        ]
+        assert isinstance(relevant[-2], SetVisualState)
+        assert relevant[-2].state is VisualState.IDLE
+        assert isinstance(relevant[-1], StartListening)
+        assert relevant[-1].mode is ListeningMode.OPEN_MIC
 
     asyncio.run(run())
 

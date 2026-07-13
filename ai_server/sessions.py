@@ -44,6 +44,8 @@ class Session:
         if self.user_settings_provider is None:
             self.user_settings_provider = ConfigUserSettingsProvider(self.user_settings)
         assert self.follow_up_timeout_seconds > 0
+        if not self.require_session_attributes or "medium" in self.attributes:
+            _assert_valid_medium(self.attributes)
         self._state = SessionState.HANDSHAKE if self.require_session_attributes else SessionState.IDLE
 
     async def run(self, agent: Agent) -> None:
@@ -86,6 +88,10 @@ class Session:
     async def _receive_session_attributes(self) -> None:
         event = await self.endpoint.receive()
         assert isinstance(event, SessionAttributes), f"expected SessionAttributes, got {type(event).__name__}"
+        _assert_valid_medium(event.attributes)
+        existing_medium = self.attributes.get("medium")
+        if existing_medium is not None:
+            assert event.attributes["medium"] == existing_medium, "Session medium is immutable"
         self.attributes = _merge_attributes(self.attributes or {}, event.attributes)
         _assert_valid_medium(self.attributes)
         await self._assert_known_user(self.attributes.get("user"))
@@ -212,6 +218,7 @@ class _SessionConversationEndpoint(ConversationEndpoint):
 
         if isinstance(event, MessageBegin):
             assert not self._input_open, "received MessageBegin while input message is open"
+            assert not self._output_open, "received MessageBegin while assistant output message is open"
             assert event.message_id not in self._used_message_ids, "reused message_id"
             self._used_message_ids.add(event.message_id)
             self._input_open = True
@@ -240,6 +247,7 @@ class _SessionConversationEndpoint(ConversationEndpoint):
             return
         if isinstance(event, MessageBegin):
             assert not self._output_open, "sent MessageBegin while output message is open"
+            assert not self._input_open, "sent MessageBegin while user input message is open"
             assert event.message_id not in self._used_message_ids, "reused message_id"
             self._used_message_ids.add(event.message_id)
             self._output_open = True

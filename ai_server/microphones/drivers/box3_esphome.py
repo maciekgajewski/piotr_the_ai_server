@@ -290,11 +290,11 @@ class Box3EsphomeMicrophone:
 
     async def _start_playback(self, event: PlaybackBegin) -> None:
         assert self._playback_id is None
+        assert self._listen_id is None, "playback requires a disarmed microphone"
         self._playback_id = event.playback_id
 
         try:
             await self._finish_playback()
-            assert self._listen_id is None, "playback requires a disarmed microphone"
             await self._ensure_connected()
             connect_host = await _resolve_connect_host(self.playback_target.address)
             local_ip = _local_ip_for(connect_host)

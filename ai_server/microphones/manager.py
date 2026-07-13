@@ -89,6 +89,10 @@ class MicrophoneManager:
             microphone.context.name: MicrophoneProtocolState()
             for microphone in microphones
         }
+        self._visual_states: dict[str, VisualState | None] = {
+            microphone.context.name: None
+            for microphone in microphones
+        }
 
     async def start(self) -> None:
         try:
@@ -116,9 +120,9 @@ class MicrophoneManager:
         await self._stt.close()
 
     async def _run_microphone(self, microphone: Microphone) -> None:
-        logger = _microphone_logger(microphone)
         endpoint = MicrophoneAgentEndpoint()
         session_id = f"mic-{microphone.context.name}-{uuid.uuid4()}"
+        logger = _microphone_session_logger(microphone, session_id)
         attributes = {"medium": "voice"}
         if microphone.context.area:
             attributes["area"] = microphone.context.area
@@ -149,14 +153,7 @@ class MicrophoneManager:
                     if event is None:
                         event = await endpoint.receive_from_session()
                     if isinstance(event, ReadyForConversation):
-                        await self._send_command(microphone, SetVisualState(VisualState.IDLE), logger)
-                        output_event = self._new_conversation_listening_event(microphone)
-                        logger.debug(
-                            "opening microphone for new conversation listening mode=%s",
-                            type(output_event).__name__,
-                        )
-                        await self._send_command(microphone, output_event, logger)
-                        await self._await_listening_started(microphone, output_event, logger)
+                        output_event = await self._begin_new_conversation_listening(microphone, logger)
                         if output_event.mode is ListeningMode.OPEN_MIC:
                             captured = await self._capture_open_mic_utterance(
                                 microphone=microphone,
@@ -182,30 +179,14 @@ class MicrophoneManager:
                         pending_event = None
                         continue
                     if isinstance(event, FollowUpRequested):
-                        follow_up_timeout = event.timeout_seconds
-                        logger.debug("opening microphone for follow-up timeout_seconds=%s", follow_up_timeout)
-                        await self._send_command(microphone, SetVisualState(VisualState.LISTENING), logger)
-                        listen = StartListening(str(uuid.uuid4()), ListeningMode.FOLLOW_UP)
-                        await self._play_cue(microphone, CueType.FOLLOW_UP_READY, logger)
-                        await self._send_command(microphone, listen, logger)
-                        await self._await_listening_started(microphone, listen, logger)
+                        captured = await self._handle_follow_up(microphone, endpoint, event, logger)
                         availability_logger.available()
-                        captured = await self._capture_utterance(
-                            microphone=microphone,
-                            endpoint=endpoint,
-                            logger=logger,
-                            starts_new_conversation=False,
-                            timeout_seconds=follow_up_timeout,
-                            listen_id=listen.listen_id,
-                        )
-                        if not captured.captured:
-                            logger.info("follow-up timed out; ending conversation")
-                            await self._play_cue(microphone, CueType.FOLLOW_UP_TIMEOUT, logger)
-                            await self._send_conversation_ended(endpoint, event)
                         pending_event = None
                         continue
                     if isinstance(event, MessageBegin):
-                        await self._send_command(microphone, SetVisualState(VisualState.PROCESSING), logger)
+                        await self._set_visual_state(
+                            microphone, VisualState.PROCESSING, "assistant_message", logger
+                        )
                         reply = await self._receive_agent_reply(endpoint, first_event=event)
                         pending_reply = reply
                         await self._speak_reply(microphone, reply, logger)
@@ -258,7 +239,7 @@ class MicrophoneManager:
             return CapturedUtterance(captured=False, text_fragments=())
 
         logger.info("wake_word=%r audio stream started", event.wake_word)
-        await self._send_command(microphone, SetVisualState(VisualState.LISTENING), logger)
+        await self._set_visual_state(microphone, VisualState.LISTENING, "speech_started", logger)
         captured = await self._capture_transcript_and_speaker(
             microphone,
             logger,
@@ -270,14 +251,64 @@ class MicrophoneManager:
             logger.info("audio stream ended without transcript")
             return captured
 
-        await self._send_command(microphone, SetVisualState(VisualState.PROCESSING), logger)
+        await self._set_visual_state(microphone, VisualState.PROCESSING, "utterance_accepted", logger)
         if starts_new_conversation:
             await self._play_cue(microphone, CueType.UTTERANCE_ACCEPTED, logger)
             attributes = {}
             if captured.speaker_result is not None and captured.speaker_result.recognized_user:
                 attributes["user"] = captured.speaker_result.recognized_user
             await endpoint.send_to_session(NewConversation(attributes=attributes))
-        await self._send_captured_text(endpoint, captured.text_fragments)
+        await self._send_captured_text(endpoint, captured.text_fragments, logger)
+        return captured
+
+    async def _begin_new_conversation_listening(
+        self,
+        microphone: Microphone,
+        logger: logging.Logger,
+    ) -> StartListening:
+        await self._set_visual_state(
+            microphone, VisualState.IDLE, "ready_for_conversation", logger
+        )
+        output_event = self._new_conversation_listening_event(microphone)
+        logger.debug(
+            "opening microphone for new conversation listening mode=%s",
+            output_event.mode.value,
+        )
+        await self._send_command(microphone, output_event, logger)
+        await self._await_listening_started(microphone, output_event, logger)
+        return output_event
+
+    async def _handle_follow_up(
+        self,
+        microphone: Microphone,
+        endpoint: MicrophoneAgentEndpoint,
+        event: FollowUpRequested,
+        logger: logging.Logger,
+    ) -> CapturedUtterance:
+        follow_up_timeout = event.timeout_seconds
+        logger.debug("opening microphone for follow-up timeout_seconds=%s", follow_up_timeout)
+        await self._set_visual_state(
+            microphone, VisualState.LISTENING, "follow_up_requested", logger
+        )
+        listen = StartListening(str(uuid.uuid4()), ListeningMode.FOLLOW_UP)
+        await self._play_cue(microphone, CueType.FOLLOW_UP_READY, logger)
+        await self._send_command(microphone, listen, logger)
+        await self._await_listening_started(microphone, listen, logger)
+        captured = await self._capture_utterance(
+            microphone=microphone,
+            endpoint=endpoint,
+            logger=logger,
+            starts_new_conversation=False,
+            timeout_seconds=follow_up_timeout,
+            listen_id=listen.listen_id,
+        )
+        if not captured.captured:
+            logger.info("follow-up timed out; ending conversation")
+            await self._play_cue(microphone, CueType.FOLLOW_UP_TIMEOUT, logger)
+            await self._set_visual_state(
+                microphone, VisualState.IDLE, "follow_up_timeout", logger
+            )
+            await self._send_conversation_ended(endpoint, event)
         return captured
 
     async def _capture_open_mic_utterance(
@@ -375,7 +406,9 @@ class MicrophoneManager:
                             ResetWakeCandidate(listen_id, event.utterance_id),
                             logger,
                         )
-                        await self._send_command(microphone, SetVisualState(VisualState.IDLE), logger)
+                        await self._set_visual_state(
+                            microphone, VisualState.IDLE, "wake_candidate_rejected", logger
+                        )
                     await stt_session.close()
                     stt_session = await self._stt.create_streaming_session(microphone.context.name)
                     wake_candidate = asyncio.Event()
@@ -385,12 +418,16 @@ class MicrophoneManager:
                     event = await self._wait_for_speech_start(microphone, logger, listen_id, None)
                     continue
 
-                await self._send_command(microphone, SetVisualState(VisualState.PROCESSING), logger)
+                await self._set_visual_state(
+                    microphone, VisualState.PROCESSING, "open_mic_utterance_accepted", logger
+                )
                 await self._stop_listening(microphone, listen_id, "utterance_accepted", logger)
                 await self._play_cue(microphone, CueType.UTTERANCE_ACCEPTED, logger)
 
                 logger.info(
-                    "open-mic utterance accepted wake_phrase=%r utterance_chars=%s",
+                    "open-mic utterance accepted listen_id=%s utterance_id=%s wake_phrase=%r utterance_chars=%s",
+                    listen_id,
+                    event.utterance_id,
                     self._open_mic_wake_phrase,
                     len(accepted_text),
                 )
@@ -400,7 +437,7 @@ class MicrophoneManager:
                 if speaker_result is not None and speaker_result.recognized_user:
                     attributes["user"] = speaker_result.recognized_user
                 await endpoint.send_to_session(NewConversation(attributes=attributes))
-                await self._send_captured_text(endpoint, (accepted_text,))
+                await self._send_captured_text(endpoint, (accepted_text,), logger)
                 return CapturedUtterance(
                     captured=True,
                     text_fragments=(accepted_text,),
@@ -588,10 +625,16 @@ class MicrophoneManager:
         self,
         endpoint: MicrophoneAgentEndpoint,
         text_fragments: tuple[str, ...],
+        logger: logging.Logger,
     ) -> None:
         if not any(fragment.strip() for fragment in text_fragments):
             return
         message_id = str(uuid.uuid4())
+        logger.debug(
+            "forwarding captured text message_id=%s fragments=%s",
+            message_id,
+            len(text_fragments),
+        )
         await endpoint.send_to_session(MessageBegin(message_id=message_id))
         for fragment in text_fragments:
             await endpoint.send_to_session(MessageFragment(message_id=message_id, text=fragment))
@@ -605,7 +648,7 @@ class MicrophoneManager:
         assert isinstance(source_event, FollowUpRequested), (
             f"cannot send ConversationEnded before active conversation, source={type(source_event).__name__}"
         )
-        await endpoint.send_to_session(ConversationEnded())
+        await endpoint.send_to_session(ConversationEnded(reason="follow_up_timeout"))
 
     async def _speak_reply(
         self,
@@ -746,7 +789,9 @@ class MicrophoneManager:
                             "open-mic wake phrase candidate detected audio_end_seconds=%.2f",
                             event.audio_end_seconds,
                         )
-                        await self._send_command(microphone, SetVisualState(VisualState.LISTENING), logger)
+                        await self._set_visual_state(
+                            microphone, VisualState.LISTENING, "open_mic_wake_candidate", logger
+                        )
                     partial_had_wake = True
                     wake_candidate.set()
                 continue
@@ -817,6 +862,24 @@ class MicrophoneManager:
         )
         await microphone.send_output_event(command)
 
+    async def _set_visual_state(
+        self,
+        microphone: Microphone,
+        state: VisualState,
+        cause: str,
+        logger: logging.Logger,
+    ) -> None:
+        old_state = self._visual_states[microphone.context.name]
+        logger.debug(
+            "microphone visual transition old=%s new=%s cause=%s correlations=%s",
+            old_state.value if old_state is not None else "unknown",
+            state.value,
+            cause,
+            self._protocols[microphone.context.name].snapshot,
+        )
+        await self._send_command(microphone, SetVisualState(state), logger)
+        self._visual_states[microphone.context.name] = state
+
     async def _receive_event(self, microphone: Microphone, logger: logging.Logger) -> MicrophoneEvent:
         event = await microphone.wait_for_event()
         protocol = self._protocols[microphone.context.name]
@@ -880,6 +943,7 @@ class MicrophoneManager:
         )
         await microphone.close()
         self._protocols[microphone.context.name] = MicrophoneProtocolState()
+        self._visual_states[microphone.context.name] = None
 
     @property
     def microphone_count(self) -> int:
@@ -943,6 +1007,12 @@ async def init_mics(
 
 def _microphone_logger(microphone: Microphone) -> logging.Logger:
     return logging.getLogger(f"{__name__}.MicrophoneManager[{microphone.context.instance_id}]")
+
+
+def _microphone_session_logger(microphone: Microphone, session_id: str) -> logging.Logger:
+    return logging.getLogger(
+        f"{__name__}.MicrophoneManager[{microphone.context.instance_id}].Session[{session_id}]"
+    )
 
 
 def _text_after_wake_phrase(text: str, wake_phrase: str) -> str | None:

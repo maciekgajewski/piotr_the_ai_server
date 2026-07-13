@@ -250,7 +250,6 @@ media_player:
             not:
               voice_assistant.is_running:
           then:
-            - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
             - script.execute: draw_display
     on_idle:
       # Since VA isn't running, this is the end of user-intiated media playback. Restart the wake word.
@@ -262,7 +261,6 @@ media_player:
               - lambda: return !id(server_controlled_follow_up_starting);
           then:
             - script.execute: start_wake_word
-            - script.execute: set_idle_or_mute_phase
             - script.execute: draw_display
 
 micro_wake_word:
@@ -287,40 +285,13 @@ voice_assistant:
   auto_gain: 31dBFS
   volume_multiplier: 2.0
   on_listening:
-    - if:
-        condition:
-          lambda: return !id(server_controlled_open_mic_active);
-        then:
-          - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
-          - text_sensor.template.publish:
-              id: text_request
-              state: "..."
-          - text_sensor.template.publish:
-              id: text_response
-              state: "..."
-          - script.execute: draw_display
+    - logger.log: "Voice-assistant listening callback; main visual remains server-controlled"
   on_stt_vad_end:
-    - if:
-        condition:
-          lambda: return !id(server_controlled_open_mic_active);
-        then:
-          - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
-          - script.execute: draw_display
+    - logger.log: "Voice-assistant VAD end; main visual remains server-controlled"
   on_stt_end:
-    - if:
-        condition:
-          lambda: return !id(server_controlled_open_mic_active);
-        then:
-          - text_sensor.template.publish:
-              id: text_request
-              state: !lambda return x;
-          - script.execute: draw_display
+    - logger.log: "Voice-assistant STT end; main visual remains server-controlled"
   on_tts_start:
-    - text_sensor.template.publish:
-        id: text_response
-        state: !lambda return x;
-    - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
-    - script.execute: draw_display
+    - logger.log: "Voice-assistant TTS start; main visual remains server-controlled"
   on_end:
     # Wait a short amount of time to see if an announcement starts
     - wait_until:
@@ -341,7 +312,6 @@ voice_assistant:
         then:
           - lambda: id(va).set_use_wake_word(false);
           - micro_wake_word.start:
-    - script.execute: set_idle_or_mute_phase
     - script.execute: draw_display
     # Clear text sensors
     - text_sensor.template.publish:
@@ -351,29 +321,19 @@ voice_assistant:
         id: text_response
         state: ""
   on_error:
-    - if:
-        condition:
-          lambda: return !id(init_in_progress);
-        then:
-          - lambda: id(voice_assistant_phase) = ${voice_assist_error_phase_id};
-          - script.execute: draw_display
-          - delay: 1s
-          - if:
-              condition:
-                switch.is_off: mute
-              then:
-                - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
-              else:
-                - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
-          - script.execute: draw_display
+    - logger.log: "Voice-assistant error callback; main visual remains server-controlled"
   on_client_connected:
     - lambda: id(init_in_progress) = false;
     - script.execute: start_wake_word
-    - script.execute: set_idle_or_mute_phase
+    - lambda: |-
+        id(server_visual_received) = false;
+        id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
     - script.execute: draw_display
   on_client_disconnected:
     - script.execute: stop_wake_word
-    - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
+    - lambda: |-
+        id(server_visual_received) = false;
+        id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
     - script.execute: draw_display
   on_timer_started:
     - script.execute: draw_display
@@ -387,7 +347,6 @@ voice_assistant:
     - switch.turn_on: timer_ringing
     - wait_until:
         media_player.is_announcing:
-    - lambda: id(voice_assistant_phase) = ${voice_assist_timer_finished_phase_id};
     - script.execute: draw_display
 
 script:
@@ -413,12 +372,6 @@ script:
   - id: play_message_end_cue
     mode: restart
     then:
-      - if:
-          condition:
-            lambda: return id(server_controlled_open_mic_active);
-          then:
-            - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
-            - script.execute: draw_display
       - media_player.speaker.play_on_device_media_file:
           media_file: message_end_sound
           announcement: true
@@ -438,36 +391,31 @@ script:
   - id: set_visual_idle
     mode: restart
     then:
-      - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+      - lambda: |-
+          id(server_visual_received) = true;
+          id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
       - script.execute: draw_display
 
   - id: set_visual_listening
     mode: restart
     then:
-      - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+      - lambda: |-
+          id(server_visual_received) = true;
+          id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
       - script.execute: draw_display
 
   - id: set_visual_processing
     mode: restart
     then:
-      - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+      - lambda: |-
+          id(server_visual_received) = true;
+          id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
       - script.execute: draw_display
 
   - id: reset_open_mic_wake_candidate
     mode: restart
     then:
-      - if:
-          condition:
-            lambda: return id(server_controlled_open_mic_active);
-          then:
-            - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
-            - text_sensor.template.publish:
-                id: text_request
-                state: "..."
-            - text_sensor.template.publish:
-                id: text_response
-                state: "..."
-            - script.execute: draw_display
+      - logger.log: "Wake-candidate reset received; main visual remains server-controlled"
 
   - id: play_conversation_timeout_cue
     mode: restart
@@ -567,41 +515,31 @@ script:
                         api.connected:
                       then:
                         - lambda: |
+                            if (!id(server_visual_received)) {
+                              id(s3_box_lcd).show_page(error_page);
+                              id(s3_box_lcd).update();
+                              return;
+                            }
                             switch(id(voice_assistant_phase)) {
                               case ${voice_assist_listening_phase_id}:
                                 id(s3_box_lcd).show_page(listening_page);
                                 id(s3_box_lcd).update();
-                                break;
+                                return;
                               case ${voice_assist_thinking_phase_id}:
                                 id(s3_box_lcd).show_page(thinking_page);
                                 id(s3_box_lcd).update();
-                                break;
-                              case ${voice_assist_replying_phase_id}:
-                                id(s3_box_lcd).show_page(replying_page);
-                                id(s3_box_lcd).update();
-                                break;
-                              case ${voice_assist_error_phase_id}:
-                                id(s3_box_lcd).show_page(error_page);
-                                id(s3_box_lcd).update();
-                                break;
-                              case ${voice_assist_muted_phase_id}:
-                                id(s3_box_lcd).show_page(muted_page);
-                                id(s3_box_lcd).update();
-                                break;
-                              case ${voice_assist_not_ready_phase_id}:
-                                id(s3_box_lcd).show_page(no_ha_page);
-                                id(s3_box_lcd).update();
-                                break;
-                              case ${voice_assist_timer_finished_phase_id}:
-                                id(s3_box_lcd).show_page(timer_finished_page);
-                                id(s3_box_lcd).update();
-                                break;
-                              default:
-                                id(s3_box_lcd).show_page(idle_page);
-                                id(s3_box_lcd).update();
+                                return;
                             }
+                            if (id(timer_ringing).state) {
+                              id(s3_box_lcd).show_page(timer_finished_page);
+                            } else if (id(mute).state) {
+                              id(s3_box_lcd).show_page(muted_page);
+                            } else {
+                              id(s3_box_lcd).show_page(idle_page);
+                            }
+                            id(s3_box_lcd).update();
                       else:
-                        - display.page.show: no_ha_page
+                        - display.page.show: error_page
                         - component.update: s3_box_lcd
                 else:
                   - display.page.show: no_wifi_page
@@ -744,16 +682,10 @@ script:
       - lambda: id(va).set_use_wake_word(false);
       - voice_assistant.start:
           wake_word: button
-  # Set the voice assistant phase to idle or muted, depending on if the software mute switch is activated
+  # Redraw local mute state without changing the server-owned main visual phase.
   - id: set_idle_or_mute_phase
     then:
-      - if:
-          condition:
-            switch.is_off: mute
-          then:
-            - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
-          else:
-            - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+      - script.execute: draw_display
 
 switch:
   - platform: gpio
@@ -773,11 +705,9 @@ switch:
     entity_category: config
     on_turn_off:
       - microphone.unmute:
-      - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
       - script.execute: draw_display
     on_turn_on:
       - microphone.mute:
-      - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
       - script.execute: draw_display
   - platform: template
     id: timer_ringing
@@ -829,7 +759,7 @@ select:
             lambda: return !id(init_in_progress);
           then:
             - wait_until:
-                lambda: return id(voice_assistant_phase) == ${voice_assist_muted_phase_id} || id(voice_assistant_phase) == ${voice_assist_idle_phase_id};
+                lambda: return id(server_visual_received) && id(voice_assistant_phase) == ${voice_assist_idle_phase_id};
             - if:
                 condition:
                   lambda: return x == "In Home Assistant";
@@ -864,6 +794,10 @@ globals:
     type: int
     restore_value: false
     initial_value: ${voice_assist_not_ready_phase_id}
+  - id: server_visual_received
+    type: bool
+    restore_value: false
+    initial_value: "false"
   - id: server_controlled_follow_up_starting
     type: bool
     restore_value: false

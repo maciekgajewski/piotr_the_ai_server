@@ -46,6 +46,81 @@ def test_visual_state_maps_to_private_firmware_service() -> None:
     asyncio.run(run())
 
 
+def test_duplicate_visual_state_repeats_only_the_idempotent_private_service() -> None:
+    async def run() -> None:
+        microphone = _microphone()
+        services = []
+
+        async def execute(service: str) -> None:
+            services.append(service)
+
+        microphone._execute_api_service = execute
+        command = SetVisualState(VisualState.LISTENING)
+        await microphone.send_output_event(command)
+        await microphone.send_output_event(command)
+
+        assert services == ["set_visual_listening", "set_visual_listening"]
+        assert microphone._listen_id is None
+        assert microphone._playback_id is None
+
+    asyncio.run(run())
+
+
+def test_nested_listening_generation_is_rejected_by_box3_internal_state() -> None:
+    async def run() -> None:
+        microphone = _microphone()
+        microphone._listen_id = "listen-1"
+
+        with pytest.raises(AssertionError):
+            await microphone.send_output_event(StartListening("listen-2", ListeningMode.OPEN_MIC))
+
+    asyncio.run(run())
+
+
+def test_stale_stop_is_rejected_by_box3_internal_state() -> None:
+    async def run() -> None:
+        microphone = _microphone()
+        microphone._listen_id = "listen-1"
+
+        with pytest.raises(AssertionError):
+            await microphone.send_output_event(StopListening("stale-listen", "cancelled"))
+
+        assert microphone._listen_id == "listen-1"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "command",
+    [PlaybackChunk("stale-playback", b"audio"), PlaybackEnd("stale-playback")],
+)
+def test_stale_playback_command_is_rejected_by_box3_internal_state(command) -> None:
+    async def run() -> None:
+        microphone = _microphone()
+        microphone._playback_id = "playback-1"
+
+        with pytest.raises(AssertionError):
+            await microphone.send_output_event(command)
+
+        assert microphone._playback_id == "playback-1"
+
+    asyncio.run(run())
+
+
+def test_playback_is_rejected_while_box3_listening_generation_is_active() -> None:
+    async def run() -> None:
+        microphone = _microphone()
+        microphone._listen_id = "listen-1"
+
+        with pytest.raises(AssertionError, match="disarmed microphone"):
+            await microphone.send_output_event(PlaybackBegin("playback-1", 22050, 2, 1))
+
+        assert microphone._playback_id is None
+        assert microphone._listen_id == "listen-1"
+
+    asyncio.run(run())
+
+
 def test_start_open_mic_echoes_listening_correlation() -> None:
     async def run() -> None:
         microphone = _microphone()
