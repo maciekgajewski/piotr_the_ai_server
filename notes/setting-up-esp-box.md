@@ -1042,3 +1042,15 @@ No firmware flashing has been done yet.
 - Continuous audio between segments crossed repeated 50-chunk progress boundaries without `audio event without active utterance_id` or `Task exception was never retrieved`.
 - Stopped the controlled foreground server with `Ctrl-C`; all microphone sessions and supporting domain services closed cleanly, and no AI-server process or container remained.
 - This clears T-002 and unblocks T-001 Box3 hardware validation. Physical visual-state and local-indicator precedence sequences remain to be tested.
+
+## 2026-07-13T13:35:04Z - Box3 accepted-turn hardware test exposed stop-race defect
+
+- Started the real server in the foreground with `tools/ai-server.sh --services-config config/services.env --config /home/maciek/ai_server_config.yaml`; no manual or Compose AI-server instance was active beforehand.
+- Repeated the accepted-turn test at the configured `end_silence_seconds=0.9`, speaking `Ryszardzie, która godzina?` continuously without an intentional pause.
+- Physical display observation: initially no change, then a quick `IDLE -> LISTENING -> PROCESSING/BUSY -> ERROR`; no spoken reply, and `ERROR` remained displayed.
+- The Box3 driver detected speech at `13:33:39.658` and flushed 257 queued pre-roll chunks (263,168 bytes, about 8.2 seconds of 16 kHz mono PCM16) into the utterance.
+- End-of-speech was detected after 0.96 seconds of silence. STT subsequently detected the wake candidate, final transcription accepted the utterance, and the manager commanded `LISTENING` followed by `PROCESSING`.
+- While `StopListening` was finishing the accepted open-mic run, the driver detected another segment and flushed another 162 queued chunks (165,888 bytes). The stale-stream recovery reconnected, after which a queued `SpeechStarted` reached the protocol in `STOPPING`.
+- The microphone session failed with the exact invariant error `AssertionError: SpeechStarted invalid in stopping; expected listening`, explaining the persistent firmware `ERROR` state.
+- This confirms the 0.9-second cutoff is not the cause of this particular no-reply result. Increasing it to 3 seconds remains the chosen usability change for natural wake-word pauses, but it will not fix the stop-race or unbounded pre-roll behavior.
+- Stopped the foreground server with `Ctrl-C`; all microphone sessions and supporting services closed cleanly.

@@ -210,7 +210,7 @@ One combined shell invocation of focused pytest commands produced socket `Permis
 There are no currently reproducible pytest failures. The following acceptance failures remain:
 
 - Box3 and Voice Preview generated source prove server visual ownership and reconnect-before-first-command `ERROR`, and the available units have been flashed, but both device types still require hardware sequence validation.
-- T-002's live Box3 open-mic correlation defect is fixed and live-verified. End-to-end microphone and visual hardware sequences are no longer blocked by it, but those broader sequences remain incomplete.
+- T-002's original open-mic `AudioProgress` correlation defect is fixed and live-verified. A later accepted-turn hardware test exposed [T-003](T-003-box3-open-mic-preroll-stop-race.md): unbounded inter-segment pre-roll produced a second `SpeechStarted` while the protocol was `STOPPING`, ending with `AssertionError: SpeechStarted invalid in stopping; expected listening` and a persistent device `ERROR`. End-to-end hardware sequences are blocked by T-003.
 - Real websocket client/server smoke testing has not run for this checkpoint.
 - Box3, Voice PE 02, and Voice PE 03 were flashed and returned to the network. The bedroom unit remains unflashed, and no hardware visual sequence has been tested.
 
@@ -235,9 +235,10 @@ All incomplete requirements in `docs/protocol-conformance-catalogue.md` remain b
 ### Next concrete implementation steps
 
 1. Run the real websocket client/server smoke test.
-2. Resume the Box3 end-to-end hardware sequence now that [T-002](T-002-box3-open-mic-audio-progress-correlation.md) is complete.
-3. Perform remaining hardware validation one satellite at a time, including Box3 local-indicator precedence. Record results in `notes/setting-up-esp-box.md`.
-4. Flash and test the bedroom Voice Preview when it becomes reachable.
+2. Complete [T-003](T-003-box3-open-mic-preroll-stop-race.md) to resolve the shared ESPHome driver's unbounded pre-roll and accepted-turn stop race before resuming end-to-end hardware validation.
+3. Increase the configured end-of-speech silence cutoff from 0.9 seconds to the user-selected 3 seconds, then verify the natural `wake phrase -> visual acknowledgement -> command` pause.
+4. Perform remaining hardware validation one satellite at a time, including Box3 local-indicator precedence. Record results in `notes/setting-up-esp-box.md`.
+5. Flash and test the bedroom Voice Preview when it becomes reachable.
 
 ## Design assumptions
 

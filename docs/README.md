@@ -34,6 +34,7 @@ Normative protocol documents follow [the protocol documentation standard](protoc
 |---|---|---|
 | [T-001 Protocol and Documentation Cleanup](tasks/T-001-protocol-and-documentation-cleanup.md) | Active plan | Defines the three-stage documentation, protocol-design, and implementation migration. It records known protocol-document drift and the approval gate before implementation. |
 | [T-002 Fix Open-Mic Audio Progress Correlation](tasks/T-002-box3-open-mic-audio-progress-correlation.md) | Completed defect-remediation record | Records the fix and live verification for the ESPHome driver failure where inter-segment open-mic audio attempted to emit `AudioProgress` without an active `utterance_id`. |
+| [T-003 Bound Open-Mic Pre-Roll and Eliminate the Accepted-Turn Stop Race](tasks/T-003-box3-open-mic-preroll-stop-race.md) | Active defect-remediation task | Fixes unbounded idle pre-roll and stale capture events that can produce `SpeechStarted` in `STOPPING`, leave a satellite in `ERROR`, and prevent an accepted reply. |
 | [ESP32-S3-BOX-3 Satellite Plan](esp32-s3-box-3-satellite.md) | Historical plan | Records the original satellite direction. Use current firmware and normative satellite behavior for present requirements. |
 
 ## Operational guides
