@@ -2,16 +2,43 @@
 
 ## Status
 
-- **Authority:** Active defect-remediation task
+- **Authority:** Completed defect-remediation record
 - **Audience:** Agents and maintainers working on the ESPHome microphone driver and Microphone Protocol conformance
 - **Read when:** Fixing `audio event without active utterance_id`, changing Box3/Voice Preview open-mic audio callbacks, or resuming T-001 hardware validation
-- **Blocks:** T-001 end-to-end microphone and hardware acceptance testing
+- **Unblocked:** T-001 end-to-end microphone and hardware acceptance testing on 2026-07-13
 
 ## Summary
 
 Fix `Box3EsphomeMicrophone` so continuous open-mic audio received between speech segments does not attempt to emit a correlated `AudioProgress` event without an active `utterance_id`.
 
 The defect was discovered during live Box3 hardware validation on 2026-07-13. It is in the shared Python ESPHome microphone driver, not in the flashed Box3 firmware. The same driver type is used for the configured Box3 and Voice Preview devices, so every device using `type: box3_esphome` in open-mic mode is potentially affected.
+
+## Resolution
+
+Completed on 2026-07-13.
+
+- `_handle_audio()` now emits open-mic `AudioProgress` only while `_speech_started` represents an active capture segment.
+- `_required_utterance_id()` remains unchanged and continues to fail the correlation invariant if capture state and correlation ever diverge.
+- Dedicated Box3 tests drive `_handle_audio()` through idle inter-segment audio, correlated active progress, segment completion, continued transport audio, and a later segment with a fresh `utterance_id` under the same `listen_id`.
+- No firmware change or flash was required.
+
+Verification results:
+
+```text
+.venv/bin/python -m pytest tests/test_box3_esphome_microphone.py -q
+21 passed in 0.18s
+
+.venv/bin/python -m pytest tests/test_microphone_protocol.py tests/test_microphones.py tests/test_box3_esphome_microphone.py -q
+71 passed in 0.30s
+
+.venv/bin/python -m pytest -q
+505 passed, 28 warnings in 1.52s
+
+orchestrator_and_dsa_tests/run.sh --no-transcript
+PASS 45/45 using qwen3:14b in 223.49s
+```
+
+The controlled foreground live run used the required explicit configuration paths. `box3-office` connected at `192.168.0.180`, executed `set_visual_idle`, and armed open-mic listening. Sequential rejected segments retained `listen_id=4b2a7ede-0aae-49ec-86f1-fe0d51d1a25d` while using fresh utterance IDs including `014b8da9-503d-4990-bc85-cfab625a1ac4`, `be28a3e0-4bde-41ca-8a02-108d443337d4`, and `a5bf9480-9405-4b15-9c43-1a48ab2e3aac`. Inter-segment audio crossed repeated 50-chunk progress boundaries without `audio event without active utterance_id` or `Task exception was never retrieved`. The server then stopped cleanly with `Ctrl-C`, and no AI-server process or container remained.
 
 ## Normative requirements
 

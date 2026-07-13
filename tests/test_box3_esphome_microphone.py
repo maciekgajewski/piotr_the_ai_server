@@ -4,9 +4,11 @@ import asyncio
 
 import pytest
 
+from ai_server.microphones.drivers.box3_esphome import OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL
 from ai_server.microphones.drivers.box3_esphome import Box3EsphomeMicrophone
 from ai_server.microphones.messages import CueFinished, CueType, ListeningMode, ListeningStarted, ListeningStopped
-from ai_server.microphones.messages import AudioChunk, PlaybackBegin, PlaybackChunk, PlaybackEnd, PlaybackFinished
+from ai_server.microphones.messages import AudioChunk, AudioProgress, PlaybackBegin, PlaybackChunk, PlaybackEnd
+from ai_server.microphones.messages import PlaybackFinished
 from ai_server.microphones.messages import PlayCue, ResetWakeCandidate, SetVisualState, SpeechEnded, SpeechStarted
 from ai_server.microphones.messages import StartListening, StopListening
 from ai_server.microphones.messages import VisualState
@@ -195,6 +197,93 @@ def test_capture_callbacks_echo_active_listen_and_new_utterance_ids() -> None:
     assert microphone._listen_id == "listen-1"
 
 
+def test_open_mic_inter_segment_audio_emits_no_capture_events() -> None:
+    async def run() -> None:
+        microphone = _microphone()
+        microphone._listen_id = "listen-1"
+        microphone._listening_mode = ListeningMode.OPEN_MIC
+
+        for _ in range(OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL * 2):
+            await microphone._handle_audio(b"\x00\x00")
+
+        assert microphone._events.empty()
+        assert microphone._utterance_id is None
+        assert not microphone._speech_started
+
+    asyncio.run(run())
+
+
+def test_open_mic_progress_is_correlated_to_active_segment() -> None:
+    async def run() -> None:
+        microphone = _microphone()
+        microphone._listen_id = "listen-1"
+        microphone._listening_mode = ListeningMode.OPEN_MIC
+
+        await _start_detected_speech(microphone)
+        started = microphone._events.get_nowait()
+        assert isinstance(started, SpeechStarted)
+
+        while microphone._audio_chunk_count < OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL:
+            await microphone._handle_audio(b"\xff\x7f")
+
+        events = _drain_events(microphone)
+        progress = [event for event in events if isinstance(event, AudioProgress)]
+        assert progress == [
+            AudioProgress(
+                "listen-1",
+                started.utterance_id,
+                OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL,
+                OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL * 2,
+            )
+        ]
+        assert all(
+            event.listen_id == "listen-1" and event.utterance_id == started.utterance_id
+            for event in events
+            if isinstance(event, AudioChunk)
+        )
+
+    asyncio.run(run())
+
+
+def test_open_mic_continuous_audio_starts_fresh_correlated_segment() -> None:
+    async def run() -> None:
+        microphone = _microphone()
+        microphone._listen_id = "listen-1"
+        microphone._listening_mode = ListeningMode.OPEN_MIC
+
+        await _start_detected_speech(microphone)
+        first_started = microphone._events.get_nowait()
+        assert isinstance(first_started, SpeechStarted)
+        _drain_events(microphone)
+
+        assert microphone._last_speech_at is not None
+        microphone._last_speech_at -= microphone._end_silence_seconds
+        await microphone._handle_audio(b"\x00\x00")
+        ended_events = _drain_events(microphone)
+        assert ended_events[-1] == SpeechEnded("listen-1", first_started.utterance_id, "completed")
+        assert microphone._listen_id == "listen-1"
+        assert microphone._utterance_id is None
+
+        for _ in range(OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL):
+            await microphone._handle_audio(b"\x00\x00")
+        assert microphone._events.empty()
+
+        await _start_detected_speech(microphone)
+        second_segment_events = _drain_events(microphone)
+        second_started = second_segment_events[0]
+        assert isinstance(second_started, SpeechStarted)
+        assert second_started.listen_id == "listen-1"
+        assert second_started.utterance_id != first_started.utterance_id
+        assert any(isinstance(event, AudioChunk) for event in second_segment_events[1:])
+        assert all(
+            event.listen_id == "listen-1" and event.utterance_id == second_started.utterance_id
+            for event in second_segment_events[1:]
+            if isinstance(event, (AudioChunk, AudioProgress))
+        )
+
+    asyncio.run(run())
+
+
 def test_playback_completion_is_emitted_only_after_end() -> None:
     async def run() -> None:
         microphone = _microphone()
@@ -226,6 +315,21 @@ def test_playback_completion_is_emitted_only_after_end() -> None:
 
 async def _async_noop(*_args, **_kwargs) -> None:
     return None
+
+
+async def _start_detected_speech(microphone: Box3EsphomeMicrophone) -> None:
+    await microphone._handle_audio(b"\xff\x7f")
+    assert microphone._speech_candidate_started_at is not None
+    microphone._speech_candidate_started_at -= 1
+    await microphone._handle_audio(b"\xff\x7f")
+    assert microphone._speech_started
+
+
+def _drain_events(microphone: Box3EsphomeMicrophone) -> list:
+    events = []
+    while not microphone._events.empty():
+        events.append(microphone._events.get_nowait())
+    return events
 
 
 @pytest.mark.parametrize("mode", list(ListeningMode))

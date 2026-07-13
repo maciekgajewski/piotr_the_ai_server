@@ -20,7 +20,7 @@ Stage 3 must not begin until the normative documents produced by Stage 2 have be
 
 - **Stage 1:** Completed on 2026-07-12. Added the documentation index, agent routing, authority labels, and the protocol documentation standard.
 - **Stage 2:** Completed on 2026-07-12. Approved normative Conversation and Microphone protocols, their mapping, and the conformance catalogue are indexed under `docs/`.
-- **Stage 3:** In progress. The Conversation/websocket milestone, correlated Microphone Protocol, manager mapping, Box3 Python driver, and Box3/Voice Preview firmware visual ownership are implemented and green. The available Box3 and Voice Preview firmware has been deployed. Real websocket smoke testing and final device/hardware verification remain incomplete.
+- **Stage 3:** In progress. The Conversation/websocket milestone, correlated Microphone Protocol, manager mapping, Box3 Python driver, and Box3/Voice Preview firmware visual ownership are implemented and green. The available Box3 and Voice Preview firmware has been deployed. T-002's open-mic correlation defect is fixed and live-verified. Real websocket smoke testing and final device/hardware verification remain incomplete.
 
 ## Fresh-session continuation handoff
 
@@ -86,6 +86,13 @@ Box3 firmware visual milestone completed on 2026-07-12:
 - Added the non-restored `server_visual_received` reconnect guard. Authoritative voice-assistant client connect and disconnect select firmware-owned `ERROR`; generic API clients only trigger redraws. Only an explicit server visual command clears the guard.
 - Generated display precedence keeps reconnect `ERROR` and active server `LISTENING`/`PROCESSING` ahead of local timer and mute pages. Local pages remain available while server state is `IDLE`.
 - Validated and compiled `firmware/esphome/box3-satellite.yaml` successfully (`config_hash=0x96b56234`). Generated C++ inspection confirmed the three services, exclusive phase writers, reconnect guard, display precedence, dual wake words, and GT911 red-button behavior. Flashed the Box3 over OTA to `192.168.0.180` on 2026-07-13; ESPHome reported success and the unit returned to the network.
+
+Box3 open-mic correlation defect cleared on 2026-07-13:
+
+- Restricted driver `AudioProgress` emission to active capture while preserving the fail-fast utterance-correlation invariant.
+- Added concrete `_handle_audio()` regressions for idle inter-segment streaming, active correlated progress, pre-roll ordering, and sequential segments with one `listen_id` and fresh `utterance_id` values.
+- Focused Box3 tests passed 21/21, combined microphone tests passed 71/71, the full Python suite passed 505/505, and the orchestrator/DSA suite passed 45/45 using `qwen3:14b`.
+- A controlled foreground run against the real Box3 produced multiple rejected segments under one listening generation with distinct utterance IDs. Inter-segment audio crossed repeated progress intervals without the former assertion or an unhandled task failure, and the server stopped cleanly.
 
 ### Important discoveries and decisions
 
@@ -203,7 +210,7 @@ One combined shell invocation of focused pytest commands produced socket `Permis
 There are no currently reproducible pytest failures. The following acceptance failures remain:
 
 - Box3 and Voice Preview generated source prove server visual ownership and reconnect-before-first-command `ERROR`, and the available units have been flashed, but both device types still require hardware sequence validation.
-- Live Box3 validation exposed an open-mic driver defect: inter-segment continuous audio attempts to emit `AudioProgress` without an active `utterance_id`. T-002 contains the reproduction, diagnosis, regression scope, and acceptance criteria; end-to-end microphone hardware sequences are blocked until it is fixed.
+- T-002's live Box3 open-mic correlation defect is fixed and live-verified. End-to-end microphone and visual hardware sequences are no longer blocked by it, but those broader sequences remain incomplete.
 - Real websocket client/server smoke testing has not run for this checkpoint.
 - Box3, Voice PE 02, and Voice PE 03 were flashed and returned to the network. The bedroom unit remains unflashed, and no hardware visual sequence has been tested.
 
@@ -228,7 +235,7 @@ All incomplete requirements in `docs/protocol-conformance-catalogue.md` remain b
 ### Next concrete implementation steps
 
 1. Run the real websocket client/server smoke test.
-2. Complete [T-002](T-002-box3-open-mic-audio-progress-correlation.md), then resume the Box3 end-to-end hardware sequence.
+2. Resume the Box3 end-to-end hardware sequence now that [T-002](T-002-box3-open-mic-audio-progress-correlation.md) is complete.
 3. Perform remaining hardware validation one satellite at a time, including Box3 local-indicator precedence. Record results in `notes/setting-up-esp-box.md`.
 4. Flash and test the bedroom Voice Preview when it becomes reachable.
 

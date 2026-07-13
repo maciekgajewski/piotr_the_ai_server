@@ -1025,3 +1025,20 @@ No firmware flashing has been done yet.
 - ESPHome reported `OTA successful` and `Successfully uploaded program.`
 - Post-reboot ping succeeded with 3/3 replies and 0% packet loss.
 - Network return was verified; physical visual-state and local-indicator precedence sequences were not tested in this step.
+
+## 2026-07-13T10:51:49Z - Box3 open-mic progress correlation fixed and live-verified
+
+- Fixed the shared Python ESPHome driver so open-mic `AudioProgress` is emitted only while a speech segment is active; the required `utterance_id` assertion remains intact.
+- Added dedicated `_handle_audio()` regressions covering inter-segment continuous audio, active correlated progress, segment completion, retained pre-roll, and a later segment with a fresh utterance ID.
+- Verification passed:
+  - focused Box3 driver tests: 21/21;
+  - combined microphone protocol tests: 71/71;
+  - full Python suite: 505/505 with 28 existing aiohttp warnings;
+  - orchestrator/DSA behavior suite: 45/45 using `qwen3:14b` in 223.49s.
+- Before the live run, confirmed that no manual or Compose AI-server instance was active.
+- Started the real server in the foreground with `tools/ai-server.sh --services-config config/services.env --config /home/maciek/ai_server_config.yaml`.
+- `box3-office` connected at `192.168.0.180`, executed `set_visual_idle`, and started open-mic listening.
+- Multiple rejected segments retained `listen_id=4b2a7ede-0aae-49ec-86f1-fe0d51d1a25d` and used distinct utterance IDs, including `014b8da9-503d-4990-bc85-cfab625a1ac4`, `be28a3e0-4bde-41ca-8a02-108d443337d4`, and `a5bf9480-9405-4b15-9c43-1a48ab2e3aac`.
+- Continuous audio between segments crossed repeated 50-chunk progress boundaries without `audio event without active utterance_id` or `Task exception was never retrieved`.
+- Stopped the controlled foreground server with `Ctrl-C`; all microphone sessions and supporting domain services closed cleanly, and no AI-server process or container remained.
+- This clears T-002 and unblocks T-001 Box3 hardware validation. Physical visual-state and local-indicator precedence sequences remain to be tested.

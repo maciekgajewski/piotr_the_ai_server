@@ -450,6 +450,7 @@ class Box3EsphomeMicrophone:
 
         if (
             self._listening_mode is ListeningMode.OPEN_MIC
+            and self._speech_started
             and self._audio_chunk_count > 0
             and self._audio_chunk_count - self._last_audio_progress_chunk_count
             >= OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL
