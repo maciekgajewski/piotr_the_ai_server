@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import array
+from collections import deque
 from contextlib import suppress
 from dataclasses import replace
 from functools import partial
@@ -40,11 +41,12 @@ API_SERVICE_TIMEOUT_SECONDS = 5.0
 PLAYBACK_DRAIN_GRACE_SECONDS = 0.2
 SPEECH_PEAK_THRESHOLD = 500
 SPEECH_START_SECONDS = 0.2
-VOICE_ASSISTANT_REARM_DELAY_SECONDS = 0.2
+VOICE_ASSISTANT_STOP_ACK_TIMEOUT_SECONDS = 2.0
 PLAY_MESSAGE_END_CUE_SERVICE = "play_message_end_cue"
 PLAY_CONVERSATION_TIMEOUT_CUE_SERVICE = "play_conversation_timeout_cue"
 START_FOLLOW_UP_LISTENING_SERVICE = "start_follow_up_listening"
 START_OPEN_MIC_LISTENING_SERVICE = "start_open_mic_listening"
+STOP_LISTENING_SERVICE = "stop_listening"
 RESET_OPEN_MIC_WAKE_CANDIDATE_SERVICE = "reset_open_mic_wake_candidate"
 VISUAL_STATE_SERVICES = {
     VisualState.IDLE: "set_visual_idle",
@@ -53,6 +55,14 @@ VISUAL_STATE_SERVICES = {
 }
 FOLLOW_UP_WAKE_WORD = "follow_up"
 OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL = 50
+CAPTURE_RATE = 16000
+CAPTURE_WIDTH = 2
+CAPTURE_CHANNELS = 1
+OPEN_MIC_PRE_ROLL_SECONDS = 1.0
+OPEN_MIC_PRE_ROLL_BYTES = int(
+    OPEN_MIC_PRE_ROLL_SECONDS * CAPTURE_RATE * CAPTURE_WIDTH * CAPTURE_CHANNELS
+)
+CAPTURE_EVENT_TYPES = (SpeechStarted, AudioChunk, AudioProgress, SpeechEnded)
 
 
 class Box3EsphomeMicrophone:
@@ -79,8 +89,8 @@ class Box3EsphomeMicrophone:
         self._stream_started = asyncio.Event()
         self._stream_done = asyncio.Event()
         self._events: asyncio.Queue[MicrophoneEvent] = asyncio.Queue()
-        self._chunks: list[bytes] = []
-        self._pending_audio_chunks: list[bytes] = []
+        self._pending_audio_chunks: deque[bytes] = deque()
+        self._pending_audio_byte_count = 0
         self._wake_word: str | None = None
         self._byte_count = 0
         self._audio_chunk_count = 0
@@ -97,6 +107,7 @@ class Box3EsphomeMicrophone:
         self._late_audio_chunk_count = 0
         self._run_end_sent = False
         self._voice_assistant_run_active = False
+        self._capture_events_enabled = False
         self._listen_id: str | None = None
         self._utterance_id: str | None = None
         self._listening_mode: ListeningMode | None = None
@@ -166,6 +177,7 @@ class Box3EsphomeMicrophone:
             assert self._listen_id is None
             self._listen_id = event.listen_id
             self._listening_mode = event.mode
+            self._capture_events_enabled = True
             if event.mode is ListeningMode.WAKE_WORD:
                 await self._start_wake_word_listening()
             else:
@@ -181,6 +193,9 @@ class Box3EsphomeMicrophone:
             return
         if isinstance(event, StopListening):
             assert event.listen_id == self._listen_id
+            self._capture_events_enabled = False
+            self._clear_pending_audio()
+            self._drain_capture_events(event.listen_id, "listening generation stop")
             await self._finish_voice_assistant_run()
             self._listen_id = None
             self._listening_mode = None
@@ -225,6 +240,8 @@ class Box3EsphomeMicrophone:
         self._listen_id = None
         self._utterance_id = None
         self._listening_mode = None
+        self._capture_events_enabled = False
+        self._clear_pending_audio()
         self._playback_id = None
         self._drain_queued_events("driver close")
 
@@ -382,9 +399,14 @@ class Box3EsphomeMicrophone:
         _audio_settings: Any,
         wake_word_phrase: str | None,
     ) -> int:
+        if not self._capture_events_enabled:
+            self._logger.debug(
+                "ignored stale ESPHome voice assistant stream start state=%s",
+                self._voice_assistant_state(),
+            )
+            return 0
         self._drain_queued_events("new voice assistant stream start")
-        self._chunks.clear()
-        self._pending_audio_chunks.clear()
+        self._clear_pending_audio()
         self._wake_word = wake_word_phrase
         self._byte_count = 0
         self._audio_chunk_count = 0
@@ -427,26 +449,26 @@ class Box3EsphomeMicrophone:
         for chunk in (data, data2):
             if not chunk:
                 continue
+            if not self._capture_events_enabled:
+                self._drop_late_audio_chunk()
+                continue
             if self._audio_ended:
                 self._drop_late_audio_chunk()
                 continue
             if self._is_audio_ignored(chunk):
                 continue
-            self._chunks.append(chunk)
-            self._byte_count += len(chunk)
-            self._audio_chunk_count += 1
             if self._speech_started:
                 self._queue_audio_chunk(chunk)
                 self._observe_audio_level(chunk)
                 continue
 
-            self._pending_audio_chunks.append(chunk)
+            self._append_pending_audio_chunk(chunk)
             self._observe_audio_level(chunk)
             if self._speech_started:
                 self._flush_pending_audio_chunks()
                 continue
             if self._audio_ended:
-                self._pending_audio_chunks.clear()
+                self._clear_pending_audio()
 
         if (
             self._listening_mode is ListeningMode.OPEN_MIC
@@ -474,14 +496,42 @@ class Box3EsphomeMicrophone:
     def _flush_pending_audio_chunks(self) -> None:
         if not self._pending_audio_chunks:
             return
+        pending_chunks = len(self._pending_audio_chunks)
+        pending_bytes = self._pending_audio_byte_count
         for chunk in self._pending_audio_chunks:
             self._queue_audio_chunk(chunk)
         self._logger.debug(
             "flushed speech pre-roll chunks=%s bytes=%s",
-            len(self._pending_audio_chunks),
-            sum(len(chunk) for chunk in self._pending_audio_chunks),
+            pending_chunks,
+            pending_bytes,
         )
+        self._clear_pending_audio()
+
+    def _append_pending_audio_chunk(self, chunk: bytes) -> None:
+        if len(chunk) >= OPEN_MIC_PRE_ROLL_BYTES:
+            self._pending_audio_chunks.clear()
+            tail = chunk[-OPEN_MIC_PRE_ROLL_BYTES:]
+            self._pending_audio_chunks.append(tail)
+            self._pending_audio_byte_count = len(tail)
+            return
+
+        self._pending_audio_chunks.append(chunk)
+        self._pending_audio_byte_count += len(chunk)
+        excess_bytes = self._pending_audio_byte_count - OPEN_MIC_PRE_ROLL_BYTES
+        while excess_bytes > 0:
+            oldest = self._pending_audio_chunks.popleft()
+            if len(oldest) <= excess_bytes:
+                self._pending_audio_byte_count -= len(oldest)
+                excess_bytes -= len(oldest)
+                continue
+            retained = oldest[excess_bytes:]
+            self._pending_audio_chunks.appendleft(retained)
+            self._pending_audio_byte_count -= excess_bytes
+            excess_bytes = 0
+
+    def _clear_pending_audio(self) -> None:
         self._pending_audio_chunks.clear()
+        self._pending_audio_byte_count = 0
 
     def _is_audio_ignored(self, chunk: bytes) -> bool:
         if self._ignore_audio_until is None:
@@ -523,7 +573,10 @@ class Box3EsphomeMicrophone:
         )
         self._stream_done.set()
         self._voice_assistant_run_active = False
-        self._finish_audio_stream()
+        if self._capture_events_enabled:
+            self._finish_audio_stream()
+        else:
+            self._clear_pending_audio()
         self._logger.debug("ESPHome voice assistant stop handled state=%s", self._voice_assistant_state())
 
     def _drop_late_audio_chunk(self) -> None:
@@ -572,7 +625,7 @@ class Box3EsphomeMicrophone:
 
         raise RuntimeError(f"ESPHome satellite API service not found: {service_name}")
 
-    async def _execute_optional_api_service(self, service_name: str) -> None:
+    async def _execute_optional_api_service(self, service_name: str) -> bool:
         try:
             await self._execute_api_service(service_name)
         except RuntimeError as error:
@@ -583,6 +636,8 @@ class Box3EsphomeMicrophone:
                 service_name,
                 self._voice_assistant_state(),
             )
+            return False
+        return True
 
     async def _start_wake_word_listening(self) -> None:
         self._logger.debug("starting ESPHome wake-word re-arm state=%s", self._voice_assistant_state())
@@ -597,30 +652,50 @@ class Box3EsphomeMicrophone:
         await self._ensure_connected()
         self._logger.debug("finishing ESPHome voice assistant run requested state=%s", self._voice_assistant_state())
         if self._voice_assistant_run_active:
+            explicit_stop_requested = await self._execute_optional_api_service(STOP_LISTENING_SERVICE)
+            if explicit_stop_requested:
+                self._logger.debug(
+                    "waiting for explicit ESPHome device stop before run-end timeout_seconds=%.2f state=%s",
+                    VOICE_ASSISTANT_STOP_ACK_TIMEOUT_SECONDS,
+                    self._voice_assistant_state(),
+                )
+                try:
+                    await asyncio.wait_for(
+                        self._stream_done.wait(),
+                        timeout=VOICE_ASSISTANT_STOP_ACK_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    self._logger.debug(
+                        "explicit ESPHome device stop callback did not arrive before timeout state=%s",
+                        self._voice_assistant_state(),
+                    )
+                else:
+                    self._logger.debug(
+                        "explicit ESPHome device stop observed before run-end state=%s",
+                        self._voice_assistant_state(),
+                    )
             try:
                 self._send_run_end_once()
             except _expected_unavailable_errors() as error:
                 await self._mark_disconnected()
                 raise MicrophoneUnavailable(f"address={self.playback_target.address} error={error}") from error
             self._voice_assistant_run_active = False
-            self._logger.debug(
-                "ESPHome voice assistant run marked inactive; waiting for stop before re-arm timeout_seconds=%.2f "
-                "state=%s",
-                VOICE_ASSISTANT_REARM_DELAY_SECONDS,
-                self._voice_assistant_state(),
-            )
-            try:
-                await asyncio.wait_for(self._stream_done.wait(), timeout=VOICE_ASSISTANT_REARM_DELAY_SECONDS)
-            except TimeoutError:
+            if not explicit_stop_requested:
                 self._logger.debug(
-                    "ESPHome voice assistant stop did not arrive before re-arm timeout state=%s",
+                    "legacy ESPHome stop waiting after run-end timeout_seconds=%.2f state=%s",
+                    VOICE_ASSISTANT_STOP_ACK_TIMEOUT_SECONDS,
                     self._voice_assistant_state(),
                 )
-            else:
-                self._logger.debug(
-                    "ESPHome voice assistant stop observed before re-arm state=%s",
-                    self._voice_assistant_state(),
-                )
+                try:
+                    await asyncio.wait_for(
+                        self._stream_done.wait(),
+                        timeout=VOICE_ASSISTANT_STOP_ACK_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    self._logger.debug(
+                        "legacy ESPHome stop did not arrive before re-arm timeout state=%s",
+                        self._voice_assistant_state(),
+                    )
             await self._recover_stale_voice_assistant_stream_before_rearm()
         else:
             self._logger.debug("ESPHome voice assistant run already inactive state=%s", self._voice_assistant_state())
@@ -639,7 +714,7 @@ class Box3EsphomeMicrophone:
         self._run_end_sent = False
         self._stream_done.set()
         self._audio_ended = True
-        self._pending_audio_chunks.clear()
+        self._clear_pending_audio()
         self._logger.debug(
             "recovered stale ESPHome voice assistant stream before re-arm state=%s",
             self._voice_assistant_state(),
@@ -656,6 +731,29 @@ class Box3EsphomeMicrophone:
         if counts:
             self._logger.debug(
                 "drained stale ESPHome voice assistant events reason=%s counts=%s state=%s",
+                reason,
+                counts,
+                self._voice_assistant_state(),
+            )
+
+    def _drain_capture_events(self, listen_id: str, reason: str) -> None:
+        counts: dict[str, int] = {}
+        retained_events: list[MicrophoneEvent] = []
+        while True:
+            try:
+                event = self._events.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if isinstance(event, CAPTURE_EVENT_TYPES) and event.listen_id == listen_id:
+                counts[type(event).__name__] = counts.get(type(event).__name__, 0) + 1
+            else:
+                retained_events.append(event)
+        for event in retained_events:
+            self._events.put_nowait(event)
+        if counts:
+            self._logger.debug(
+                "drained stopped-generation capture events listen_id=%s reason=%s counts=%s state=%s",
+                listen_id,
                 reason,
                 counts,
                 self._voice_assistant_state(),
@@ -690,7 +788,7 @@ class Box3EsphomeMicrophone:
                 self._voice_assistant_state(),
             )
             if not self._speech_started:
-                self._pending_audio_chunks.clear()
+                self._clear_pending_audio()
             self._queue_speech_ended("completed")
             self._logger.debug(
                 "queued open-mic audio segment end event state=%s queue_size=%s",
@@ -702,7 +800,7 @@ class Box3EsphomeMicrophone:
         self._logger.debug("finishing ESPHome audio stream state=%s", self._voice_assistant_state())
         self._audio_ended = True
         if not self._speech_started:
-            self._pending_audio_chunks.clear()
+            self._clear_pending_audio()
         if not self._stream_done.is_set():
             self._send_voice_assistant_event("VOICE_ASSISTANT_STT_VAD_END")
             self._logger.debug("sent VOICE_ASSISTANT_STT_VAD_END state=%s", self._voice_assistant_state())
@@ -714,8 +812,7 @@ class Box3EsphomeMicrophone:
         )
 
     def _reset_open_mic_segment_state(self) -> None:
-        self._chunks.clear()
-        self._pending_audio_chunks.clear()
+        self._clear_pending_audio()
         self._byte_count = 0
         self._audio_chunk_count = 0
         self._last_audio_progress_chunk_count = 0
@@ -739,14 +836,16 @@ class Box3EsphomeMicrophone:
             SpeechStarted(
                 listen_id=listen_id,
                 utterance_id=utterance_id,
-                rate=16000,
-                width=2,
-                channels=1,
+                rate=CAPTURE_RATE,
+                width=CAPTURE_WIDTH,
+                channels=CAPTURE_CHANNELS,
                 wake_word=wake_word,
             )
         )
 
     def _queue_audio_chunk(self, data: bytes) -> None:
+        self._audio_chunk_count += 1
+        self._byte_count += len(data)
         self._events.put_nowait(
             AudioChunk(
                 listen_id=self._required_listen_id(),
@@ -763,6 +862,7 @@ class Box3EsphomeMicrophone:
         self._events.put_nowait(SpeechEnded(listen_id, utterance_id, reason))
         self._utterance_id = None
         if self._listening_mode is not ListeningMode.OPEN_MIC:
+            self._capture_events_enabled = False
             self._listen_id = None
             self._listening_mode = None
 
@@ -779,6 +879,7 @@ class Box3EsphomeMicrophone:
             f"connected={self._client is not None} "
             f"subscribed={self._unsubscribe is not None} "
             f"run_active={self._voice_assistant_run_active} "
+            f"capture_events_enabled={self._capture_events_enabled} "
             f"listening_mode={self._listening_mode} "
             f"run_end_sent={self._run_end_sent} "
             f"stream_done={self._stream_done.is_set()} "

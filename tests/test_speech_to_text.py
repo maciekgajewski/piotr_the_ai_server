@@ -4,6 +4,8 @@ from pathlib import Path
 import time
 import wave
 
+import pytest
+
 from ai_server.config import SttConfig
 from ai_server.speech_to_text.faster_whisper import FasterWhisperSpeechToText, _create_faster_whisper_transcriber
 from ai_server.speech_to_text.messages import TextEnd, TextFragment, TextPartial
@@ -33,6 +35,73 @@ class FakeTranscriber:
         return self.text
 
 
+class FailingTranscriber(FakeTranscriber):
+    def transcribe(self, wav_path: Path, language: str | None, beam_size: int) -> str:
+        super().transcribe(wav_path, language, beam_size)
+        raise RuntimeError("warmup failed")
+
+
+def test_faster_whisper_start_warms_configured_partial_path_without_logging_output(caplog) -> None:
+    async def run() -> None:
+        transcriber = FakeTranscriber(text="synthetic secret output")
+        stt = FasterWhisperSpeechToText(
+            SttConfig(
+                model="fake",
+                language="pl",
+                device="cpu",
+                compute_type="int8",
+                partial_window_seconds=0.25,
+                partial_beam_size=2,
+                log_transcripts=True,
+            ),
+            transcriber_factory=lambda _config: transcriber,
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="ai_server.speech_to_text.faster_whisper"):
+            await stt.start()
+            await stt.start()
+
+        assert len(transcriber.calls) == 1
+        assert transcriber.calls[0] == {
+            "language": "pl",
+            "beam_size": 2,
+            "rate": DEFAULT_STT_AUDIO_FORMAT.rate,
+            "width": DEFAULT_STT_AUDIO_FORMAT.width,
+            "channels": DEFAULT_STT_AUDIO_FORMAT.channels,
+            "frames": bytes(DEFAULT_STT_AUDIO_FORMAT.byte_rate // 4),
+        }
+
+    asyncio.run(run())
+
+    assert "warming STT model model=fake audio_seconds=0.25 beam_size=2" in caplog.text
+    assert "STT model warmed model=fake audio_seconds=0.25 beam_size=2" in caplog.text
+    assert "synthetic secret output" not in caplog.text
+
+
+def test_faster_whisper_start_propagates_warmup_failure_and_remains_unstarted() -> None:
+    async def run() -> None:
+        transcriber = FailingTranscriber()
+        factory_calls = 0
+
+        def factory(_config):
+            nonlocal factory_calls
+            factory_calls += 1
+            return transcriber
+
+        stt = FasterWhisperSpeechToText(
+            SttConfig(model="fake", language="pl", device="cpu", compute_type="int8"),
+            transcriber_factory=factory,
+        )
+
+        with pytest.raises(RuntimeError, match="warmup failed"):
+            await stt.start()
+        with pytest.raises(RuntimeError, match="warmup failed"):
+            await stt.start()
+        assert factory_calls == 2
+
+    asyncio.run(run())
+
+
 def test_faster_whisper_stt_assembles_pcm_wav_and_returns_text() -> None:
     async def run() -> None:
         transcriber = FakeTranscriber()
@@ -52,6 +121,14 @@ def test_faster_whisper_stt_assembles_pcm_wav_and_returns_text() -> None:
         assert transcriber.calls == [
             {
                 "language": "pl",
+                "beam_size": 1,
+                "rate": DEFAULT_STT_AUDIO_FORMAT.rate,
+                "width": DEFAULT_STT_AUDIO_FORMAT.width,
+                "channels": DEFAULT_STT_AUDIO_FORMAT.channels,
+                "frames": bytes(4 * DEFAULT_STT_AUDIO_FORMAT.byte_rate),
+            },
+            {
+                "language": "pl",
                 "beam_size": 3,
                 "rate": DEFAULT_STT_AUDIO_FORMAT.rate,
                 "width": DEFAULT_STT_AUDIO_FORMAT.width,
@@ -63,7 +140,7 @@ def test_faster_whisper_stt_assembles_pcm_wav_and_returns_text() -> None:
     asyncio.run(run())
 
 
-def test_faster_whisper_stt_logs_metadata_without_transcript_text(caplog) -> None:
+def test_faster_whisper_stt_logs_metadata_without_transcript_text_by_default(caplog) -> None:
     async def run() -> None:
         transcriber = FakeTranscriber(text="tajny tekst")
         stt = FasterWhisperSpeechToText(
@@ -71,7 +148,7 @@ def test_faster_whisper_stt_logs_metadata_without_transcript_text(caplog) -> Non
             transcriber_factory=lambda _config: transcriber,
         )
 
-        with caplog.at_level(logging.INFO, logger="ai_server.speech_to_text.faster_whisper"):
+        with caplog.at_level(logging.DEBUG, logger="ai_server.speech_to_text.faster_whisper"):
             await stt.start()
             session = await stt.create_session("private-session")
             await session.send_audio(PcmAudioChunk(data=b"audio"))
@@ -83,6 +160,32 @@ def test_faster_whisper_stt_logs_metadata_without_transcript_text(caplog) -> Non
     assert "STT transcription finished" in caplog.text
     assert "chars=11" in caplog.text
     assert "tajny tekst" not in caplog.text
+
+
+def test_faster_whisper_stt_logs_raw_and_processed_transcript_when_enabled(caplog) -> None:
+    async def run() -> None:
+        transcriber = FakeTranscriber(text="  tryb ventilacji  ")
+        stt = FasterWhisperSpeechToText(
+            SttConfig(
+                model="fake",
+                language="pl",
+                device="cpu",
+                compute_type="int8",
+                log_transcripts=True,
+            ),
+            transcriber_factory=lambda _config: transcriber,
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="ai_server.speech_to_text.faster_whisper"):
+            await stt.start()
+            session = await stt.create_session("diagnostic-session")
+            await session.send_audio(PcmAudioChunk(data=b"audio"))
+            await session.end_audio()
+            assert await session.receive_text() == TextFragment(text="tryb wentylacji")
+
+    asyncio.run(run())
+
+    assert "STT transcript raw='  tryb ventilacji  ' processed='tryb wentylacji'" in caplog.text
 
 
 def test_faster_whisper_stt_receive_waits_for_audio_end() -> None:
@@ -105,12 +208,14 @@ def test_faster_whisper_stt_receive_waits_for_audio_end() -> None:
 
         await session.end_audio()
         assert await receive_task == TextFragment(text="gotowe")
-        assert transcriber.calls[0]["frames"] == b"audio!"
+        assert transcriber.calls[1]["frames"] == b"audio!"
 
     asyncio.run(run())
 
 
-def test_faster_whisper_streaming_stt_emits_partial_and_final_text() -> None:
+def test_faster_whisper_streaming_stt_emits_partial_and_final_text_without_logging_content_by_default(
+    caplog,
+) -> None:
     async def run() -> None:
         transcriber = FakeTranscriber(text="Ryszardzie, włącz światło")
         stt = FasterWhisperSpeechToText(
@@ -141,11 +246,52 @@ def test_faster_whisper_streaming_stt_emits_partial_and_final_text() -> None:
         await session.end_audio()
         assert await asyncio.wait_for(session.receive_text(), timeout=1) == TextEnd()
         assert await session.transcribe_final() == "Ryszardzie, włącz światło"
-        assert [call["beam_size"] for call in transcriber.calls] == [1, 4]
-        assert transcriber.calls[0]["frames"] == b"a" * (DEFAULT_STT_AUDIO_FORMAT.byte_rate // 2)
-        assert transcriber.calls[1]["frames"] == b"a" * DEFAULT_STT_AUDIO_FORMAT.byte_rate
+        assert [call["beam_size"] for call in transcriber.calls] == [1, 1, 4]
+        assert transcriber.calls[0]["frames"] == bytes(
+            DEFAULT_STT_AUDIO_FORMAT.byte_rate // 2
+        )
+        assert transcriber.calls[1]["frames"] == b"a" * (
+            DEFAULT_STT_AUDIO_FORMAT.byte_rate // 2
+        )
+        assert transcriber.calls[2]["frames"] == b"a" * DEFAULT_STT_AUDIO_FORMAT.byte_rate
 
-    asyncio.run(run())
+    with caplog.at_level(logging.DEBUG, logger="ai_server.speech_to_text.faster_whisper"):
+        asyncio.run(run())
+
+    assert "transcript raw=" not in caplog.text
+
+
+def test_faster_whisper_streaming_stt_logs_partial_and_final_transcripts_when_enabled(caplog) -> None:
+    async def run() -> None:
+        transcriber = FakeTranscriber(text="  Ryszardzie, tryb ventilacji  ")
+        stt = FasterWhisperSpeechToText(
+            SttConfig(
+                model="fake",
+                language="pl",
+                device="cpu",
+                compute_type="int8",
+                partial_interval_seconds=0.01,
+                partial_window_seconds=0.5,
+                log_transcripts=True,
+            ),
+            transcriber_factory=lambda _config: transcriber,
+        )
+        await stt.start()
+        session = await stt.create_streaming_session("diagnostic-streaming-session")
+        await session.send_audio(PcmAudioChunk(data=b"a" * DEFAULT_STT_AUDIO_FORMAT.byte_rate))
+
+        event = await asyncio.wait_for(session.receive_text(), timeout=1)
+        assert isinstance(event, TextPartial)
+        await session.end_audio()
+        assert await asyncio.wait_for(session.receive_text(), timeout=1) == TextEnd()
+        assert await session.transcribe_final() == "Ryszardzie, tryb wentylacji"
+
+    with caplog.at_level(logging.DEBUG, logger="ai_server.speech_to_text.faster_whisper"):
+        asyncio.run(run())
+
+    expected = "raw='  Ryszardzie, tryb ventilacji  ' processed='Ryszardzie, tryb wentylacji'"
+    assert f"streaming STT partial transcript {expected}" in caplog.text
+    assert f"streaming STT final transcript {expected}" in caplog.text
 
 
 def test_faster_whisper_streaming_stt_warns_and_drops_stale_partial_without_text(caplog) -> None:

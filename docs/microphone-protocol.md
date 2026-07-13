@@ -175,6 +175,8 @@ The table covers audio-state events. `SetVisualState` is independently valid in 
 
 Any command or event not allowed by this table is an internal protocol violation. A nested `SpeechStarted`, mismatched identifier, audio outside `CAPTURING`, or implicit driver re-arm MUST fail an invariant. (`MP-STATE-001`)
 
+For a device that streams capture through an independently running voice-assistant pipeline, handling `StopListening` MUST actively stop that device pipeline and wait for the device's stop notification before emitting `ListeningStopped`. A server-to-device run-end event alone MUST NOT be treated as a correlated stop acknowledgement. If the explicit stop notification does not arrive within a bounded implementation timeout, the driver MUST discard the stopped generation and recover the transport before completing stop. (`MP-STOP-001`)
+
 ## Listening-mode requirements
 
 ### Wake-word mode
@@ -246,7 +248,8 @@ SpeechStarted
 ### Partial candidate
 
 - Partial transcript snapshots MUST remain private to the manager/STT boundary.
-- Partial transcript text MUST NOT be sent to an agent or content-logged.
+- Partial transcript text MUST NOT be sent to an agent.
+- Transcript content MUST NOT be logged by default. A local operator MAY explicitly set `stt.log_transcripts: true` to log raw and preprocessed partial and final STT results at DEBUG for diagnostics. The option MUST default to `false`; INFO logs remain metadata-only. (`MP-OBS-003`)
 - The first partial containing the configured wake phrase MUST mark the current `utterance_id` as a candidate and immediately send `SetVisualState(LISTENING)`. (`MP-OPENMIC-001`)
 - Candidate visual feedback MUST occur while capture continues; it MUST NOT wait for `SpeechEnded` or final transcription.
 - Duplicate positive partials for the same utterance MUST NOT repeat the transition or cue.
@@ -374,8 +377,8 @@ SetVisualState(IDLE) or SetVisualState(LISTENING) for follow-up
 - Every command and driver event MUST be logged on DEBUG with microphone instance, protocol state, and all correlation identifiers. (`MP-OBS-001`)
 - Listening, accepted utterance, cue, playback, unavailability, reconnection, and recovery are crucial events and MUST be logged briefly on INFO.
 - Every main visual transition MUST be logged on DEBUG with old state, new state, and cause. (`MP-OBS-002`)
-- Open-mic partial and rejected final transcript text MUST NOT be content-logged.
-- Accepted transcript text follows the project's transcript logging policy and MUST be logged only after acceptance.
+- Open-mic partial and rejected final transcript text MUST NOT be content-logged unless the operator explicitly enables the diagnostic `stt.log_transcripts` option defined by `MP-OBS-003`.
+- Accepted transcript text follows the same project transcript-logging policy. Diagnostic transcript logs MUST remain at DEBUG.
 - Stale events and protocol violations MUST be logged with enough context to identify the old and active generations.
 
 ## Implementation and conformance references

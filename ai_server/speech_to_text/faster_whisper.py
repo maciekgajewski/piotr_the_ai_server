@@ -58,8 +58,37 @@ class FasterWhisperSpeechToText:
             self._config.beam_size,
         )
         self._transcriber = await asyncio.to_thread(self._transcriber_factory, self._config)
+        warmup_audio = bytes(
+            int(self._config.partial_window_seconds * self._audio_format.byte_rate)
+        )
+        warmup_started_at = time.monotonic()
         self._logger.info(
-            "STT model loaded model=%s language=%s device=%s compute_type=%s duration_seconds=%.2f",
+            "warming STT model model=%s audio_seconds=%.2f beam_size=%s",
+            self._config.model,
+            audio_seconds(len(warmup_audio), self._audio_format),
+            self._config.partial_beam_size,
+        )
+        try:
+            await asyncio.to_thread(
+                _transcribe_pcm,
+                self._transcriber,
+                warmup_audio,
+                self._audio_format,
+                self._config.language,
+                self._config.partial_beam_size,
+            )
+        except (Exception, asyncio.CancelledError):
+            self._transcriber = None
+            raise
+        self._logger.info(
+            "STT model warmed model=%s audio_seconds=%.2f beam_size=%s duration_seconds=%.2f",
+            self._config.model,
+            audio_seconds(len(warmup_audio), self._audio_format),
+            self._config.partial_beam_size,
+            time.monotonic() - warmup_started_at,
+        )
+        self._logger.info(
+            "STT model ready model=%s language=%s device=%s compute_type=%s duration_seconds=%.2f",
             self._config.model,
             self._config.language,
             self._config.device,
@@ -76,6 +105,7 @@ class FasterWhisperSpeechToText:
             transcriber=self._transcriber,
             language=self._config.language,
             beam_size=self._config.beam_size,
+            log_transcripts=self._config.log_transcripts,
             audio_format=self._audio_format,
         )
 
@@ -92,6 +122,7 @@ class FasterWhisperSpeechToText:
             partial_interval_seconds=self._config.partial_interval_seconds,
             partial_window_seconds=self._config.partial_window_seconds,
             partial_max_backlog_seconds=self._config.partial_max_backlog_seconds,
+            log_transcripts=self._config.log_transcripts,
             audio_format=self._audio_format,
         )
 
@@ -106,12 +137,14 @@ class FasterWhisperSttSession:
         transcriber: Transcriber,
         language: str,
         beam_size: int,
+        log_transcripts: bool,
         audio_format: PcmAudioFormat,
     ) -> None:
         self._session_id = session_id
         self._transcriber = transcriber
         self._language = language
         self._beam_size = beam_size
+        self._log_transcripts = log_transcripts
         self._audio_format = audio_format
         self._audio = bytearray()
         self._audio_ended = False
@@ -181,6 +214,12 @@ class FasterWhisperSttSession:
             self._beam_size,
         )
         processed_text = self._transcript_preprocessor.preprocess(text.strip())
+        if self._log_transcripts:
+            self._logger.debug(
+                "STT transcript raw=%r processed=%r",
+                text,
+                processed_text,
+            )
         self._logger.info(
             "STT transcription finished audio_seconds=%.2f chars=%s duration_seconds=%.2f",
             seconds,
@@ -201,6 +240,7 @@ class FasterWhisperStreamingSttSession:
         partial_interval_seconds: float,
         partial_window_seconds: float,
         partial_max_backlog_seconds: float,
+        log_transcripts: bool,
         audio_format: PcmAudioFormat,
     ) -> None:
         self._session_id = session_id
@@ -211,6 +251,7 @@ class FasterWhisperStreamingSttSession:
         self._partial_interval_seconds = partial_interval_seconds
         self._partial_window_seconds = partial_window_seconds
         self._partial_max_backlog_seconds = partial_max_backlog_seconds
+        self._log_transcripts = log_transcripts
         self._audio_format = audio_format
         self._audio = bytearray()
         self._audio_ended = False
@@ -343,6 +384,13 @@ class FasterWhisperStreamingSttSession:
             beam_size,
         )
         processed_text = self._transcript_preprocessor.preprocess(text.strip())
+        if self._log_transcripts:
+            self._logger.debug(
+                "streaming STT %s transcript raw=%r processed=%r",
+                kind,
+                text,
+                processed_text,
+            )
         self._logger.debug(
             "streaming STT %s transcription finished audio_start_seconds=%.2f audio_end_seconds=%.2f audio_seconds=%.2f chars=%s duration_seconds=%.2f",
             kind,

@@ -18,6 +18,30 @@ api port: 6053
 
 Secrets are read from `firmware/esphome/secrets.yaml`.
 
+## Generate a Single-Microphone AI-Server Config
+
+Creates a private, disposable runtime config from a complete operator-owned
+template while retaining exactly one named microphone. All non-microphone
+settings are preserved. The output defaults to `/tmp/ai-server-<name>.yaml`, is
+written atomically, and has mode `0600`.
+
+```bash
+tools/generate-single-microphone-config.sh \
+  --template /home/maciek/ai_server_config.yaml \
+  --microphone box3-office
+```
+
+Use the printed path explicitly for an isolated hardware run:
+
+```bash
+tools/ai-server.sh \
+  --services-config config/services.env \
+  --config /tmp/ai-server-box3-office.yaml
+```
+
+The generator rejects missing or duplicate microphone names. Override the
+destination only when needed with `--output /path/to/generated.yaml`.
+
 ## Ollama Cloud Model Setup
 
 Signs in the Docker Compose `ollama` service, pulls an Ollama cloud model, and

@@ -52,6 +52,7 @@ Additional exhaustive coverage:
 | `MP-ID-003` | Stale events cannot mutate state | manager and drivers | `tests/test_microphone_protocol.py`: stale listen/playback/cue and ID-reuse cases |
 | `MP-EVENT-001` | Capture and playback event vocabularies are separate | messages and interfaces | `tests/test_microphone_protocol.py`; `tests/test_box3_esphome_microphone.py` |
 | `MP-STATE-001` | Driver transition table is enforced | every driver | `tests/test_microphone_protocol.py`; reusable Box3 contract exercised from `tests/test_box3_esphome_microphone.py` |
+| `MP-STOP-001` | Stop actively ends a device capture pipeline and awaits its stop notification; run-end alone is not an acknowledgement | streaming microphone drivers and firmware | `tests/test_box3_esphome_microphone.py`: explicit stop ordering, cue ordering, timeout recovery, and rollout compatibility; ESPHome config/compile and generated-source inspection |
 | `MP-VISUAL-001` | `ERROR` is firmware-owned, not commandable | messages, drivers, firmware | reject `SetVisualState(ERROR)`; disconnect firmware validation |
 | `MP-VISUAL-002` | Visual commands are state-independent and idempotent | drivers | duplicate commands in each connected driver state |
 | `MP-VISUAL-003` | Manager explicitly commands connected visuals | manager | all normal sequences assert visual commands |
@@ -67,6 +68,7 @@ Additional exhaustive coverage:
 | `MP-ERROR-001` | Untrusted protocol state is closed/recreated | manager | `tests/test_microphones.py`: unavailable boundary closes and recreates protocol state |
 | `MP-OBS-001` | Commands/events include state and correlation logs | manager and drivers | `tests/test_microphones.py`: `caplog` command/event context |
 | `MP-OBS-002` | Visual transitions include old/new/cause logs | manager and drivers | `caplog` visual transition test |
+| `MP-OBS-003` | Transcript content is DEBUG-only and requires explicit opt-in | STT config and implementation | `tests/test_config.py`; `tests/test_speech_to_text.py` opt-in and default-off cases |
 
 Additional exhaustive coverage:
 

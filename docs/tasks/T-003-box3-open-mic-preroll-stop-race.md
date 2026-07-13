@@ -2,10 +2,10 @@
 
 ## Status
 
-- **Authority:** Active defect-remediation task
+- **Authority:** Completed defect-remediation record
 - **Audience:** Agents and maintainers working on the shared ESPHome microphone driver, open-mic capture, and Microphone Protocol conformance
 - **Read when:** Fixing unbounded open-mic pre-roll, `SpeechStarted invalid in stopping`, persistent satellite `ERROR` after an accepted utterance, or resuming T-001 Box3 hardware validation
-- **Blocks:** T-001 end-to-end microphone and hardware acceptance testing
+- **Unblocked:** T-001 end-to-end microphone and hardware acceptance testing on 2026-07-13
 - **Discovered:** 2026-07-13 during live Box3 accepted-turn validation after T-002 was completed
 
 ## Summary
@@ -70,8 +70,8 @@ The controlled reproduction used:
 - configured hostname: `piotr-box3-01-cbfaA8.local`;
 - resolved address: `192.168.0.180`;
 - flashed Box3 firmware hash: `0x96b56234`;
-- current `end_silence_seconds`: `0.9`;
-- current Box3 `speech_peak_threshold`: `250`;
+- current `end_silence_seconds`: `3.0`;
+- current Box3 `speech_peak_threshold`: `2950`;
 - server execution: Docker Compose `run --rm` with the working-tree `./ai_server` bind-mounted read-only at `/app/ai_server`.
 
 The bind mount confirms that the live process used the current working-tree Python source rather than stale code from a container image.
@@ -145,7 +145,7 @@ The first flush contained 263,168 bytes, approximately 8.2 seconds of 16 kHz mon
 
 These are not intentional speech pre-roll durations. They create large same-timestamp `AudioChunk` bursts, delay partial/final STT and visual commands, contaminate utterances with idle audio, consume unbounded memory, and enlarge the race window during accepted-turn shutdown.
 
-## Current implementation behavior
+## Pre-fix implementation behavior
 
 Primary code is in `ai_server/microphones/drivers/box3_esphome.py`:
 
@@ -173,14 +173,61 @@ The fix must preserve fail-fast protocol enforcement. Do not catch the assertion
 
 ## Required design decisions before implementation
 
-Interview the user before coding and settle these points one at a time:
+The user approved the following decisions one at a time on 2026-07-13 and then authorized implementation with `make it so`:
 
-1. Select the intentional pre-roll duration or byte/chunk bound. It must be short enough to represent immediate speech context rather than accumulated idle history.
-2. Decide whether the bound is a private driver constant or explicit microphone configuration. Avoid a hidden behavioral default if operators are expected to tune it.
-3. Define the concrete-driver stop gate: identify the earliest point at which audio callbacks can no longer create segment events for the current generation.
-4. Define where stale queued capture events are drained during a normal accepted-turn stop, distinct from failure recovery and later re-arm.
+1. Pre-roll is 1.0 second, or 32,000 bytes at 16 kHz mono PCM16.
+2. The bound is a private shared `box3_esphome` driver constant, not a per-device configuration option.
+3. `StopListening` closes the concrete capture-event gate synchronously at command entry, before its first network operation or `await`.
+4. After closing the gate, normal stop removes queued capture events for the matching `listen_id` while preserving unrelated protocol events. Stale-stream recovery remains a separate transport-recovery path.
 
 The user has already selected `end_silence_seconds=3.0` for the natural wake-word pause. That decision is separate from the pre-roll bound.
+
+## Implemented design
+
+Implemented in the working tree on 2026-07-13:
+
+- idle audio is retained in an exactly byte-bounded rolling tail using `OPEN_MIC_PRE_ROLL_SECONDS=1.0` and `OPEN_MIC_PRE_ROLL_BYTES=32000`;
+- old bytes are evicted continuously, including partial eviction of the oldest chunk when necessary;
+- `SpeechStarted` is queued before the retained `AudioChunk` tail;
+- segment chunk/byte counters now count emitted segment audio rather than all idle transport audio;
+- the capture-event gate closes before stop awaits ESPHome, and late audio or stream-start callbacks cannot create capture events;
+- queued `SpeechStarted`, `AudioChunk`, `AudioProgress`, and `SpeechEnded` events for the stopped `listen_id` are drained at the concrete driver boundary;
+- a later explicit `StartListening` reopens the gate for its fresh `listen_id`;
+- `/home/maciek/ai_server_config.yaml` now selects `end_silence_seconds: 3.0`.
+- STT transcript content logging is available only when the global
+  `stt.log_transcripts` option is explicitly `true`; it defaults to `false`;
+- enabled transcript diagnostics log every raw and preprocessed normal, partial,
+  and final STT result at `DEBUG`, while `INFO` remains content-free;
+- Faster Whisper startup performs one discarded, content-safe warm-up inference
+  using `partial_window_seconds` of zero PCM and `partial_beam_size`; microphone
+  sessions are armed only after model inference is ready;
+- `/home/maciek/ai_server_config.yaml` enables `stt.log_transcripts: true` for
+  the next controlled hardware run.
+- normal ESPHome stop now waits up to 2.0 seconds for its acknowledgement before
+  stale-stream recovery disconnects; the wait returns immediately when the
+  acknowledgement arrives, and a genuinely stale stream still has bounded
+  recovery.
+- the shared satellite firmware API exposes `stop_listening`, backed by a
+  device-side `voice_assistant.stop` action and a bounded wait for
+  `voice_assistant.is_running` to become false;
+- the driver invokes the explicit firmware stop while the device pipeline is
+  still active, waits for the resulting device stop notification, and only then
+  sends `VOICE_ASSISTANT_RUN_END` and completes `StopListening`; cue playback
+  therefore cannot overlap normal disconnect recovery;
+- the service is optional during staged rollout so unflashed Voice PE units use
+  the existing bounded disconnect recovery until they receive the shared
+  firmware update.
+
+The 2.0-second timeout is an experimental working-tree change that failed hardware
+acceptance. `aioesphomeapi.handle_stop` reports that the device stopped sending
+audio; it is not an acknowledgement of `VOICE_ASSISTANT_RUN_END`. The satellite
+did not emit that callback, so the timeout merely delayed the forced disconnect
+until the `Momencik...` cue. Do not treat the longer timeout as the final fix.
+
+The failed timeout experiment established the normative `MP-STOP-001` rule: a
+run-end event is not a stop acknowledgement. The concrete driver and shared Box3
+and Voice PE firmware now implement an explicit device stop. The observability
+contract separately documents transcript diagnostics as `MP-OBS-003`.
 
 ## Implementation scope
 
@@ -201,9 +248,9 @@ Required work:
 5. Preserve active-segment `AudioProgress` correlation from T-002.
 6. Change the selected runtime end-of-speech silence cutoff from 0.9 to 3 seconds after the control defect is fixed.
 7. Add dedicated per-implementation tests for pre-roll eviction and stop/event ordering.
-8. Repeat focused, full, behavioral, and live hardware verification.
+8. Repeat focused and full Python verification plus live hardware verification.
 
-No firmware change is currently expected. If investigation shows that ESPHome firmware behavior must change, follow `.codex/skills/build-flash-esp-box/SKILL.md`, validate and compile before flashing, inspect generated `main.cpp`, and record the deployment separately.
+The firmware-side cause is now confirmed. Follow `.codex/skills/build-flash-esp-box/SKILL.md`: validate and compile both shared firmware definitions, inspect generated `main.cpp`, flash only the selected test Box, and record the deployment separately. Voice PE units remain unflashed until Box acceptance succeeds.
 
 ## Required dedicated regression tests
 
@@ -231,19 +278,191 @@ Run in this order:
 .venv/bin/python -m pytest tests/test_box3_esphome_microphone.py -q
 .venv/bin/python -m pytest tests/test_microphone_protocol.py tests/test_microphones.py tests/test_box3_esphome_microphone.py -q
 .venv/bin/python -m pytest -q
-orchestrator_and_dsa_tests/run.sh --no-transcript
 ```
 
-Then repeat the controlled foreground hardware test. Evidence must show:
+Working-tree automated evidence from 2026-07-13:
 
-- no idle backlog larger than the approved pre-roll bound;
-- wake candidate visual `LISTENING` occurs while capture is active;
-- accepted utterance commands `PROCESSING` and stops the listening generation cleanly;
-- no capture event appears after `StopListening` begins;
-- no `SpeechStarted invalid in stopping`, unhandled callback exception, or persistent `ERROR` occurs;
-- the assistant reply plays and the device returns to the protocol-selected next visual state;
-- a natural pause of less than 3 seconds after `Ryszardzie` does not split the request;
-- the server stops cleanly with `Ctrl-C` after the controlled run.
+- `tests/test_box3_esphome_microphone.py`: **35 passed**;
+- focused microphone protocol, manager, and Box3 driver tests: **85 passed**;
+- single-microphone config generator: **6 passed**;
+- STT configuration and transcription diagnostics: **87 passed**;
+- full Python suite: **530 passed** with 28 existing aiohttp warnings.
+
+The orchestrator/DSA behavioral suite is not part of microphone-driver verification
+and was intentionally not rerun for the firmware stop change.
+
+Dedicated automated coverage maps to the required defects as follows:
+
+| Required behavior or defect | Automated coverage |
+|---|---|
+| Exact 1-second bound across long idle audio and partial oldest-chunk eviction | `test_open_mic_idle_pre_roll_retains_only_the_configured_audio_tail` |
+| One oversized transport chunk retains only its exact tail | `test_open_mic_pre_roll_trims_one_oversized_transport_chunk_to_exact_tail` |
+| `SpeechStarted` precedes only the bounded retained audio | `test_open_mic_speech_flushes_only_bounded_pre_roll_after_speech_started` |
+| Sequential segments retain one `listen_id` and use fresh `utterance_id` values | `test_open_mic_continuous_audio_starts_fresh_correlated_segment` |
+| Active capture retains T-002 `AudioProgress` correlation | `test_open_mic_progress_is_correlated_to_active_segment` |
+| Stop closes the gate before awaiting, drains queued capture events, preserves unrelated events, and rejects late audio/start/stop callbacks | `test_stop_closes_capture_gate_and_drains_only_stopped_generation_events` |
+| Stale disconnect/reconnect recovery cannot expose old capture events | `test_stale_stream_recovery_cannot_expose_stopped_generation_capture_events` |
+| A later explicit generation uses a fresh ID and captures normally | `test_new_generation_captures_normally_after_stopped_generation_is_drained` |
+| One-shot wake-word and follow-up completion closes the gate before late callbacks | `test_one_segment_mode_closes_capture_gate_before_late_callbacks` |
+| Wake-word, open-mic, and follow-up single-segment contracts remain valid | `test_box3_satisfies_reusable_listening_and_capture_contract` |
+| A controlled pause below 3 seconds does not end capture, while silence beyond it does | `test_three_second_end_silence_allows_natural_wake_phrase_pause` |
+| Transcript diagnostics default to content-safe metadata logging | `test_faster_whisper_stt_logs_metadata_without_transcript_text_by_default`, `test_faster_whisper_streaming_stt_emits_partial_and_final_text_without_logging_content_by_default` |
+| Explicit diagnostics log raw and preprocessed normal, partial, and final STT results | `test_faster_whisper_stt_logs_raw_and_processed_transcript_when_enabled`, `test_faster_whisper_streaming_stt_logs_partial_and_final_transcripts_when_enabled` |
+| Transcript diagnostics reject non-boolean configuration | `test_load_config_rejects_invalid_values` |
+| Explicit firmware stop and its callback precede RUN_END, avoiding disconnect of the authoritative client | `test_voice_assistant_stop_awaits_explicit_device_stop_before_run_end_without_disconnect` |
+| A missing stop acknowledgement still triggers bounded stale-stream recovery | `test_voice_assistant_stop_timeout_recovers_stale_stream` |
+| Explicit device stop completes before the accepted-turn cue | `test_stop_listening_service_completes_before_message_end_cue` |
+| Unflashed satellites without the new service remain rollout-safe | `test_missing_stop_listening_service_is_rollout_safe` |
+| Unflashed satellites preserve legacy RUN_END then callback ordering | `test_missing_stop_listening_service_uses_legacy_run_end_then_stop_callback` |
+| Isolated test configs retain all settings, select exactly one named microphone, reject invalid selection, and use private atomic output | `tests/test_single_microphone_config_tool.py` |
+| Faster Whisper is warmed once with the configured partial path before microphones arm; output remains private and failures abort startup | `test_faster_whisper_start_warms_configured_partial_path_without_logging_output`, `test_faster_whisper_start_propagates_warmup_failure_and_remains_unstarted` |
+
+### Live hardware result at 2026-07-13 15:23 UTC
+
+The first post-fix accepted-turn run confirmed the original stale-event invariant failure is fixed, but it did not pass UX acceptance:
+
+- Box3 flushed exactly 32 chunks / 32,000 bytes of pre-roll;
+- wake candidate detection and the `LISTENING` visual occurred about 0.96 seconds after speech detection;
+- the captured segment lasted 10.44 seconds, including 3.03 seconds of final silence;
+- final STT took 0.45 seconds and the utterance was accepted;
+- `StopListening` closed the capture gate before sending `VOICE_ASSISTANT_RUN_END`, and no later capture event reached `STOPPING`;
+- ESPHome did not acknowledge stop within the existing 0.20-second grace period, so stale-stream recovery disconnected and reconnected the transport;
+- the user observed a brief firmware-owned `ERROR` during that reconnect;
+- `ListeningStopped` arrived 1.53 seconds after stop began, the assistant reply played successfully, and the device returned to `IDLE`;
+- no `SpeechStarted invalid in stopping`, assertion, traceback, unhandled callback exception, or persistent `ERROR` occurred.
+
+The run therefore proves the bounded pre-roll and atomic stop fix, while exposing two remaining UX issues: the configured 3-second end silence plus a low Box3 peak threshold can produce long captures, and the 0.20-second stop grace forces a visible reconnect on a normal accepted turn. T-003 remains open pending approved remediation and another live run.
+
+### Transcript-enabled hardware result at 2026-07-13 18:58 UTC
+
+The controlled phrase was `Ryszardzie, która godzina jest teraz w Jacksonville?`,
+spoken with a natural pause after the wake phrase. The final raw and processed STT
+transcripts both matched it exactly. The assistant returned the requested response.
+
+The brief `ERROR` bitmap was independently reproduced and correlated to the same
+normal-stop recovery path:
+
+```text
+18:58:49.034 speech detected
+18:58:53.734 partial STT raw='Ryszardzie'
+18:58:53.767 set_visual_listening
+18:58:57.645 partial STT raw='Która godzina jest teraz w Jacksonville?'
+18:59:00.338 end of speech detected silence_seconds=3.01
+18:59:00.892 final STT raw='Ryszardzie, która godzina jest teraz w Jacksonville?'
+18:59:00.922 set_visual_processing; StopListening entered STOPPING
+18:59:00.923 VOICE_ASSISTANT_RUN_END sent with capture gate closed
+18:59:01.124 0.20-second stop wait expired; stale-stream recovery disconnected
+18:59:02.141 ListeningStopped arrived after reconnect
+18:59:12.092 assistant playback finished
+18:59:12.177 set_visual_idle
+```
+
+There was no protocol assertion, traceback, unhandled callback exception, or STT
+error. The firmware-owned `ERROR` bitmap is therefore a deterministic consequence
+of disconnecting the authoritative voice-assistant client after only 0.20 seconds,
+while the satellite's normal stop acknowledgement takes about 1.22 seconds in this
+run. T-003 remains open because the visible reconnect violates UX acceptance even
+though the accepted turn and reply complete successfully.
+
+### Two-second stop-wait hardware result at 2026-07-13 19:12 UTC
+
+The final raw and processed transcript again matched
+`Ryszardzie, która godzina jest teraz w Jacksonville?` exactly. The longer wait
+did not prevent the disconnect:
+
+```text
+19:12:15.964 StopListening; VOICE_ASSISTANT_RUN_END sent; wait started (2.00s)
+19:12:17.965 no device stop callback; stale-stream recovery disconnected
+19:12:18.864 ListeningStopped; Momencik... cue started
+19:12:19.128 Momencik... cue finished
+19:12:27.129 assistant reply playback finished
+19:12:27.217 set_visual_idle
+```
+
+The user observed `ERROR` while the cue played. This disproves the assumption that
+the device normally acknowledges `VOICE_ASSISTANT_RUN_END` within a longer grace
+period. `aioesphomeapi.subscribe_voice_assistant` documents `handle_stop` as a
+notification that the device stopped sending audio, generated by a device stop
+request or an audio-end message. `send_voice_assistant_event(RUN_END)` has no
+correlated acknowledgement. A correct fix must not model that callback as a
+`RUN_END` acknowledgement.
+
+### Explicit-stop firmware deployment at 2026-07-13 19:35 UTC
+
+- Box3 and all three Voice PE entrypoints passed ESPHome configuration validation.
+- Box3 and representative Voice PE 02 firmware compiled successfully.
+- Generated Box3 `main.cpp` contains the `stop_listening` API service, state-gate
+  resets, `voice_assistant::StopAction`, and the bounded wait for
+  `voice_assistant.is_running == false`; the dual wake-word models, server visual
+  services, and GT911 red button remain present.
+- Box3 build hash `0xa2dac250` was uploaded OTA to `192.168.0.180`; the device
+  rebooted and served ESPHome API version `2026.4.5` with 5 entities and 9 user
+  services.
+- Voice PE firmware was validated and compiled but deliberately not flashed. It
+  will be deployed only after the Box3 live acceptance run succeeds.
+
+### First explicit-stop hardware result at 2026-07-13 19:36 UTC
+
+The requested sentence was recognized exactly as
+`Ryszardzie, która godzina jest teraz w Jacksonville?`, and the response played,
+but the user again observed `ERROR` immediately before the accepted-turn cue.
+
+```text
+19:36:25.989 set_visual_processing; StopListening; RUN_END sent
+19:36:26.252 stop_listening service completed
+19:36:28.253 no device stop callback; stale recovery disconnected
+19:36:29.328 reconnect completed; ListeningStopped; cue began
+```
+
+`RUN_END` had already made `voice_assistant.is_running` false before the firmware
+service executed, so `voice_assistant.stop` was a no-op and could not emit the
+required callback. The approved correction reverses this order: explicit device
+stop, device-stop callback, then RUN_END. Subsequent hardware tests use an ad-hoc
+config containing only the tested microphone.
+
+### Corrected stop-order hardware result at 2026-07-13 19:48 UTC
+
+The isolated runtime config contained only `box3-office`. The accepted turn
+completed without any `ERROR` bitmap or transport disconnect:
+
+```text
+19:48:11.336 StopListening entered; explicit stop requested
+19:48:11.696 stop_listening service completed
+19:48:11.704 device-stop callback observed
+19:48:11.704 RUN_END sent; ListeningStopped; cue began
+```
+
+The user did not see `LISTENING`. The first streaming partial took 8.19 seconds
+and misrecognized the wake phrase as `Wreszcie.`; the next rolling partial window
+contained only `w Jacksonville.`. Final STT recognized
+`W Ryszardzie. Która godzina jest teraz w Jacksonville?` and therefore moved
+directly from `IDLE` to `PROCESSING`. The approved remediation warms Faster
+Whisper before microphones arm so the first real partial does not pay one-time
+inference initialization latency.
+
+### Warmed-STT acceptance result at 2026-07-13 19:55 UTC
+
+The final controlled run again used `/tmp/ai-server-box3-office.yaml`, containing
+only `box3-office`. Startup warmed Faster Whisper with the configured four-second
+partial window before the microphone manager armed the Box. The warm-up started
+at `19:53:48` and completed before the first listening generation began.
+
+The requested Jacksonville turn began at `19:55:45`. Hardware and runtime
+evidence showed:
+
+- speech detection flushed exactly 32 chunks / 32,000 bytes, proving the
+  one-second pre-roll bound remained effective;
+- the user observed prompt `LISTENING`, followed by the normal accepted-turn
+  states, and described the result as perfect;
+- the assistant response played completely, playback finished at `19:56:17`,
+  and the device returned to `IDLE`;
+- no transport disconnect, brief or persistent `ERROR`, protocol assertion,
+  unhandled callback exception, or post-stop capture defect was observed;
+- the isolated foreground server stopped cleanly with `Ctrl-C` after the run.
+
+This closes the cold-first-partial UX defect and satisfies T-003 hardware
+acceptance. Voice PE units intentionally remain on their prior firmware until
+their separate staged rollout.
 
 ## Acceptance criteria
 
@@ -255,7 +474,7 @@ Then repeat the controlled foreground hardware test. Evidence must show:
 - Sequential rejected open-mic segments remain supported while the generation is active.
 - T-002 audio-progress correlation behavior remains covered and passing.
 - `end_silence_seconds=3.0` supports the natural wake-word pause and is verified on hardware.
-- Focused microphone tests, the full Python suite, and the full orchestrator/DSA behavior suite pass.
+- Focused microphone tests and the full Python suite pass. Orchestrator/DSA behavior tests are outside microphone-driver verification.
 - Live evidence is recorded in this task, T-001, and `notes/setting-up-esp-box.md` before T-003 is marked complete.
 
 ## Assumptions and non-goals
@@ -264,5 +483,5 @@ Then repeat the controlled foreground hardware test. Evidence must show:
 - Pre-roll is immediate context before detected speech, not an archive of all audio since the previous segment or stream start.
 - The current invariant failure is correct evidence of driver drift; it must not be suppressed.
 - The 3-second end-silence value is a confirmed user decision, not the proposed pre-roll duration.
-- No firmware flash is required unless implementation investigation finds a firmware-side cause or contract change.
+- The explicit-stop fix changes the shared satellite firmware contract; only the selected Box3 is flashed for initial hardware acceptance.
 - This task does not change wake-phrase matching, Conversation ownership, visual ownership, or half-duplex playback semantics.

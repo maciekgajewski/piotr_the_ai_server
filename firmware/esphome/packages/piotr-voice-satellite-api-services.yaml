@@ -16,6 +16,10 @@ api:
       then:
         - script.execute: start_open_mic_listening
         - script.wait: start_open_mic_listening
+    - service: stop_listening
+      then:
+        - script.execute: stop_listening
+        - script.wait: stop_listening
     - service: reset_open_mic_wake_candidate
       then:
         - script.execute: reset_open_mic_wake_candidate

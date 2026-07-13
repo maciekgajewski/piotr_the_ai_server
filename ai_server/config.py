@@ -22,6 +22,7 @@ DEFAULT_STT_PARTIAL_INTERVAL_SECONDS = 0.75
 DEFAULT_STT_PARTIAL_WINDOW_SECONDS = 4.0
 DEFAULT_STT_PARTIAL_BEAM_SIZE = 1
 DEFAULT_STT_PARTIAL_MAX_BACKLOG_SECONDS = 2.0
+DEFAULT_STT_LOG_TRANSCRIPTS = False
 DEFAULT_TTS_VOICE = "pl_PL-bass-high"
 DEFAULT_TTS_VOLUME = 1.0
 DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS = 15.0
@@ -75,6 +76,7 @@ class SttConfig:
     partial_window_seconds: float = DEFAULT_STT_PARTIAL_WINDOW_SECONDS
     partial_beam_size: int = DEFAULT_STT_PARTIAL_BEAM_SIZE
     partial_max_backlog_seconds: float = DEFAULT_STT_PARTIAL_MAX_BACKLOG_SECONDS
+    log_transcripts: bool = DEFAULT_STT_LOG_TRANSCRIPTS
 
 
 @dataclass(frozen=True)
@@ -407,6 +409,9 @@ def _parse_stt_config(raw_config: Any) -> SttConfig:
         DEFAULT_STT_PARTIAL_MAX_BACKLOG_SECONDS,
         "stt.partial_max_backlog_seconds",
     )
+    log_transcripts = raw_config.get("log_transcripts", DEFAULT_STT_LOG_TRANSCRIPTS)
+    if not isinstance(log_transcripts, bool):
+        raise ValueError("stt.log_transcripts must be a boolean")
 
     return SttConfig(
         model=model,
@@ -420,6 +425,7 @@ def _parse_stt_config(raw_config: Any) -> SttConfig:
         partial_window_seconds=partial_window_seconds,
         partial_beam_size=partial_beam_size,
         partial_max_backlog_seconds=partial_max_backlog_seconds,
+        log_transcripts=log_transcripts,
     )
 
 

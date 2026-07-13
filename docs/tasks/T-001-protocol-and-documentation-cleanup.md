@@ -20,7 +20,7 @@ Stage 3 must not begin until the normative documents produced by Stage 2 have be
 
 - **Stage 1:** Completed on 2026-07-12. Added the documentation index, agent routing, authority labels, and the protocol documentation standard.
 - **Stage 2:** Completed on 2026-07-12. Approved normative Conversation and Microphone protocols, their mapping, and the conformance catalogue are indexed under `docs/`.
-- **Stage 3:** In progress. The Conversation/websocket milestone, correlated Microphone Protocol, manager mapping, Box3 Python driver, and Box3/Voice Preview firmware visual ownership are implemented and green. The available Box3 and Voice Preview firmware has been deployed. T-002's open-mic correlation defect is fixed and live-verified. Real websocket smoke testing and final device/hardware verification remain incomplete.
+- **Stage 3:** In progress. The Conversation/websocket milestone, correlated Microphone Protocol, manager mapping, Box3 Python driver, and Box3/Voice Preview firmware visual ownership are implemented and green. T-002 and T-003 are fixed and live-verified on Box3, including bounded pre-roll, prompt warmed-STT `LISTENING`, clean explicit device stop, reply playback, and return to `IDLE` without `ERROR`. Real websocket smoke testing, Voice PE explicit-stop deployment, and remaining device/hardware verification remain incomplete.
 
 ## Fresh-session continuation handoff
 
@@ -210,9 +210,9 @@ One combined shell invocation of focused pytest commands produced socket `Permis
 There are no currently reproducible pytest failures. The following acceptance failures remain:
 
 - Box3 and Voice Preview generated source prove server visual ownership and reconnect-before-first-command `ERROR`, and the available units have been flashed, but both device types still require hardware sequence validation.
-- T-002's original open-mic `AudioProgress` correlation defect is fixed and live-verified. A later accepted-turn hardware test exposed [T-003](T-003-box3-open-mic-preroll-stop-race.md): unbounded inter-segment pre-roll produced a second `SpeechStarted` while the protocol was `STOPPING`, ending with `AssertionError: SpeechStarted invalid in stopping; expected listening` and a persistent device `ERROR`. End-to-end hardware sequences are blocked by T-003.
+- [T-003](T-003-box3-open-mic-preroll-stop-race.md) is complete. Its final isolated Box3 run proved the one-second pre-roll bound, prompt `LISTENING` after mandatory STT warm-up, explicit device-stop callback before RUN_END, full reply playback, and return to `IDLE` without a transport disconnect or `ERROR` bitmap.
 - Real websocket client/server smoke testing has not run for this checkpoint.
-- Box3, Voice PE 02, and Voice PE 03 were flashed and returned to the network. The bedroom unit remains unflashed, and no hardware visual sequence has been tested.
+- Box3, Voice PE 02, and Voice PE 03 were flashed and returned to the network. Box3 has passed the T-003 accepted-turn visual sequence; the Voice PE units do not yet have the newer explicit-stop firmware, the bedroom unit remains unflashed, and the remaining hardware sequences are still outstanding.
 
 ### Remaining acceptance criteria
 
@@ -235,10 +235,9 @@ All incomplete requirements in `docs/protocol-conformance-catalogue.md` remain b
 ### Next concrete implementation steps
 
 1. Run the real websocket client/server smoke test.
-2. Complete [T-003](T-003-box3-open-mic-preroll-stop-race.md) to resolve the shared ESPHome driver's unbounded pre-roll and accepted-turn stop race before resuming end-to-end hardware validation.
-3. Increase the configured end-of-speech silence cutoff from 0.9 seconds to the user-selected 3 seconds, then verify the natural `wake phrase -> visual acknowledgement -> command` pause.
-4. Perform remaining hardware validation one satellite at a time, including Box3 local-indicator precedence. Record results in `notes/setting-up-esp-box.md`.
-5. Flash and test the bedroom Voice Preview when it becomes reachable.
+2. Deploy the validated explicit-stop firmware to Voice PE units in a staged rollout, then verify their accepted-turn stop behavior.
+3. Perform remaining hardware validation one satellite at a time, including Box3 local-indicator precedence. Record results in `notes/setting-up-esp-box.md`.
+4. Flash and test the bedroom Voice Preview when it becomes reachable.
 
 ## Design assumptions
 

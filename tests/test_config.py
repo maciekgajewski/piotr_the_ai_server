@@ -452,6 +452,7 @@ stt:
   partial_window_seconds: 2.5
   partial_beam_size: 1
   partial_max_backlog_seconds: 0.8
+  log_transcripts: true
 tts:
   voice: pl_PL-darkman-medium
   volume: 0.7
@@ -472,6 +473,7 @@ tts:
         partial_window_seconds=2.5,
         partial_beam_size=1,
         partial_max_backlog_seconds=0.8,
+        log_transcripts=True,
     )
     assert config.tts == TtsConfig(voice="pl_PL-darkman-medium", volume=0.7)
 
@@ -652,6 +654,10 @@ agent:
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  partial_max_backlog_seconds: -1",
             "stt.partial_max_backlog_seconds must be a positive number",
+        ),
+        (
+            "websocket:\n  port: 2137\nagent:\n  type: echo\nstt:\n  log_transcripts: enabled",
+            "stt.log_transcripts must be a boolean",
         ),
         (
             "websocket:\n  port: 2137\nagent:\n  type: echo\ntts:\n  volume: 2",

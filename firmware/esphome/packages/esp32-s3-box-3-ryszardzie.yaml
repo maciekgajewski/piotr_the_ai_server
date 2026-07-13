@@ -481,6 +481,18 @@ script:
             - lambda: id(va).set_use_wake_word(false);
             - voice_assistant.start_continuous:
 
+  - id: stop_listening
+    mode: restart
+    then:
+      - lambda: id(server_controlled_open_mic_active) = false;
+      - lambda: id(server_controlled_follow_up_starting) = false;
+      - voice_assistant.stop:
+      - wait_until:
+          condition:
+            not:
+              voice_assistant.is_running:
+          timeout: 2s
+
   - id: play_follow_up_listening_cue
     mode: restart
     then:
