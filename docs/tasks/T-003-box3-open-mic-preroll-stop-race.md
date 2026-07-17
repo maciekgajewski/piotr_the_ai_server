@@ -214,9 +214,8 @@ Implemented in the working tree on 2026-07-13:
   still active, waits for the resulting device stop notification, and only then
   sends `VOICE_ASSISTANT_RUN_END` and completes `StopListening`; cue playback
   therefore cannot overlap normal disconnect recovery;
-- the service is optional during staged rollout so unflashed Voice PE units use
-  the existing bounded disconnect recovery until they receive the shared
-  firmware update.
+- the service remains optional for rollout safety; all configured Voice PE units
+  received the shared firmware update after Box3 acceptance on 2026-07-13.
 
 The 2.0-second timeout is an experimental working-tree change that failed hardware
 acceptance. `aioesphomeapi.handle_stop` reports that the device stopped sending
@@ -461,8 +460,25 @@ evidence showed:
 - the isolated foreground server stopped cleanly with `Ctrl-C` after the run.
 
 This closes the cold-first-partial UX defect and satisfies T-003 hardware
-acceptance. Voice PE units intentionally remain on their prior firmware until
-their separate staged rollout.
+acceptance. The subsequent Voice PE rollout is recorded below.
+
+### Voice PE explicit-stop deployment at 2026-07-13 20:10 UTC
+
+After Box3 acceptance, the bedroom, Voice PE 02, and Voice PE 03 entrypoints were
+revalidated and compiled. Generated source for each unit contained the
+`stop_listening` user service, state resets, `voice_assistant::StopAction`, and
+the bounded two-second not-running wait.
+
+OTA upload succeeded to all three configured units:
+
+- `piotr-voice-pe-bedroom-01` at `192.168.0.13`;
+- `piotr-voice-pe-02` at `192.168.0.166`;
+- `piotr-voice-pe-03` at `192.168.0.150`.
+
+Each unit returned after reboot. A read-only ESPHome API probe connected to every
+expected device name on ESPHome `2026.4.5`; each exposed nine user services and
+reported `stop_listening` present. Accepted-turn hardware behavior remains to be
+tested one Voice PE at a time under T-001.
 
 ## Acceptance criteria
 

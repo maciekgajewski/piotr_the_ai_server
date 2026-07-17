@@ -1231,5 +1231,21 @@ No firmware flashing has been done yet.
 - Runtime playback completed at `19:56:17`; there was no transport disconnect,
   protocol assertion, unhandled callback exception, or post-stop capture defect.
 - Stopped the isolated foreground server cleanly with `Ctrl-C` at `19:56:43`.
-- T-003 is complete. Voice PE units retain their prior firmware until the
-  separately staged explicit-stop rollout.
+- T-003 is complete. Voice PE units were left for a separately staged
+  explicit-stop rollout.
+
+## 2026-07-13T20:10:18Z - Explicit-stop firmware deployed to all Voice PE units
+
+- Confirmed all three powered targets were reachable at their last known
+  addresses: bedroom `192.168.0.13`, Voice PE 02 `192.168.0.166`, and Voice PE 03
+  `192.168.0.150`.
+- Revalidated and compiled `voice-pe-bedroom.yaml`, `voice-pe-02.yaml`, and
+  `voice-pe-03.yaml` with ESPHome `2026.4.5`.
+- Inspected every generated `main.cpp`; each contains the `stop_listening` API
+  service, open-mic/follow-up state resets, `voice_assistant::StopAction`, and
+  the bounded two-second wait for the pipeline to become not-running.
+- OTA upload succeeded to all three units. Each answered again after reboot.
+- Read-only API probes connected using each expected device name. Every unit
+  reported ESPHome `2026.4.5`, nine user services, and `stop_listening=True`.
+- Firmware deployment is complete. Accepted-turn behavior still needs isolated
+  live verification on each Voice PE under T-001.
