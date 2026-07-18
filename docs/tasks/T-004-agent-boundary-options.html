@@ -244,7 +244,7 @@
         exactly one input conversation and exactly one agent conversation. Multiple inputs simply run
         multiple independent bridges.
       </p>
-      <span class="status">Architecture and review resolutions ratified · implementation not started</span>
+      <span class="status">Architecture decisions ratified · review fixes in progress</span>
       <nav aria-label="Page sections">
         <a href="#fleet">The fleet view</a>
         <a href="#anatomy">One bridge</a>
@@ -333,9 +333,9 @@
     <section id="anatomy">
       <h2>One bridge: a narrow, enforceable boundary</h2>
       <p class="section-intro">
-        During startup the bridge receives sealed input and agent factories plus typed context; during the
-        active exchange it sees only the two scoped conversation interfaces. It never knows whether the input
-        is a websocket, microphone, or future medium, or which concrete agent is behind the agent interface.
+        The input adapter first returns a completely ready InputConversation. The bridge then adopts its ID,
+        resolves typed agent context, and opens the AgentConversation. It never knows whether the input is a
+        websocket, microphone, or future medium, or which concrete agent is behind the agent interface.
       </p>
       <div class="grid three">
         <article class="card input">
@@ -353,7 +353,7 @@
         <article class="card agent">
           <div class="icon">✦</div>
           <h3>AgentConversation</h3>
-          <p class="muted">Owns private agent state and actively produces validated events for one conversation.</p>
+          <p class="muted">Owns private state and all model/tool tasks; output crosses a zero-buffer rendezvous.</p>
           <p><span class="pill agent-text">returns</span> an explicit disposition after every successful turn</p>
         </article>
       </div>
@@ -386,8 +386,8 @@
           <path d="M180 92 V720 M550 92 V720 M920 92 V720" class="lane"/>
 
           <path d="M180 145 H540" class="arrow input-arrow"/>
-          <text x="220" y="134" class="label">ConversationRequest</text>
-          <text x="220" y="158" class="tiny">contains complete initial UserMessage + typed context</text>
+          <text x="220" y="134" class="label">Ready InputConversation</text>
+          <text x="220" y="158" class="tiny">contains ID + complete initial UserMessage + typed context</text>
 
           <path d="M560 196 H910" class="arrow bridge-arrow"/>
           <text x="664" y="186" class="label">UserMessage</text>
@@ -452,7 +452,7 @@
           <tbody>
             <tr>
               <td class="bridge-text">Core bridge</td>
-              <td>Startup, ID assignment, turn order, stream framing, cross-side cancellation, terminal outcome</td>
+              <td>Core startup from ready input, turn order, stream framing, cross-side cancellation, terminal outcome</td>
               <td>Websocket JSON, microphone cues, TTS timing, buffer size, concrete agent type</td>
             </tr>
             <tr>
@@ -467,7 +467,7 @@
             </tr>
             <tr>
               <td class="agent-text">AgentConversation</td>
-              <td>Private conversation state, model/tool work, processing updates, assistant output, successful-turn disposition</td>
+              <td>Private state, model/tool tasks, rendezvous output, acknowledged cancellation, successful-turn disposition</td>
               <td>Input medium implementation and its timeout policy</td>
             </tr>
           </tbody>
@@ -537,42 +537,50 @@
         an internal defect and terminates the input session after best-effort cleanup. If several results are
         already ready together, the bridge uses the ratified terminal-priority order rather than scheduler luck.
       </div>
+      <div class="grid two" style="margin-top:18px">
+        <article class="card input">
+          <h3>Expected context outcome</h3>
+          <p class="muted"><code>CONTEXT_REJECTED</code> or <code>CONTEXT_UNAVAILABLE</code> ends only this conversation. The input session may become ready again.</p>
+        </article>
+        <article class="card danger">
+          <h3>Broken provider contract</h3>
+          <p class="muted">Malformed results or unexpected exceptions are <code>INTERNAL_FAILURE</code>: terminal delivery is attempted, then the input session closes and the server fails loudly.</p>
+        </article>
+      </div>
     </section>
 
     <section id="lifetime">
-      <h2>Bridge-owned startup; input-owned backpressure</h2>
+      <h2>Ready input first; input-owned backpressure</h2>
       <div class="grid two">
         <article class="card bridge">
-          <h3>The bridge opens both scoped sides</h3>
-          <pre class="code">request = await input_session.accept_conversation()
-
-await bridge_conversation(
-    request,
-    input_session,
-    agent,
-    context_provider,
-)
-
-# Inside the bridge, already in STARTING:
-conversation_id = new_conversation_id()
-context = await resolve_context(...)
-
-async with input_session.open_conversation(
-        request, context
+          <h3>The input returns a usable conversation</h3>
+          <pre class="code">async with input_session.accept_conversation(
     ) as input_conversation:
-    async with agent.open_conversation(
-            context
-        ) as agent_conversation:
-        await run_state_machine(...)</pre>
-          <p class="muted" style="margin-top:14px">The bridge exists before context resolution or either <code>__aenter__</code>, so it owns startup cancellation, failure classification, and exact-once cleanup.</p>
+    await bridge_conversation(
+        input_conversation,
+        agent,
+        context_provider,
+    )
+
+# Inside the bridge, now in STARTING:
+conversation_id = (
+    input_conversation.context.conversation_id
+)
+context = await resolve_agent_context(...)
+
+async with agent.open_conversation(
+        context
+    ) as agent_conversation:
+    await run_state_machine(...)</pre>
+          <p class="muted" style="margin-top:14px">Before the input context returns, setup failures are input-session-local and no core conversation exists. After it returns, every bridge outcome can be reported through the ready InputConversation.</p>
         </article>
         <article class="card input">
           <h3>A slow input pushes back by blocking</h3>
           <div class="steps">
-            <div class="step"><b>1</b><p>The agent offers one ordered assistant event.</p></div>
+            <div class="step"><b>1</b><p>The agent offers one event through a zero-capacity rendezvous.</p></div>
             <div class="step"><b>2</b><p>The bridge validates it and awaits the input sink's <code>send</code>.</p></div>
             <div class="step"><b>3</b><p>A slow device may use its own bounded buffer. When full, <code>send</code> simply blocks.</p></div>
-            <div class="step"><b>4</b><p>The blocked bridge stops accepting agent output, so pushback reaches the producer without a bridge queue.</p></div>
+            <div class="step"><b>4</b><p>The blocked bridge stops receiving; the rendezvous blocks agent production without either side owning an output queue.</p></div>
           </div>
         </article>
       </div>
@@ -585,9 +593,10 @@ async with input_session.open_conversation(
           </defs>
           <rect x="35" y="92" width="200" height="100" class="box agent-fill"/>
           <text x="69" y="131" class="label">AgentConversation</text>
-          <text x="69" y="160" class="small">next event waits</text>
+          <text x="69" y="160" class="small">zero-buffer emit</text>
 
           <path d="M235 142 H330" class="arrow agent-arrow"/>
+          <text x="247" y="124" class="tiny">rendezvous</text>
           <rect x="340" y="92" width="200" height="100" class="box bridge-fill"/>
           <text x="376" y="131" class="label">Bridge coroutine</text>
           <text x="376" y="160" class="small">validate · await send</text>
@@ -611,8 +620,12 @@ async with input_session.open_conversation(
         </svg>
       </div>
       <div class="callout">
-        The input sink serializes <code>complete()</code> and priority <code>abort()</code>. Exactly one commits.
-        Abort discards only input-buffered, unrendered output; anything already presented remains visible or spoken.
+        Every input binding declares its commit point. <code>abort()</code> wins only before completion commits.
+        A websocket frame commits at transport handoff—even if flow-control drain is still blocked—while a
+        microphone may discard anything still uncommitted in its own bounded renderer buffer. An in-flight
+        websocket writer is serialized and allowed to finish or close the session; it is never reinterpreted as
+        unsent. Agent cancellation is acknowledged only after all model, tool, producer, and background work has
+        stopped; missing that deadline is a fatal invariant.
       </div>
     </section>
 

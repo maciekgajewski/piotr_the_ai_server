@@ -3,7 +3,7 @@
 ## Status
 
 - **Authority:** Active design and implementation task
-- **Status:** Architecture and plan-review resolutions ratified; implementation not started
+- **Status:** Architecture decisions ratified; review fixes in progress; implementation not started
 - **Decision dates:** Initial architecture 2026-07-17; plan-review resolutions 2026-07-18
 - **Audience:** Maintainers of agents, sessions, websocket inputs, microphone inputs, clients, and protocol tests
 - **Supersedes:** The conversation-core and websocket redesign scope in T-001
@@ -17,10 +17,10 @@ current contract. This task is a plan, not a runtime protocol.
 The companion [illustrated design aid](T-004-agent-boundary-options.html) explains
 the approved architecture visually. It is informative, not normative.
 
-The seven findings in the [T-004 plan review](T-004-plan-review.md) have candidate
-resolutions recorded in this task. They remain open until a fresh independent
-review verifies the resolutions and checks that they introduced no new
-contradictions.
+The findings in the [T-004 plan review](T-004-plan-review.md) have candidate
+resolutions recorded in this task. Any finding not already closed remains open
+until a fresh independent review verifies its resolution and checks that no
+regression was introduced.
 
 ## Objective
 
@@ -169,112 +169,107 @@ bridge coroutines run concurrently when multiple input sessions are active.
 ### Persistent InputSession contract
 
 `InputSession` is a sealed persistent interface owned by an input adapter. It has
-an immutable typed `InputSessionContext` and this adapter-local lifecycle:
+an immutable typed `InputSessionContext` and only these adapter-local states:
 
 | State | Meaning |
 |---|---|
 | `IDLE` | No readiness call or conversation is active |
-| `ACCEPTING` | `accept_conversation()` has atomically announced readiness and is waiting for an accepted request or idle closure |
-| `RESERVED` | One accepted request has been returned to the supervisor and is reserved for bridge startup |
-| `ACTIVE` | The bridge has opened the one permitted `InputConversation` |
+| `ACCEPTING` | `accept_conversation().__aenter__()` has announced readiness and the adapter is preparing one complete input conversation |
+| `ACTIVE` | `__aenter__()` returned one ready-to-use `InputConversation` |
 | `CLOSED` | The persistent input session cannot accept another conversation |
 
-The per-input supervisor owns only this idle loop:
+There is no `RESERVED` state and no half-created core conversation. The
+per-input supervisor owns only this loop:
 
 ```python
 async with input_adapter.open_session() as input_session:
     while not input_session.closed:
-        accepted = await input_session.accept_conversation()
-        if isinstance(accepted, InputSessionClosed):
+        try:
+            async with input_session.accept_conversation() as input_conversation:
+                await bridge_conversation(
+                    input_conversation=input_conversation,
+                    agent=agent,
+                    context_provider=context_provider,
+                )
+        except InputSessionClosed:
             break
-        await bridge_conversation(
-            request=accepted,
-            input_session=input_session,
-            agent=agent,
-            context_provider=context_provider,
-        )
 ```
 
-`accept_conversation()` is legal only in `IDLE`. It atomically enters
-`ACCEPTING`, exposes readiness in the adapter's own medium, and waits for exactly
-one of:
+`accept_conversation()` returns an asynchronous context manager and is legal only
+in `IDLE`. Its `__aenter__()` atomically enters `ACCEPTING`, exposes readiness in
+the adapter's own medium, and does not return until the adapter has constructed a
+fully usable `InputConversation` containing:
 
-- an immutable typed `ConversationRequest`, containing a complete accepted
-  `initial_message` and typed request-scoped context needed to resolve the
-  conversation context;
-- `InputSessionClosed`, if the persistent input closes while idle.
+- a complete, accepted, non-whitespace `initial_message`;
+- an immutable typed `InputConversationContext` with the medium and other
+  request-scoped input facts;
+- a fresh `ConversationId` assigned from the common ID factory;
+- working input-control and assistant-output operations.
 
-An accepted request moves the input session to `RESERVED`. It is never queued
-behind another request. A second external start while `RESERVED` or `ACTIVE` is
-rejected by the input binding according to its protocol; it never becomes a
-second internal `ConversationRequest`. For websocket input this is an external
+Everything before `__aenter__()` returns is input-session work, not a core
+conversation. Cancellation, rejected speech, recoverable adapter failure, or
+incomplete external input before that boundary is handled entirely by the input
+adapter. It either continues accepting or returns to `IDLE`. Idle disconnect or
+unrecoverable failure raises typed `InputSessionClosed` and moves to `CLOSED`.
+There is no `ConversationEnded` obligation because no core conversation was
+exposed.
+
+Successful `__aenter__()` moves directly from `ACCEPTING` to `ACTIVE`. A second
+external start while `ACTIVE` is rejected by the input binding and is never
+queued as another internal conversation. For websocket input it is an external
 protocol violation and closes the websocket session after a typed rejection
 where safe. A microphone remains governed by its media state and cannot create a
 new conversation while one is active.
 
-While a request is `RESERVED`, the bridge concurrently awaits the sealed
-`InputSession.receive_startup_control(request)` operation. Its only outcomes are
-`ConversationCancelled`, `InputConversationFailed`, or `InputSessionClosed`.
-These are control outcomes for the one reservation, not queued conversation
-starts. The input adapter retains at most the first terminal startup outcome
-until the bridge observes it.
+The `accept_conversation()` context manager's `__aexit__()` owns exact-once
+cleanup of the yielded InputConversation. Normal or recoverable conversation exit
+returns the InputSession to `IDLE`; input-session closure moves it to `CLOSED`.
+It does not return until assistant output has completed or aborted and media
+cleanup is finished. The next readiness announcement therefore cannot overlap
+the previous conversation.
 
-Opening the scoped `InputConversation` moves `RESERVED` to `ACTIVE`. Its normal
-or recoverable-failure exit returns the session to `IDLE`; input-session closure
-moves it to `CLOSED`. The next readiness announcement therefore cannot occur
-until all output and scoped cleanup from the previous conversation are complete.
-The transition from reservation control to `InputConversation` control is
-atomic: a startup outcome is delivered exactly once on one side of the boundary
-and cannot be lost during `__aenter__`.
+### Core startup ownership and scoped interfaces
 
-### Startup ownership and scoped interfaces
+The input adapter owns acceptance and construction of the ready-to-use
+`InputConversation`. The core bridge lifecycle begins only after that object is
+returned. At that boundary the bridge:
 
-The bridge owns the complete core conversation lifecycle, including `STARTING`.
-It receives the accepted request, persistent input session, Agent factory, and
-typed context provider. It watches reservation control throughout startup.
-Before opening either scoped conversation, it assigns the conversation ID and
-resolves the immutable `ConversationContext`. It then opens both sides itself:
+1. enters `STARTING`;
+2. adopts `input_conversation.context.conversation_id` for state and logging;
+3. resolves the immutable agent-facing `ConversationContext` from the typed
+   input context;
+4. opens the `AgentConversation` through the Agent factory;
+5. sends the initial message and enters the ordinary turn state machine.
 
 ```python
-async def bridge_conversation(request, input_session, agent, context_provider):
-    state_machine = BridgeStateMachine.starting()
-    async with AsyncExitStack() as resources:
-        conversation_id = new_conversation_id()
-        context = await state_machine.await_startup(
-            context_provider.resolve(...), input_session, request
-        )
-        input_conversation = await state_machine.enter_input_conversation(
-            resources, input_session, request, context
-        )
-        agent_conversation = await state_machine.enter_agent_conversation(
-            resources, agent, context
-        )
-        state_machine.finish_startup()
+async def bridge_conversation(input_conversation, agent, context_provider):
+    state_machine = BridgeStateMachine.starting(
+        conversation_id=input_conversation.context.conversation_id
+    )
+    context = await state_machine.resolve_context(
+        context_provider,
+        input_conversation.context,
+    )
+
+    async with agent.open_conversation(context) as agent_conversation:
         return await state_machine.run(
-            initial_message=request.initial_message,
+            initial_message=input_conversation.initial_message,
             input_conversation=input_conversation,
             agent_conversation=agent_conversation,
         )
 ```
 
-The pseudocode expresses ownership, not a requirement for those exact function
-names. The bridge state machine exists and is in `STARTING` before context
-resolution or either `__aenter__` begins. Startup cancellation and failure are
-therefore visible to the bridge and use the same typed terminal classification
-as failures after startup:
+The pseudocode expresses ownership, not exact method names. The input side is
+already active before the bridge exists, so every bridge-startup outcome can be
+reported through `InputConversation`. Agent startup failure becomes
+`AGENT_FAILED`; cancellation becomes `INPUT_CANCELLED`; shutdown becomes
+`SERVER_SHUTDOWN`; and a broken bridge invariant becomes `INTERNAL_FAILURE` and
+closes the input session. Expected context-provider outcomes are specified
+separately under Validation and trust boundaries.
 
-- request/input-conversation startup failure becomes `INPUT_FAILED` or
-  `INPUT_SESSION_CLOSED`, as classified by the sealed input adapter;
-- agent-conversation startup failure becomes `AGENT_FAILED`;
-- cancellation becomes `INPUT_CANCELLED`;
-- shutdown becomes `SERVER_SHUTDOWN`;
-- a broken bridge/context invariant becomes `INTERNAL_FAILURE` and closes the
-  input session.
-
-If input startup succeeds and agent startup fails, exiting the nested context
-deterministically closes the input conversation. No agent context is entered
-after an input startup failure. Cleanup is exact-once for every context which was
-successfully entered.
+If agent startup fails, no AgentConversation cleanup is owed unless its
+`__aenter__()` committed successfully. The surrounding InputConversation context
+still receives the typed terminal outcome and performs exact-once cleanup.
 
 The final API may use different method names, but these properties are required:
 
@@ -289,10 +284,47 @@ The final API may use different method names, but these properties are required:
 - Context-manager exit is the cleanup boundary. The input-owned assistant output
   sink drains on normal completion and aborts on cancellation or failure.
 
+### AgentConversation flow control and cancellation
+
+`AgentConversation` is active, but it cannot buffer output ahead of the bridge.
+Its agent-to-bridge event channel is a zero-capacity rendezvous:
+
+- the bridge awaits `receive_event()`;
+- the agent-side producer awaits `emit(event)`;
+- an event transfers only when both operations meet;
+- `emit()` remains blocked while the bridge is blocked by input pushback;
+- no AgentConversation-owned unbounded queue is permitted.
+
+Model, tool, callback, and helper tasks owned by the AgentConversation must use
+the same awaited production path. If an external library cannot be paused, its
+adapter may use only an explicitly bounded internal buffer with a documented
+bound and blocking overflow behavior. It may not silently recreate an unbounded
+agent-side queue.
+
+The bridge-to-agent control surface contains:
+
+| Operation | Contract |
+|---|---|
+| `send_user_message(message)` | Delivers one complete accepted user turn and blocks until the AgentConversation accepts it |
+| `cancel(reason)` | Idempotent typed cancellation; the first committed reason wins and later calls await the same result |
+
+`cancel(reason)` cancels every model request, tool call, producer, and background
+task owned by that AgentConversation. It closes the output rendezvous and returns
+`AgentCancellationAcknowledged` only after all owned work is quiescent and no
+future event can be emitted. Context exit remains exact-once and cannot complete
+before that condition.
+
+The core defines an explicit agent-cancellation deadline. Missing it is a broken
+sealed-lifetime invariant, not an ordinary slow response: the bridge records
+`INTERNAL_FAILURE`, closes the input session after best-effort cleanup, and fails
+loudly so escaped agent work cannot survive into another conversation. The
+deadline is a named setting/constant with tests, not a hidden asyncio default.
+
 ### Conversation creation
 
-An internal bridge conversation is created only after `accept_conversation()`
-returns a complete, accepted, non-empty initial user message:
+An internal bridge conversation is created only after
+`accept_conversation().__aenter__()` returns a ready InputConversation with a
+complete, accepted, non-empty initial user message:
 
 - websocket input combines its external conversation-start operation with the
   submitted initial text;
@@ -300,10 +332,10 @@ returns a complete, accepted, non-empty initial user message:
 - whitespace-only input is invalid;
 - the core never owns an empty conversation waiting indefinitely for first input.
 
-The bridge assigns one conversation ID while already in `STARTING` and before
-constructing either scoped conversation. It is stored once in the immutable
-context, scoped conversation objects, and logging context, rather than repeated
-on every in-process event.
+The input adapter assigns one conversation ID from the common ID factory at the
+successful `ACCEPTING -> ACTIVE` transition. The bridge adopts it and passes it
+into the agent-facing context. It is stored in the scoped contexts and logging
+context rather than repeated on every in-process event.
 
 ### Typed context
 
@@ -311,9 +343,11 @@ Replace generic mutable conversation attributes with immutable typed context:
 
 - `InputSessionContext` contains identity and stable capabilities belonging to
   the persistent input session;
-- `ConversationContext` contains immutable values resolved before the
-  `AgentConversation` is created, including the conversation ID, medium, and
-  resolved user settings needed by the agent;
+- `InputConversationContext` contains the conversation ID, medium, input
+  identity, and immutable request-scoped facts known when the input is accepted;
+- agent-facing `ConversationContext` is resolved from that typed input context
+  before the AgentConversation is created and adds resolved user settings needed
+  by the agent;
 - optional values are explicit typed fields, not an extension dictionary;
 - internal JSON-like serialization omits `None` fields unless an external
   binding requires `null`.
@@ -338,9 +372,10 @@ all bindings, and all tests use the same final names.
 | `InputConversationFailed` | Media-specific operation failed, but the persistent input session recovered | Every non-terminal state; ends only this conversation |
 | `InputSessionClosed` | The persistent input session disconnected or cannot recover | Every non-terminal state; ends conversation and session |
 
-The initial `UserMessage` is carried by the accepted `ConversationRequest` and
-delivered to the AgentConversation by the bridge after both scoped conversations
-open. It is not redundantly re-emitted by `InputConversation`.
+The initial `UserMessage` is exposed once as
+`InputConversation.initial_message` and delivered to the AgentConversation by the
+bridge after agent startup. It is not redundantly emitted on the active input
+event stream.
 
 There are no core `UserInputStarted` or `UserInputAborted` events. Those are
 media-specific details unless and until a future requirement proves they must
@@ -352,8 +387,9 @@ cross the abstract interface.
 |---|---|
 | `UserMessage` | A complete accepted user turn |
 
-Cancellation is conveyed through the scoped lifecycle/cancellation operation,
-not disguised as a user message.
+Cancellation is conveyed through the typed, acknowledged
+`AgentConversation.cancel(reason)` operation, not disguised as a user message or
+assumed from cancellation of a bridge-side `receive_event()` coroutine.
 
 ### AgentConversation to bridge
 
@@ -426,50 +462,66 @@ media may use different rules. Only the adapter knows when presentation occurred
 4. An input adapter may send directly or maintain its own media-specific bounded
    rendering queue. If that queue is full, its `send_text()` blocks. Bounds are
    explicit configuration or named constants and have adapter-level tests.
-5. A text chunk becomes irrevocable only when the input actually presents or
-   renders it. The adapter alone tracks that boundary. Chunks buffered but not
-   rendered may be discarded by abort.
-6. `complete()` does not commit input-side completion until preceding accepted
-   output has drained according to that adapter's rendering contract. Normal
-   conversation exit awaits it.
-7. `abort()` is a priority control operation which can run while `send_text()` or
-   `complete()` is blocked. If abort wins, the adapter atomically prevents the
-   pending operation from later committing, discards unrendered buffered output,
-   stops rendering where possible, and commits `AssistantMessageAborted` exactly
-   once.
-8. If completion committed before cancellation was eligible at the bridge's
-   decision point, the stream remains completed and no abort is sent. The
-   conversation may still end with `INPUT_CANCELLED` while its already completed
-   assistant stream remains valid.
-9. The sink operations are cancellation-safe and always expose a definitive
-   outcome: committed completion, committed abort, or no commit. There is no
-   ambiguous “possibly delivered” result.
-10. Already rendered text or speech remains part of the interaction. Abort does
-    not retract it.
-11. Microphone adapters must be able to render/speak chunks without waiting for
+5. Every input binding declares an adapter-specific commit point for start,
+   chunk, completion, and abort. “Accepted into an adapter buffer,” “committed to
+   the medium,” and “drained/presented” are distinct milestones.
+6. `abort()` has priority only over operations which have not crossed their
+   declared commit point. It discards adapter-buffered, uncommitted output and
+   stops rendering where possible. It cannot retract a committed chunk or
+   completion.
+7. If completion commits first, the stream is `COMPLETED` and later abort emits
+   nothing. The conversation may still end with `INPUT_CANCELLED`. If abort
+   commits before completion's commit point, completion cannot later commit and
+   the stream is `ABORTED` exactly once.
+8. Websocket start/chunk/completion/abort commits when the complete frame is
+   handed to the websocket transport. Aiohttp flow-control drain may still be
+   awaited afterward and provides pushback, but it is not the commit point.
+   Cancellation after transport handoff cannot override that frame. The binding
+   does not claim client receipt or presentation because no client ACK is added.
+   The websocket adapter serializes writes in an adapter-owned writer operation
+   which is not cancelled once transport handoff may have begun. Abort may win at
+   the gate before that write starts; after it starts, the write either commits
+   and drains or fails and closes the input session. Thus bridge cancellation can
+   never reinterpret an in-flight `send_str()` as definitely unsent.
+9. A microphone adapter declares commit in terms of its renderer. Text or audio
+   waiting only in its bounded buffer is uncommitted and may be discarded;
+   anything already handed to irreversible playback remains committed.
+10. Sink operations preserve their commit record across coroutine cancellation.
+    `complete()` and `abort()` return a typed terminal result such as
+    `COMPLETED`, `ABORTED`, or `INPUT_SESSION_CLOSED`; the bridge never infers the
+    result from whether an awaited drain happened to return.
+11. Normal conversation exit awaits adapter drain after terminal commitment.
+    Transport or renderer failure after a possible external commit follows the
+    adapter's declared failure/closure rule and never causes a contradictory
+    second terminal event.
+12. Already committed or rendered text and speech remains part of the
+    interaction. Abort does not retract it.
+13. Microphone adapters must be able to render/speak chunks without waiting for
    the complete message in the target design, although concrete streaming-TTS
    engine work may be staged as described under Future microphone work.
 
 The bridge concurrently observes input control events while awaiting agent output
-or an input sink operation. A cancellation, input failure, input-session close,
-or shutdown can therefore pre-empt a slow or blocked renderer without polling.
-The input sink owns completion-versus-abort arbitration because only the input
-knows its accepted, buffered, and rendered state.
+or an input sink operation and requests abort without polling. The input sink
+then arbitrates against its actual commit state: uncommitted buffered renderer
+work can be pre-empted, while an in-flight websocket write which may have crossed
+transport handoff must finish or close the session. Only the input knows its
+accepted, committed, buffered, drained, and rendered state.
 
 The input sink enforces this renderer-visible state machine:
 
 | State | Legal operations and transitions |
 |---|---|
-| `NOT_STARTED` | `start()` commits `OPEN`; conversation termination emits no assistant abort because no stream was visible |
-| `OPEN` | `send_text()` remains `OPEN`; `complete()` begins `COMPLETING`; `abort()` commits `ABORTED` |
-| `COMPLETING` | The adapter drains preceding output; successful drain commits `COMPLETED`; priority `abort()` commits `ABORTED` and prevents completion |
-| `COMPLETED` | Terminal; later abort reports already completed and emits nothing |
-| `ABORTED` | Terminal; repeated cleanup is idempotent and emits nothing further |
+| `NOT_STARTED` | A committed `start()` enters `OPEN`; termination before start commits emits no assistant abort because no stream became externally visible |
+| `OPEN` | Accepted/committed chunks remain `OPEN`; `complete()` begins `COMPLETING`; a committed `abort()` enters `ABORTED` |
+| `COMPLETING` | Completion is pending its adapter-specific commit point; abort may win only before that point |
+| `COMPLETED` | Completion committed; drain may still be pending, but later abort reports already completed and emits nothing |
+| `ABORTED` | Abort committed; drain/stop cleanup may still be pending, and repeated cleanup emits nothing further |
 
-The adapter's operation result identifies the committed state. A coroutine
-cancellation cannot leave a sink operation in an unknown state. The bridge uses
-that result, rather than queue contents or timing guesses, when logging and
-closing the conversation.
+The adapter's operation result identifies the committed state. Coroutine
+cancellation cannot erase a commit which already crossed the binding's declared
+boundary. The bridge uses the typed terminal result, rather than await-return
+timing, queue contents, or delivery guesses, when logging and closing the
+conversation.
 
 ## State machine
 
@@ -478,7 +530,7 @@ state. The minimum conversation states are:
 
 | State | Meaning |
 |---|---|
-| `STARTING` | Scoped interfaces are being opened around an accepted initial message |
+| `STARTING` | A ready InputConversation exists; agent context is being resolved and AgentConversation opened |
 | `WAITING_FOR_AGENT` | User message was delivered; no assistant stream is open |
 | `STREAMING_ASSISTANT` | One assistant stream is open |
 | `WAITING_FOR_DISPOSITION` | Assistant stream closed; explicit disposition is required |
@@ -489,8 +541,18 @@ state. The minimum conversation states are:
 Required transitions include:
 
 ```text
-accepted initial UserMessage
+ready InputConversation, resolved context, opened AgentConversation, and
+delivered initial UserMessage
     STARTING -> WAITING_FOR_AGENT
+
+ContextRejected
+    STARTING -> ENDING(CONTEXT_REJECTED) -> CLOSED
+
+ContextUnavailable
+    STARTING -> ENDING(CONTEXT_UNAVAILABLE) -> CLOSED
+
+invalid context-provider result or exception
+    STARTING -> ENDING(INTERNAL_FAILURE) -> CLOSED input session
 
 ProcessingUpdate
     WAITING_FOR_AGENT -> WAITING_FOR_AGENT
@@ -538,16 +600,19 @@ transition, it selects exactly one using this precedence:
 3. `INPUT_SESSION_CLOSED`;
 4. `INPUT_FAILED`;
 5. `INPUT_CANCELLED`;
-6. `AGENT_FAILED`;
-7. `FOLLOW_UP_TIMEOUT`;
-8. ordinary agent output or `TurnDisposition`.
+6. `CONTEXT_UNAVAILABLE`;
+7. `CONTEXT_REJECTED`;
+8. `AGENT_FAILED`;
+9. `FOLLOW_UP_TIMEOUT`;
+10. ordinary agent output or `TurnDisposition`.
 
 Priority applies only to results already ready at the bridge's decision point.
-Once a transition or input-sink terminal operation has committed, a later event
-does not retroactively replace it. For example, a cancellation ready alongside
-assistant completion wins and invokes abort; cancellation observed only after
-input completion committed ends the conversation without changing the completed
-stream.
+Once a transition or input-sink terminal operation crosses its adapter-specific
+commit point, a later event does not retroactively replace it. For example, a
+cancellation ready while completion is still uncommitted wins and invokes abort;
+cancellation observed after websocket completion was handed to the transport
+ends the conversation without changing the completed stream, even if transport
+drain is still blocked.
 
 The normative state/event/source matrix and race tests must use this precedence.
 The bridge must inspect the complete ready set returned by its concurrency
@@ -564,16 +629,51 @@ Validation is layered:
 - the bridge alone validates cross-conversation sequencing, turn order,
   follow-up eligibility, cancellation, and terminal cleanup.
 
+### Context-provider contract
+
+The typed context provider is sealed behind:
+
+```python
+async def resolve(
+    input_context: InputConversationContext,
+) -> ContextResolved | ContextRejected | ContextUnavailable:
+    ...
+```
+
+Expected outcomes are values, not exceptions:
+
+| Outcome | Meaning | Conversation result | InputSession reuse |
+|---|---|---|---|
+| `ContextResolved(context)` | Immutable agent-facing context was resolved | Continue agent startup | Yes |
+| `ContextRejected(code, detail)` | Known identity/request data is validly rejected | `CONTEXT_REJECTED` | Yes |
+| `ContextUnavailable(detail)` | Settings, identity, or another context dependency is temporarily unavailable | `CONTEXT_UNAVAILABLE` | Yes; no automatic retry |
+
+`code` is a closed machine-actionable rejection enum; `detail` is diagnostic and
+must not be parsed for control flow. Invalid provider return types, malformed
+resolved context, impossible state, or an unhandled provider exception is a
+provider/bridge contract violation: classify it as `INTERNAL_FAILURE`, attempt
+terminal delivery through the already-ready InputConversation, close the input
+session, and fail loudly.
+
+Context rejection and unavailability are conversation-local. After the typed end
+event and InputConversation cleanup, the persistent input session may announce
+readiness again. The provider performs no automatic retry inside this
+conversation.
+
 Failure classification is intentional:
 
 | Source | Classification | Required result |
 |---|---|---|
+| Valid context rejection | `CONTEXT_REJECTED` | End only the conversation with typed rejection code/detail; keep input session reusable |
+| Context dependency unavailable | `CONTEXT_UNAVAILABLE` | End only the conversation; keep input session reusable; no automatic retry |
+| Invalid provider result or unhandled provider exception | `INTERNAL_FAILURE` | Attempt terminal delivery, close input session, and fail loudly |
 | Invalid/unhandled agent output or agent exception | `AGENT_FAILED` | Abort open stream, end only the conversation, keep recovered input session reusable |
 | Recoverable input-adapter operation failure | `INPUT_FAILED` | Abort open stream and end only the conversation |
 | Input disconnect or unrecoverable adapter failure | `INPUT_SESSION_CLOSED` | Abort conversation and close persistent input session |
 | Invalid external websocket message | Binding-level protocol rejection | Send typed rejection where delivery is safe, then close websocket input session |
 | Broken bridge invariant | Internal fatal defect | Attempt terminal cleanup, close input session, log with context, and propagate/fail loudly |
 | Server shutdown | `SERVER_SHUTDOWN` | Cancel work and close both scoped interfaces deterministically |
+| Agent cancellation deadline missed | `INTERNAL_FAILURE` | Close input session after best-effort cleanup and fail loudly; do not allow escaped work into another conversation |
 
 There is no automatic retry after an unhandled agent failure.
 
@@ -586,6 +686,8 @@ machine-actionable reasons plus separate optional diagnostic detail. The
 - `COMPLETED`
 - `INPUT_CANCELLED`
 - `FOLLOW_UP_TIMEOUT`
+- `CONTEXT_REJECTED`
+- `CONTEXT_UNAVAILABLE`
 - `AGENT_FAILED`
 - `INPUT_FAILED`
 - `INPUT_SESSION_CLOSED`
@@ -621,6 +723,8 @@ binding after approval. It must define:
 - websocket close behavior and close codes;
 - maximum message sizes, ingress queue bound, and overflow behavior;
 - liveness/heartbeat behavior;
+- the websocket transport-handoff commit point, its distinction from
+  flow-control drain, and failure after possible handoff;
 - mapping between external JSON events and the in-process typed protocol;
 - examples of one-turn, follow-up, cancellation, failure, and invalid sequences.
 
@@ -682,19 +786,23 @@ This is an additive, runnable checkpoint. The current runtime remains entirely o
 the old protocol while the new core is built beside it. There is no adapter which
 translates or routes between the contracts.
 
-1. Add the typed contexts, requests, enums, messages, and sealed interfaces. A
+1. Add the typed contexts, enums, messages, and sealed interfaces. A
    focused `ai_server/conversations/` package is preferred; keep its
    `__init__.py` minimal.
 2. Implement the `InputSession` lifecycle, per-input supervisor, bridge-owned
-   startup, and per-conversation bridge state machine against test factories.
+   core startup from a ready InputConversation, and per-conversation bridge state
+   machine against test factories.
 3. Implement the transactional input-owned assistant sink contract, blocking
-   pushback, concurrent input-control observation, and deterministic
-   completion/abort behavior.
+   pushback, adapter-specific commit points, concurrent input-control
+   observation, and deterministic completion/abort behavior.
 4. Add exhaustive core unit and conformance tests using fake InputSession,
    InputConversation, Agent, and AgentConversation implementations.
-5. Prove sequential conversations, multiple concurrent input sessions, startup
-   cleanup, priority races, and isolated agent state.
-6. Do not remove or modify the old runtime interfaces at this stage. The full
+5. Implement and test the AgentConversation rendezvous, acknowledged
+   cancellation, cancellation deadline, and typed context-provider outcomes.
+6. Prove sequential conversations, multiple concurrent input sessions, startup
+   cleanup, priority races, isolated agent state, and absence of hidden output
+   buildup under slow-input pushback.
+7. Do not remove or modify the old runtime interfaces at this stage. The full
    existing test suite must still pass unchanged, in addition to the new tests.
 
 Gate B reviews this additive core. Passing Gate B does not authorize a partial
@@ -712,6 +820,8 @@ between old and new contracts or require a compatibility facade.
 1. Change `Agent` into a factory exposing
    `async with agent.open_conversation(context)`.
 2. Implement active `AgentConversation` endpoints with private mutable state.
+   Their output uses the zero-capacity rendezvous and all owned work participates
+   in acknowledged cancellation.
 3. Migrate Echo, Interrogator, Polite Reply, Assistant, Orchestrator, tools, and
    legacy Home Assistant integration code.
 4. Require `TurnDisposition` after every successfully completed turn and no
@@ -731,7 +841,7 @@ between old and new contracts or require a compatibility facade.
 
 1. Replace `MicrophoneAgentEndpoint` with an `InputSession`/
    `InputConversation` adapter owned by the microphone manager layer.
-2. Create a request only after an accepted final STT result.
+2. Return a ready InputConversation only after an accepted final STT result.
 3. Implement adapter-owned follow-up presentation and timeout.
 4. Implement the transactional assistant sink. Any buffer needed by slow TTS is
    bounded and owned by the microphone adapter; a full buffer blocks
@@ -774,12 +884,17 @@ At minimum, automated tests must cover:
 - every legal transition in the normative state matrix;
 - representative illegal events from every source in every state;
 - initial empty and whitespace-only messages;
-- InputSession readiness, idle closure, reservation, second-start rejection, and
-  exact-once reservation-to-active control handoff;
-- cancellation, input failure, session close, and context-provider failure during
-  every startup operation;
+- InputSession readiness, idle closure, second-start rejection, and direct
+  `ACCEPTING -> ACTIVE` creation of one ready InputConversation;
+- cancellation, input failure, and session close before input acceptance without
+  exposing a core conversation;
+- context-provider and agent-startup outcomes after InputConversation creation;
 - zero assistant streams and one assistant stream per turn;
 - progress before streaming and rejection of progress during streaming;
+- zero-buffer agent output rendezvous and producer blocking while input send is
+  blocked;
+- acknowledged agent cancellation while model work, tool work, and rendezvous
+  emission are active, including fatal cancellation-deadline failure;
 - stream framing, ordered chunks, completion, and abort;
 - explicit end and explicit follow-up dispositions after successful turns, and
   absence of dispositions after cancellation or failure;
@@ -793,6 +908,8 @@ At minimum, automated tests must cover:
 - adapter-owned bounded-buffer backpressure, no bridge queue, and cancellation
   while the input's `send_text()` is blocked;
 - definitive input-sink operation outcomes and exactly-one completion or abort;
+- adapter-specific commit-point races, including websocket handoff before drain
+  and abort before/after completion commit;
 - normal drain versus abort discard;
 - repeated sequential conversations on one persistent input session;
 - concurrent conversations on multiple input sessions;
@@ -800,6 +917,8 @@ At minimum, automated tests must cover:
 - websocket schema, bounds, heartbeat, rejection, close, and old-vocabulary cases;
 - microphone accepted-STT creation, playback, follow-up, cancellation, recovery,
   and T-002/T-003 regressions;
+- resolved, rejected, unavailable, malformed, and exceptional context-provider
+  outcomes with the specified terminal reason and session-reuse behavior;
 - context-manager cleanup exactly once on all exits.
 
 Use stable conversation/input-session log prefixes in concurrency tests so
@@ -876,17 +995,21 @@ T-004 is complete only when:
    turn; aborted and failed turns terminate without one.
 6. Follow-up presentation and timeout are owned by each input adapter.
 7. The bridge contains no assistant-output queue. Each input applies blocking
-   pushback directly and owns any explicitly bounded media buffer, normal drain,
-   and deterministic completion-versus-abort arbitration.
+   pushback directly, declares its commit points, and owns any explicitly bounded
+   media buffer, normal drain, and deterministic completion-versus-abort
+   arbitration.
 8. Terminal reasons and diagnostics are typed and unambiguous.
 9. Agent, recoverable input, input-session, external protocol, internal invariant,
-   and shutdown failures have the ratified isolation behavior.
-10. Concurrent agent conversations have isolated mutable state.
-11. The websocket server and all repository clients use only the new binding.
-12. Microphone driver protocol and T-002/T-003 behavior remain conformant.
-13. Every catalogue requirement links to passing automated evidence or an
+   context-provider, and shutdown failures have the ratified isolation behavior.
+10. Agent output is a zero-buffer rendezvous; acknowledged cancellation stops all
+    conversation-owned work within the explicit deadline, or fails the invariant
+    loudly.
+11. Concurrent agent conversations have isolated mutable state.
+12. The websocket server and all repository clients use only the new binding.
+13. Microphone driver protocol and T-002/T-003 behavior remain conformant.
+14. Every catalogue requirement links to passing automated evidence or an
     explicitly documented manual hardware check.
-14. Focused tests, full pytest, the orchestrator/DSA behavior suite, real
+15. Focused tests, full pytest, the orchestrator/DSA behavior suite, real
     websocket checks, and required microphone checks pass.
 
 ## Plan-review resolution record
@@ -897,21 +1020,24 @@ specified by that review.
 
 | Finding | Candidate resolution in this task |
 |---|---|
-| `T004-PLAN-001` | The bridge receives the accepted request, InputSession, Agent factory, and context provider; it enters `STARTING`, assigns the ID, resolves context, and opens both scoped conversations itself. Startup classification and exact-once cleanup are explicit. |
-| `T004-PLAN-002` | `InputSession` now has sealed `IDLE`/`ACCEPTING`/`RESERVED`/`ACTIVE`/`CLOSED` states and pull-gated `accept_conversation()` semantics covering readiness, complete initial input, typed context, idle close, second-start rejection, and return to readiness. |
-| `T004-PLAN-003` | The bridge queue is removed. The input owns a transactional assistant sink and any bounded media buffer; blocking `send_text()` provides pushback, `abort()` has control priority, and completion versus abort has a definitive exactly-once outcome. |
+| `T004-PLAN-001` | The input adapter now completes input acceptance before the core lifecycle exists. The bridge begins `STARTING` from a ready InputConversation, adopts its ID, resolves agent context, and opens AgentConversation. Each startup phase has one explicit owner. |
+| `T004-PLAN-002` | `InputSession` now has only `IDLE`/`ACCEPTING`/`ACTIVE`/`CLOSED`. Its context-managed `accept_conversation()` returns a fully usable InputConversation directly; pre-return failures remain input-local, while context exit provides exact-once active cleanup and return to readiness. |
+| `T004-PLAN-003` | The bridge queue is removed. Each input binding declares accepted, committed, and drained boundaries. Websocket frames commit at transport handoff before flow-control drain; abort wins only before the binding's commit point, and no client receipt is claimed. |
 | `T004-PLAN-004` | Stage 2 is additive and leaves the old runtime complete. Stage 3 migrates every consumer, activates the new runtime, and removes the old protocol in one coherent atomic cutover without a facade. |
 | `T004-PLAN-005` | A disposition is required only after a successfully completed turn. Agent failure is an alternative outcome, bridge-to-input abort is explicit, and `ConversationEndReason` and `AssistantAbortReason` are separate enums. |
 | `T004-PLAN-006` | T-001 continuation guidance is limited to its remaining microphone, firmware, and hardware evidence; conversation-core and websocket work routes to T-004 and superseded sections are marked historical. |
-| `T004-PLAN-007` | Startup ownership, cancellation handshake, and concurrent terminal-event behavior are now ratified. The exact priority order and commit boundary are specified and required in tests. |
+| `T004-PLAN-007` | The status now distinguishes ratified architecture decisions from review fixes still in progress. Startup ownership, cancellation behavior, priority order, and adapter commit boundaries are specified, but review closure is not claimed. |
+| `T004-PLAN-008` | Agent output is a zero-capacity rendezvous, so slow-input pushback blocks production structurally. Typed idempotent `cancel(reason)` acknowledges only after all model/tool/background work is quiescent; deadline failure is a fatal invariant. |
+| `T004-PLAN-009` | The context provider returns typed resolved, rejected, or unavailable outcomes. Rejection and unavailability end only the conversation with distinct reasons; invalid results or exceptions are `INTERNAL_FAILURE` and session-fatal. |
 
 ## Review gates
 
 - **Gate A — protocol approval:** Captain approves the rewritten normative
   documents before production code changes begin.
 - **Gate B — additive core review:** typed interfaces, bridge state machine,
-  transactional sink contract, and exhaustive fake-based core tests are reviewed
-  while the old runtime remains complete and active.
+  adapter commit contract, AgentConversation rendezvous/cancellation, typed
+  context resolution, and exhaustive fake-based core tests are reviewed while
+  the old runtime remains complete and active.
 - **Gate C — atomic cutover review:** every agent and binding is migrated, the
   runtime switches once, all legacy surfaces are removed, and websocket and
   microphone mappings are checked against the same conformance catalogue.
