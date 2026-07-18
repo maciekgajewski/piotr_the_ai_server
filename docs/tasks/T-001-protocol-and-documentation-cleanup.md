@@ -3,8 +3,9 @@
 ## Status
 
 - **Authority:** Active implementation plan
-- **Audience:** Agents and maintainers executing or reviewing the protocol cleanup
-- **Read when:** Planning or performing documentation, protocol, session, microphone, websocket, or satellite state changes covered by this migration
+- **Conversation redesign:** The conversation-core and websocket portions of this plan are superseded by [T-004](T-004-conversation-bridge-protocol-redesign.md). T-001 remains the record for its completed work and outstanding microphone/hardware verification.
+- **Audience:** Maintainers reviewing the completed cleanup or finishing its remaining microphone/firmware hardware evidence
+- **Read when:** Continuing the remaining satellite hardware checks or consulting the historical record of T-001
 
 This is a design-first migration: the protocol documents are normative specifications, and the implementation is being changed to conform to them. Current runtime behavior is evidence to inspect, not the authority for the design.
 
@@ -20,28 +21,46 @@ Stage 3 must not begin until the normative documents produced by Stage 2 have be
 
 - **Stage 1:** Completed on 2026-07-12. Added the documentation index, agent routing, authority labels, and the protocol documentation standard.
 - **Stage 2:** Completed on 2026-07-12. Approved normative Conversation and Microphone protocols, their mapping, and the conformance catalogue are indexed under `docs/`.
-- **Stage 3:** In progress. The Conversation/websocket milestone, correlated Microphone Protocol, manager mapping, Box3 Python driver, and Box3/Voice Preview firmware visual ownership are implemented and green. T-002 and T-003 are fixed and live-verified on Box3, including bounded pre-roll, prompt warmed-STT `LISTENING`, clean explicit device stop, reply playback, and return to `IDLE` without `ERROR`. Explicit-stop firmware is deployed to all three Voice PE units. Real websocket smoke testing and remaining device/hardware verification remain incomplete.
+- **Stage 3:** In progress only for remaining microphone-device evidence. The historical Conversation/websocket milestone, correlated Microphone Protocol, manager mapping, Box3 Python driver, and Box3/Voice Preview firmware visual ownership are implemented and green. T-002 and T-003 are fixed and live-verified on Box3, including bounded pre-roll, prompt warmed-STT `LISTENING`, clean explicit device stop, reply playback, and return to `IDLE` without `ERROR`. Explicit-stop firmware is deployed to all three Voice PE units. The unrun old-runtime websocket smoke test moved out of T-001 when T-004 superseded that scope.
+
+The implemented Conversation/websocket milestone above describes the current
+runtime and remains useful historical evidence. It is not the target architecture
+for the next migration. T-004 records the approved replacement design, its
+documentation approval gate, and its clean-break implementation plan.
 
 ## Fresh-session continuation handoff
 
 ### Checkpoint scope
 
-This repository is intentionally committed at a safe intermediate Stage 3 checkpoint. The Python test suite is green, but the implementation does **not** yet satisfy all normative Microphone Protocol requirements. Continue from this file and the normative documents; no conversation history is required.
+This repository was committed at a safe intermediate Stage 3 checkpoint. The
+remaining executable T-001 work is limited to microphone/firmware hardware
+evidence listed below. Do not use this handoff for conversation-core or websocket
+design, implementation, or validation; start from
+[T-004](T-004-conversation-bridge-protocol-redesign.md) for that work.
 
 Read, in order:
 
 1. root `AGENTS.md` and README architecture decisions;
-2. `docs/ai-server-conversation-protocol.md`;
-3. `docs/microphone-protocol.md`;
-4. `docs/microphone-conversation-mapping.md`;
-5. `docs/protocol-conformance-catalogue.md`;
-6. this task's remaining-work sections below.
+2. `docs/microphone-protocol.md`;
+3. `docs/microphone-conversation-mapping.md`, only as needed to interpret the
+   currently deployed microphone behavior;
+4. `docs/protocol-conformance-catalogue.md`;
+5. T-002 and T-003 for the preserved Box3 fixes;
+6. this task's current-failures and next-steps sections below.
 
-For websocket validation, follow `.codex/skills/test-ai-server-ws/SKILL.md`. For Box3 firmware changes, follow `.codex/skills/build-flash-esp-box/SKILL.md`; validate and compile before any flash, inspect generated `main.cpp`, and do not run `sudo`.
+For Box3 firmware changes, follow
+`.codex/skills/build-flash-esp-box/SKILL.md`; validate and compile before any
+flash, inspect generated `main.cpp`, and do not run `sudo`. T-001 no longer owns
+websocket validation.
 
 ### Implementation completed at this checkpoint
 
 Conversation and websocket milestone:
+
+> **Historical current-runtime record:** This milestone describes the protocol
+> implemented before T-004. It is evidence, not an instruction to extend that
+> architecture. All subsequent conversation-core and websocket work belongs to
+> T-004.
 
 - Replaced `WaitForNewConversation` with `ReadyForConversation`.
 - Replaced endpoint-facing `RequestFollowUp` with `FollowUpRequested(timeout_seconds)`.
@@ -211,39 +230,41 @@ There are no currently reproducible pytest failures. The following acceptance fa
 
 - Box3 and Voice Preview generated source prove server visual ownership and reconnect-before-first-command `ERROR`, and the available units have been flashed, but both device types still require hardware sequence validation.
 - [T-003](T-003-box3-open-mic-preroll-stop-race.md) is complete. Its final isolated Box3 run proved the one-second pre-roll bound, prompt `LISTENING` after mandatory STT warm-up, explicit device-stop callback before RUN_END, full reply playback, and return to `IDLE` without a transport disconnect or `ERROR` bitmap.
-- Real websocket client/server smoke testing has not run for this checkpoint.
+- The old-runtime websocket smoke test was never run for this checkpoint. It is
+  no longer T-001 acceptance work; T-004 defines verification of the replacement
+  websocket binding.
 - Box3 and all three Voice PE units have the explicit-stop firmware and returned to the network. Read-only API probes confirmed all three Voice PE units expose `stop_listening`. Box3 has passed the T-003 accepted-turn visual sequence; equivalent Voice PE hardware behavior and the remaining sequences are still outstanding.
 
 ### Remaining acceptance criteria
 
-All incomplete requirements in `docs/protocol-conformance-catalogue.md` remain binding. In particular:
+The implementation and automated conformance work originally listed here is
+complete. T-001 remains open only for these hardware evidence items:
 
-- implement and test the complete correlated microphone event vocabulary and state machine;
-- remove all legacy microphone protocol event names rather than retaining aliases;
-- enforce stale-event rejection and half-duplex cue/playback ordering;
-- make connected visual state exclusively server-controlled, with firmware-owned disconnected `ERROR`;
-- prove `LISTENING` is commanded on the first open-mic partial candidate before end-of-speech;
-- keep `PROCESSING` through playback and select `IDLE` or follow-up `LISTENING` only after playback completion;
-- replace visual-filtering legacy assertions with explicit conformance assertions;
-- pass full pytest and the entire orchestrator/DSA behavior suite;
-- validate and compile every affected ESPHome entrypoint;
-- inspect generated Box3 source for the new services and visual scripts;
-- run manual websocket and device checks;
-- test Box3 and Voice Preview hardware sequences listed in the conformance catalogue;
-- update this task to complete only after all evidence is recorded.
+- verify the remaining Box3 and Voice Preview visual/state sequences listed in
+  the conformance catalogue, one satellite at a time;
+- verify accepted-turn explicit-stop behavior on each Voice PE unit;
+- flash and test the bedroom Voice Preview when it becomes reachable;
+- record the resulting evidence and update T-001's completion status.
+
+Conversation-core, websocket, client, and replacement-protocol acceptance belong
+exclusively to T-004, even where historical T-001 sections below mention them.
 
 ### Next concrete implementation steps
 
-1. Run the real websocket client/server smoke test.
-2. Verify accepted-turn explicit-stop behavior on each Voice PE unit using an isolated single-microphone configuration.
-3. Perform remaining hardware validation one satellite at a time, including Box3 local-indicator precedence. Record results in `notes/setting-up-esp-box.md`.
-4. Flash and test the bedroom Voice Preview when it becomes reachable.
+1. Verify accepted-turn explicit-stop behavior on each Voice PE unit using an isolated single-microphone configuration.
+2. Perform remaining hardware validation one satellite at a time, including Box3 local-indicator precedence. Record results in `notes/setting-up-esp-box.md`.
+3. Flash and test the bedroom Voice Preview when it becomes reachable.
 
-## Design assumptions
+## Historical original design assumptions
+
+This section records the assumptions used by T-001. Its Session and websocket
+assumptions are superseded and must not guide new work; T-004 is authoritative for
+their replacement design.
 
 - Backward compatibility is not required unless explicitly introduced as a later decision.
 - The Conversation Protocol and Microphone Protocol are separate contracts joined by a small normative mapping document.
-- `Session` exclusively owns session and conversation lifecycle.
+- `Session` exclusively owns session and conversation lifecycle. **Superseded by
+  T-004's per-input supervisor and bridge-owned conversation lifecycle.**
 - `MicrophoneManager` owns desired microphone behavior. Concrete drivers own device-specific execution only.
 - STT remains behind its own interface and is not part of the microphone driver protocol.
 - Wake-word detection is driver-owned in wake-word mode. Wake-phrase acceptance is manager-owned in open-mic mode.
@@ -337,13 +358,15 @@ Review all project Markdown files and label their authority and status.
 - All local Markdown links resolve.
 - No runtime behavior changes during this stage.
 
-## Stage 2: Normative protocol and interface design
+## Historical Stage 2: Normative protocol and interface design
 
 ### Objective
 
-Define the desired architecture independently of the current buggy implementation. Complete and approve these specifications before implementing them.
+This completed stage records how the current normative documents were produced.
+Its Conversation design is superseded by T-004; its approved Microphone Protocol
+remains in force.
 
-## 2.1 Conversation Protocol
+## 2.1 Historical Conversation Protocol design — superseded by T-004
 
 Rewrite `docs/ai-server-conversation-protocol.md` as the authoritative Session contract.
 
@@ -642,13 +665,16 @@ Use stable identifiers such as:
 - No unresolved contradiction is silently deferred to implementation.
 - The normative documents are approved before Stage 3.
 
-## Stage 3: Protocol-conforming implementation
+## Stage 3: Historical implementation plan and remaining microphone verification
 
 ### Objective
 
-Replace current accidental and buggy behavior with code and firmware that conform to the approved specifications. Do not preserve legacy behavior unless the approved protocols explicitly require it.
+This section records the implementation plan which produced the current runtime.
+Sections 3.1 through 3.3 are superseded historical instructions. Do not execute
+them for new conversation or websocket work. Sections 3.4 onward remain useful
+as evidence for the microphone implementation and outstanding device checks.
 
-## 3.1 Conversation event types and interfaces
+## 3.1 Historical conversation event types and interfaces — superseded
 
 Primary files:
 
@@ -668,7 +694,7 @@ Work:
 - omit `None` fields from internal JSON-like dictionaries;
 - add exhaustive serialization and validation tests.
 
-## 3.2 Explicit Session state machine
+## 3.2 Historical Session state machine — superseded
 
 Primary files:
 
@@ -687,7 +713,7 @@ Work:
 
 Test every valid transition, every invalid event/state pair, closure in every state, agent return with an open message, duplicate follow-up, and stale or mismatched message IDs.
 
-## 3.3 Websocket transport and clients
+## 3.3 Historical websocket transport and clients — superseded
 
 Primary files:
 
@@ -815,7 +841,12 @@ Work:
 - treat visual output as protocol behavior;
 - do not retain tests solely to preserve accidental legacy behavior.
 
-## 3.10 Verification
+## 3.10 Historical verification checklist; device evidence remains
+
+This is the original verification order. Automated items were completed as
+recorded in the checkpoint evidence above. Websocket verification now belongs to
+T-004. Only the outstanding hardware sequences below remain executable T-001
+work.
 
 Run verification in this order:
 
@@ -824,7 +855,7 @@ Run verification in this order:
 3. ESPHome validation and compilation for every affected entrypoint.
 4. Generated firmware inspection for required services.
 5. Entire `orchestrator_and_dsa_tests/` suite using the currently configured model.
-6. Manual websocket smoke test.
+6. Historical manual websocket smoke test — superseded by T-004 verification.
 7. Hardware validation, one device at a time: Box3, bedroom Voice Preview, then office Voice Preview.
 8. Live state-sequence verification using logs and visible device output.
 
@@ -855,7 +886,10 @@ Required hardware sequences:
 - Logs contain stable Session, Conversation, listen, utterance, and playback context.
 - Documentation and implementation references match the final code.
 
-## Delivery milestones
+## Historical delivery milestones
+
+This sequence records the original T-001 delivery. Conversation and websocket
+milestones are not instructions for new work; use T-004.
 
 Keep changes reviewable and preserve the design gate:
 

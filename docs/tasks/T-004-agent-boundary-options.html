@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>T-004 illustrated design: Conversation bridge</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --panel: #0d1c2c;
+      --panel-2: #12263b;
+      --line: #2c4863;
+      --text: #eef7ff;
+      --muted: #adc2d4;
+      --input: #62d8cc;
+      --bridge: #ffbf69;
+      --agent: #bd9dff;
+      --stream: #65bfff;
+      --good: #75e49a;
+      --danger: #ff7185;
+      --radius: 18px;
+      --shadow: 0 18px 56px rgb(0 0 0 / 26%);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 12% 4%, rgb(101 191 255 / 14%), transparent 28rem),
+        radial-gradient(circle at 88% 18%, rgb(189 157 255 / 12%), transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font: 16px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    a { color: #9dd5ff; }
+    code { color: #ddceff; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { max-width: 900px; margin-bottom: 16px; font-size: clamp(2.2rem, 5vw, 4.2rem); line-height: 1.03; }
+    h2 { margin-bottom: 14px; font-size: clamp(1.55rem, 3vw, 2.35rem); line-height: 1.14; }
+    h3 { margin-bottom: 8px; font-size: 1.15rem; }
+
+    .shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 32px 0 80px; }
+    section { margin-top: 60px; }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(28px, 5vw, 58px);
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: linear-gradient(145deg, rgb(18 38 59 / 96%), rgb(7 18 31 / 96%));
+      box-shadow: var(--shadow);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 320px;
+      height: 320px;
+      right: -130px;
+      top: -160px;
+      border: 1px solid rgb(98 216 204 / 28%);
+      border-radius: 50%;
+      box-shadow: 0 0 0 40px rgb(98 216 204 / 4%), 0 0 0 80px rgb(98 216 204 / 3%);
+    }
+
+    .eyebrow {
+      margin-bottom: 10px;
+      color: var(--input);
+      font-size: .78rem;
+      font-weight: 850;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    .lede { max-width: 850px; margin-bottom: 22px; color: var(--muted); font-size: 1.08rem; }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 8px 12px;
+      border: 1px solid rgb(117 228 154 / 38%);
+      border-radius: 999px;
+      background: rgb(117 228 154 / 8%);
+      color: #bef8d1;
+      font-size: .88rem;
+      font-weight: 760;
+    }
+
+    .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+
+    nav { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+    nav a {
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgb(255 255 255 / 2%);
+      text-decoration: none;
+    }
+    nav a:hover { border-color: var(--stream); color: var(--text); }
+
+    .section-intro { max-width: 880px; color: var(--muted); }
+    .grid { display: grid; gap: 18px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .card {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(155deg, rgb(18 38 59 / 90%), rgb(9 23 38 / 90%));
+      box-shadow: 0 10px 34px rgb(0 0 0 / 14%);
+    }
+
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .card.input { border-top: 3px solid var(--input); }
+    .card.bridge { border-top: 3px solid var(--bridge); }
+    .card.agent { border-top: 3px solid var(--agent); }
+    .card.danger { border-top: 3px solid var(--danger); }
+
+    .icon {
+      display: grid;
+      place-items: center;
+      width: 44px;
+      height: 44px;
+      margin-bottom: 14px;
+      border-radius: 13px;
+      background: var(--panel-2);
+      font-size: 1.3rem;
+    }
+
+    .muted { color: var(--muted); }
+    .input-text { color: var(--input); }
+    .bridge-text { color: var(--bridge); }
+    .agent-text { color: var(--agent); }
+    .danger-text { color: var(--danger); }
+
+    .picture {
+      overflow-x: auto;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgb(4 14 25 / 66%);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 3%);
+    }
+
+    svg { display: block; width: 100%; min-width: 780px; height: auto; }
+    svg text { fill: var(--text); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    svg .small { fill: var(--muted); font-size: 14px; }
+    svg .tiny { fill: var(--muted); font-size: 12px; }
+    svg .label { font-size: 16px; font-weight: 760; }
+    svg .title { font-size: 21px; font-weight: 850; }
+    svg .box { stroke-width: 2; rx: 15; }
+    svg .input-fill { fill: #123e43; stroke: var(--input); }
+    svg .bridge-fill { fill: #49351f; stroke: var(--bridge); }
+    svg .agent-fill { fill: #302953; stroke: var(--agent); }
+    svg .stream-fill { fill: #123957; stroke: var(--stream); }
+    svg .danger-fill { fill: #4a2230; stroke: var(--danger); }
+    svg .neutral-fill { fill: #122338; stroke: var(--line); }
+    svg .lane { stroke: var(--line); stroke-width: 2; stroke-dasharray: 7 7; }
+    svg .arrow { fill: none; stroke: #b8ccdc; stroke-width: 2.5; marker-end: url(#arrow); }
+    svg .input-arrow { stroke: var(--input); }
+    svg .bridge-arrow { stroke: var(--bridge); }
+    svg .agent-arrow { stroke: var(--agent); }
+    svg .danger-arrow { stroke: var(--danger); }
+    svg .dash { stroke-dasharray: 7 6; }
+
+    .legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 14px 2px 0; color: var(--muted); font-size: .9rem; }
+    .legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+
+    .steps { display: grid; gap: 14px; margin-top: 22px; }
+    .step { display: grid; grid-template-columns: 38px 1fr; gap: 12px; align-items: start; }
+    .step b:first-child {
+      display: grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      color: var(--bg);
+      background: var(--bridge);
+    }
+    .step p { margin: 3px 0 0; }
+
+    .callout {
+      margin-top: 18px;
+      padding: 16px 18px;
+      border-left: 4px solid var(--bridge);
+      border-radius: 0 12px 12px 0;
+      background: rgb(255 191 105 / 8%);
+      color: #ffe1b7;
+    }
+
+    .code {
+      overflow-x: auto;
+      margin: 0;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #06101c;
+      color: #d6e7f5;
+      font: .9rem/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+      white-space: pre;
+    }
+
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; }
+    table { width: 100%; min-width: 720px; border-collapse: collapse; background: rgb(8 21 35 / 72%); }
+    th, td { padding: 14px 16px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); background: rgb(18 38 59 / 88%); font-size: .82rem; letter-spacing: .06em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+
+    .pill { display: inline-block; padding: 3px 8px; border: 1px solid currentColor; border-radius: 999px; font-size: .75rem; font-weight: 760; }
+
+    footer { margin-top: 62px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); }
+
+    @media (max-width: 820px) {
+      .grid.two, .grid.three { grid-template-columns: 1fr; }
+      .shell { width: min(100% - 20px, 1180px); padding-top: 10px; }
+      .hero { border-radius: 20px; }
+    }
+
+    @media print {
+      :root { --bg: #fff; --text: #102030; --muted: #4d6173; --panel: #fff; --panel-2: #eef4f8; --line: #b9c7d2; }
+      body { background: #fff; }
+      .hero, .card, .picture, table { background: #fff; box-shadow: none; }
+      nav { display: none; }
+      section { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">T-004 · Illustrated design aid</p>
+      <h1>One conversation, one bridge coroutine</h1>
+      <p class="lede">
+        The long-running coroutine is the conversation's state holder. It shuffles typed messages between
+        exactly one input conversation and exactly one agent conversation. Multiple inputs simply run
+        multiple independent bridges.
+      </p>
+      <span class="status">Architecture and review resolutions ratified · implementation not started</span>
+      <nav aria-label="Page sections">
+        <a href="#fleet">The fleet view</a>
+        <a href="#anatomy">One bridge</a>
+        <a href="#turn">A complete turn</a>
+        <a href="#ownership">Who owns what</a>
+        <a href="#failure">Cancellation and failure</a>
+        <a href="#lifetime">Lifetime and backpressure</a>
+      </nav>
+    </header>
+
+    <section id="fleet">
+      <h2>The fleet view: concurrency by replication</h2>
+      <p class="section-intro">
+        A websocket connection and a microphone are persistent input sessions. Each may have zero or one
+        active conversation. When both are active, they do not share a conversation state machine: each gets
+        its own bridge coroutine and isolated agent conversation.
+      </p>
+      <div class="picture" role="img" aria-label="Two input sessions with separate bridge coroutines and agent conversations created by one shared agent factory">
+        <svg viewBox="0 0 1100 570" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/>
+            </marker>
+          </defs>
+          <text x="40" y="42" class="title">Persistent input sessions</text>
+          <text x="505" y="42" class="title">One state holder per conversation</text>
+          <text x="878" y="42" class="title">Agent side</text>
+
+          <rect x="35" y="78" width="250" height="190" class="box input-fill"/>
+          <text x="60" y="113" class="label">Websocket InputSession A</text>
+          <text x="60" y="140" class="small">connection stays alive</text>
+          <rect x="62" y="170" width="196" height="65" class="box neutral-fill"/>
+          <text x="83" y="198" class="label">InputConversation A</text>
+          <text x="83" y="220" class="tiny">at most one active</text>
+
+          <rect x="35" y="325" width="250" height="190" class="box input-fill"/>
+          <text x="60" y="360" class="label">Microphone InputSession B</text>
+          <text x="60" y="387" class="small">device stays armed</text>
+          <rect x="62" y="417" width="196" height="65" class="box neutral-fill"/>
+          <text x="83" y="445" class="label">InputConversation B</text>
+          <text x="83" y="467" class="tiny">at most one active</text>
+
+          <rect x="438" y="152" width="260" height="98" class="box bridge-fill"/>
+          <text x="471" y="188" class="label">Bridge coroutine A</text>
+          <text x="471" y="216" class="small">owns conversation state A</text>
+
+          <rect x="438" y="399" width="260" height="98" class="box bridge-fill"/>
+          <text x="471" y="435" class="label">Bridge coroutine B</text>
+          <text x="471" y="463" class="small">owns conversation state B</text>
+
+          <rect x="835" y="70" width="230" height="75" class="box agent-fill"/>
+          <text x="872" y="101" class="label">Shared Agent factory</text>
+          <text x="872" y="124" class="tiny">shared read-only resources</text>
+
+          <rect x="820" y="165" width="260" height="95" class="box agent-fill"/>
+          <text x="846" y="201" class="label">AgentConversation A</text>
+          <text x="846" y="229" class="small">private mutable state A</text>
+
+          <rect x="820" y="412" width="260" height="95" class="box agent-fill"/>
+          <text x="846" y="448" class="label">AgentConversation B</text>
+          <text x="846" y="476" class="small">private mutable state B</text>
+
+          <path d="M258 202 H438" class="arrow input-arrow"/>
+          <path d="M438 225 H258" class="arrow bridge-arrow"/>
+          <path d="M698 202 H820" class="arrow agent-arrow"/>
+          <path d="M820 226 H698" class="arrow bridge-arrow"/>
+
+          <path d="M258 449 H438" class="arrow input-arrow"/>
+          <path d="M438 472 H258" class="arrow bridge-arrow"/>
+          <path d="M698 449 H820" class="arrow agent-arrow"/>
+          <path d="M820 473 H698" class="arrow bridge-arrow"/>
+
+          <path d="M930 145 V165" class="arrow agent-arrow dash"/>
+          <path d="M970 145 V375 Q970 395 950 412" class="arrow agent-arrow dash"/>
+          <text x="722" y="316" class="small">No shared conversation state</text>
+          <path d="M722 328 H1050" class="lane"/>
+        </svg>
+      </div>
+      <div class="legend">
+        <span><i class="dot" style="background:var(--input)"></i> input-owned</span>
+        <span><i class="dot" style="background:var(--bridge)"></i> bridge-owned</span>
+        <span><i class="dot" style="background:var(--agent)"></i> agent-owned</span>
+      </div>
+    </section>
+
+    <section id="anatomy">
+      <h2>One bridge: a narrow, enforceable boundary</h2>
+      <p class="section-intro">
+        During startup the bridge receives sealed input and agent factories plus typed context; during the
+        active exchange it sees only the two scoped conversation interfaces. It never knows whether the input
+        is a websocket, microphone, or future medium, or which concrete agent is behind the agent interface.
+      </p>
+      <div class="grid three">
+        <article class="card input">
+          <div class="icon">🎙️</div>
+          <h3>InputConversation</h3>
+          <p class="muted">Owns media framing, presentation, transport correlation, and recovery.</p>
+          <p><span class="pill input-text">sends</span> complete user input, cancellation, timeout, failure, or close</p>
+        </article>
+        <article class="card bridge">
+          <div class="icon">⇄</div>
+          <h3>Bridge coroutine</h3>
+          <p class="muted">Owns turn order, legal transitions, cancellation coordination, and terminal cleanup.</p>
+          <p><span class="pill bridge-text">never owns</span> media-specific clocks or agent-private state</p>
+        </article>
+        <article class="card agent">
+          <div class="icon">✦</div>
+          <h3>AgentConversation</h3>
+          <p class="muted">Owns private agent state and actively produces validated events for one conversation.</p>
+          <p><span class="pill agent-text">returns</span> an explicit disposition after every successful turn</p>
+        </article>
+      </div>
+      <div class="callout">
+        Illegal directions are not merely documented—they are absent from the interfaces. Local framing is
+        checked by each conversation object; cross-side ordering is checked once, in the bridge.
+      </div>
+    </section>
+
+    <section id="turn">
+      <h2>A complete turn, including streamed speech</h2>
+      <p class="section-intro">
+        Inputs enter the core only as complete user messages. Assistant text moves in the other direction as
+        a stream, so a future microphone renderer can begin speaking without waiting for the full reply.
+      </p>
+      <div class="picture" role="img" aria-label="Sequence diagram for a user message, processing update, streamed assistant reply, and explicit follow-up disposition">
+        <svg viewBox="0 0 1100 760" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/>
+            </marker>
+          </defs>
+          <rect x="55" y="30" width="250" height="62" class="box input-fill"/>
+          <text x="82" y="68" class="label">InputSession / Conversation</text>
+          <rect x="425" y="30" width="250" height="62" class="box bridge-fill"/>
+          <text x="478" y="68" class="label">Bridge coroutine</text>
+          <rect x="795" y="30" width="250" height="62" class="box agent-fill"/>
+          <text x="838" y="68" class="label">AgentConversation</text>
+
+          <path d="M180 92 V720 M550 92 V720 M920 92 V720" class="lane"/>
+
+          <path d="M180 145 H540" class="arrow input-arrow"/>
+          <text x="220" y="134" class="label">ConversationRequest</text>
+          <text x="220" y="158" class="tiny">contains complete initial UserMessage + typed context</text>
+
+          <path d="M560 196 H910" class="arrow bridge-arrow"/>
+          <text x="664" y="186" class="label">UserMessage</text>
+
+          <path d="M910 250 H560" class="arrow agent-arrow"/>
+          <text x="666" y="240" class="label">ProcessingUpdate</text>
+          <path d="M540 282 H190" class="arrow bridge-arrow"/>
+          <text x="282" y="272" class="small">forward or render as the medium chooses</text>
+
+          <rect x="740" y="322" width="235" height="202" class="box stream-fill"/>
+          <text x="771" y="353" class="label">One assistant stream</text>
+          <text x="771" y="383" class="small">AssistantMessageStarted</text>
+          <text x="771" y="416" class="small">AssistantTextChunk</text>
+          <text x="771" y="449" class="small">AssistantTextChunk</text>
+          <text x="771" y="482" class="small">AssistantMessageCompleted</text>
+          <path d="M740 375 H560" class="arrow agent-arrow"/>
+          <path d="M740 410 H560" class="arrow agent-arrow"/>
+          <path d="M740 445 H560" class="arrow agent-arrow"/>
+          <path d="M740 480 H560" class="arrow agent-arrow"/>
+          <path d="M540 375 H190" class="arrow bridge-arrow"/>
+          <path d="M540 410 H190" class="arrow bridge-arrow"/>
+          <path d="M540 445 H190" class="arrow bridge-arrow"/>
+          <path d="M540 480 H190" class="arrow bridge-arrow"/>
+          <text x="205" y="513" class="tiny">chunks can be rendered immediately</text>
+
+          <path d="M910 570 H560" class="arrow agent-arrow"/>
+          <text x="650" y="558" class="label">TurnDisposition</text>
+          <text x="650" y="582" class="tiny">REQUEST_FOLLOW_UP</text>
+
+          <path d="M540 626 H190" class="arrow bridge-arrow"/>
+          <text x="270" y="615" class="label">FollowUpRequested</text>
+          <text x="270" y="640" class="tiny">no timeout value</text>
+
+          <rect x="55" y="666" width="250" height="62" class="box input-fill"/>
+          <text x="78" y="691" class="small">Input presents the offer, then</text>
+          <text x="78" y="714" class="small">starts its own medium-aware clock</text>
+        </svg>
+      </div>
+      <div class="grid two" style="margin-top:18px">
+        <article class="card">
+          <h3>If the user responds</h3>
+          <p class="muted"><code>UserMessage</code> crosses the same bridge and begins the next agent turn.</p>
+        </article>
+        <article class="card">
+          <h3>If the offer expires</h3>
+          <p class="muted">The input sends <code>FollowUpTimedOut</code>; the bridge ends the conversation with a typed reason.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="ownership">
+      <h2>Policy stays with the component that has the facts</h2>
+      <p class="section-intro">
+        The core describes meaning and ordering. Bindings decide how that meaning is transported or rendered.
+        This keeps microphone timing out of websocket code and websocket framing out of agents.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Owner</th><th>Knows and decides</th><th>Must not know</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="bridge-text">Core bridge</td>
+              <td>Startup, ID assignment, turn order, stream framing, cross-side cancellation, terminal outcome</td>
+              <td>Websocket JSON, microphone cues, TTS timing, buffer size, concrete agent type</td>
+            </tr>
+            <tr>
+              <td class="input-text">Websocket adapter</td>
+              <td>JSON schema, delivery, heartbeat, connection close, external rejection, its follow-up presentation</td>
+              <td>Microphone driver services, agent internals</td>
+            </tr>
+            <tr>
+              <td class="input-text">Microphone adapter</td>
+              <td>Accepted STT, cues, playback, slow-TTS buffering and pushback, follow-up presentation, recovery and re-arm</td>
+              <td>Websocket events, concrete DSA behavior</td>
+            </tr>
+            <tr>
+              <td class="agent-text">AgentConversation</td>
+              <td>Private conversation state, model/tool work, processing updates, assistant output, successful-turn disposition</td>
+              <td>Input medium implementation and its timeout policy</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="failure">
+      <h2>Cancellation is universal; failures are isolated by trust boundary</h2>
+      <p class="section-intro">
+        An input may cancel from every non-terminal state. The bridge promptly cancels agent work, stops new
+        output, aborts an open stream, and closes both scoped conversations. What happens next depends on who
+        failed—not on a free-text error message.
+      </p>
+      <div class="picture" role="img" aria-label="Failure paths showing conversation-local agent and input failures, session-fatal input closure, and fatal bridge invariant failure">
+        <svg viewBox="0 0 1100 510" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/>
+            </marker>
+          </defs>
+          <rect x="410" y="38" width="280" height="92" class="box bridge-fill"/>
+          <text x="463" y="75" class="label">Active bridge coroutine</text>
+          <text x="452" y="103" class="small">any non-terminal state</text>
+
+          <rect x="55" y="200" width="230" height="105" class="box agent-fill"/>
+          <text x="90" y="235" class="label">Agent failure</text>
+          <text x="90" y="263" class="small">AGENT_FAILED</text>
+          <text x="90" y="285" class="tiny">no automatic retry</text>
+
+          <rect x="315" y="200" width="230" height="105" class="box input-fill"/>
+          <text x="340" y="235" class="label">Recoverable input</text>
+          <text x="340" y="263" class="small">INPUT_FAILED</text>
+          <text x="340" y="285" class="tiny">session recovered</text>
+
+          <rect x="575" y="200" width="230" height="105" class="box danger-fill"/>
+          <text x="606" y="235" class="label">Input session lost</text>
+          <text x="606" y="263" class="small">INPUT_SESSION_CLOSED</text>
+          <text x="606" y="285" class="tiny">persistent session ends</text>
+
+          <rect x="835" y="200" width="230" height="105" class="box danger-fill"/>
+          <text x="865" y="235" class="label">Bridge invariant</text>
+          <text x="865" y="263" class="small">INTERNAL_FAILURE</text>
+          <text x="865" y="285" class="tiny">fail loudly after cleanup</text>
+
+          <path d="M475 130 L215 200" class="arrow agent-arrow"/>
+          <path d="M520 130 L440 200" class="arrow input-arrow"/>
+          <path d="M580 130 L675 200" class="arrow danger-arrow"/>
+          <path d="M625 130 L925 200" class="arrow danger-arrow"/>
+
+          <rect x="180" y="382" width="430" height="80" class="box stream-fill"/>
+          <text x="212" y="415" class="label">Conversation ends; recovered input may start another</text>
+          <text x="212" y="442" class="small">abort open stream · discard unrendered chunks · retain rendered output</text>
+          <path d="M170 305 V345 Q170 362 190 382" class="arrow"/>
+          <path d="M430 305 V382" class="arrow"/>
+
+          <rect x="680" y="382" width="350" height="80" class="box danger-fill"/>
+          <text x="735" y="415" class="label">Conversation and input session end</text>
+          <text x="735" y="442" class="small">external websocket violation follows this side</text>
+          <path d="M690 305 V382" class="arrow danger-arrow"/>
+          <path d="M950 305 V382" class="arrow danger-arrow"/>
+        </svg>
+      </div>
+      <div class="callout">
+        A protocol violation by an external websocket client is session-fatal: reject it with a typed response
+        where safe, then close. Invalid output from an agent is conversation-local. A broken bridge invariant is
+        an internal defect and terminates the input session after best-effort cleanup. If several results are
+        already ready together, the bridge uses the ratified terminal-priority order rather than scheduler luck.
+      </div>
+    </section>
+
+    <section id="lifetime">
+      <h2>Bridge-owned startup; input-owned backpressure</h2>
+      <div class="grid two">
+        <article class="card bridge">
+          <h3>The bridge opens both scoped sides</h3>
+          <pre class="code">request = await input_session.accept_conversation()
+
+await bridge_conversation(
+    request,
+    input_session,
+    agent,
+    context_provider,
+)
+
+# Inside the bridge, already in STARTING:
+conversation_id = new_conversation_id()
+context = await resolve_context(...)
+
+async with input_session.open_conversation(
+        request, context
+    ) as input_conversation:
+    async with agent.open_conversation(
+            context
+        ) as agent_conversation:
+        await run_state_machine(...)</pre>
+          <p class="muted" style="margin-top:14px">The bridge exists before context resolution or either <code>__aenter__</code>, so it owns startup cancellation, failure classification, and exact-once cleanup.</p>
+        </article>
+        <article class="card input">
+          <h3>A slow input pushes back by blocking</h3>
+          <div class="steps">
+            <div class="step"><b>1</b><p>The agent offers one ordered assistant event.</p></div>
+            <div class="step"><b>2</b><p>The bridge validates it and awaits the input sink's <code>send</code>.</p></div>
+            <div class="step"><b>3</b><p>A slow device may use its own bounded buffer. When full, <code>send</code> simply blocks.</p></div>
+            <div class="step"><b>4</b><p>The blocked bridge stops accepting agent output, so pushback reaches the producer without a bridge queue.</p></div>
+          </div>
+        </article>
+      </div>
+      <div class="picture" style="margin-top:18px" role="img" aria-label="Direct blocking send from bridge to an input-owned sink and optional bounded device buffer">
+        <svg viewBox="0 0 1100 310" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/>
+            </marker>
+          </defs>
+          <rect x="35" y="92" width="200" height="100" class="box agent-fill"/>
+          <text x="69" y="131" class="label">AgentConversation</text>
+          <text x="69" y="160" class="small">next event waits</text>
+
+          <path d="M235 142 H330" class="arrow agent-arrow"/>
+          <rect x="340" y="92" width="200" height="100" class="box bridge-fill"/>
+          <text x="376" y="131" class="label">Bridge coroutine</text>
+          <text x="376" y="160" class="small">validate · await send</text>
+
+          <path d="M540 142 H635" class="arrow bridge-arrow"/>
+          <text x="555" y="124" class="tiny">blocking send</text>
+
+          <rect x="645" y="45" width="420" height="200" class="box input-fill"/>
+          <text x="762" y="78" class="label">InputConversation sink</text>
+          <rect x="680" y="103" width="190" height="92" class="box stream-fill"/>
+          <text x="709" y="133" class="label">Optional buffer</text>
+          <text x="709" y="160" class="small">bounded by device</text>
+          <text x="709" y="181" class="tiny">full → send blocks</text>
+          <path d="M870 149 H910" class="arrow input-arrow"/>
+          <rect x="920" y="103" width="110" height="92" class="box neutral-fill"/>
+          <text x="941" y="137" class="label">Render</text>
+          <text x="941" y="164" class="tiny">TTS / UI</text>
+
+          <path d="M635 218 H550 Q520 218 520 195" class="arrow input-arrow dash"/>
+          <text x="280" y="276" class="small">Backpressure travels upstream. Buffering never moves into the bridge or agent.</text>
+        </svg>
+      </div>
+      <div class="callout">
+        The input sink serializes <code>complete()</code> and priority <code>abort()</code>. Exactly one commits.
+        Abort discards only input-buffered, unrendered output; anything already presented remains visible or spoken.
+      </div>
+    </section>
+
+    <section>
+      <h2>What changes—and what deliberately does not</h2>
+      <div class="grid two">
+        <article class="card bridge">
+          <h3>Changed together</h3>
+          <ul>
+            <li>Core messages, interfaces, and state machine</li>
+            <li>Every Agent implementation</li>
+            <li>Websocket JSON server and repository clients</li>
+            <li>Microphone manager-to-conversation binding</li>
+            <li>Normative documentation and conformance tests</li>
+          </ul>
+        </article>
+        <article class="card input">
+          <h3>Preserved in T-004</h3>
+          <ul>
+            <li>Normative microphone manager-to-driver protocol</li>
+            <li>Concrete drivers and firmware behavior</li>
+            <li>T-002 audio-progress correlation fix</li>
+            <li>T-003 pre-roll and stop-race behavior</li>
+            <li>Websocket background reading for heartbeat and liveness</li>
+          </ul>
+        </article>
+      </div>
+      <p class="callout">
+        Future microphone work may add true streaming TTS or stronger playback-abort acknowledgement. T-004
+        records those possibilities but does not silently expand the driver protocol.
+      </p>
+    </section>
+
+    <footer>
+      <p>
+        This page is an informative picture of the ratified T-004 architecture. The implementation plan is
+        <a href="T-004-conversation-bridge-protocol-redesign.md">T-004: Conversation Bridge Protocol Redesign</a>.
+        Once approved, the normative source will be the rewritten
+        <a href="../ai-server-conversation-protocol.md">AI Server Conversation Protocol</a> and its binding documents.
+      </p>
+    </footer>
+  </main>
+</body>
+</html>
