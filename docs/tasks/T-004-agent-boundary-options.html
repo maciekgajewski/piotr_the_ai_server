@@ -235,6 +235,13 @@
   </style>
 </head>
 <body>
+  <svg aria-hidden="true" width="0" height="0" style="position:absolute">
+    <defs>
+      <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/>
+      </marker>
+    </defs>
+  </svg>
   <main class="shell">
     <header class="hero">
       <p class="eyebrow">T-004 · Illustrated design aid</p>
@@ -252,6 +259,7 @@
         <a href="#ownership">Who owns what</a>
         <a href="#failure">Cancellation and failure</a>
         <a href="#lifetime">Lifetime and backpressure</a>
+        <a href="#resource-limits">Capacity and shutdown</a>
       </nav>
     </header>
 
@@ -264,11 +272,6 @@
       </p>
       <div class="picture" role="img" aria-label="Two input sessions with separate bridge coroutines and agent conversations created by one shared agent factory">
         <svg viewBox="0 0 1100 570" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/>
-            </marker>
-          </defs>
           <text x="40" y="42" class="title">Persistent input sessions</text>
           <text x="505" y="42" class="title">One state holder per conversation</text>
           <text x="878" y="42" class="title">Agent side</text>
@@ -334,7 +337,8 @@
       <h2>One bridge: a narrow, enforceable boundary</h2>
       <p class="section-intro">
         The input adapter first returns a completely ready InputConversation. The bridge then adopts its ID,
-        resolves typed agent context, and opens the AgentConversation. It never knows whether the input is a
+        starts watching input control, resolves typed agent context synchronously, and races that watcher
+        against AgentConversation entry and every user-message handoff. It never knows whether the input is a
         websocket, microphone, or future medium, or which concrete agent is behind the agent interface.
       </p>
       <div class="grid three">
@@ -371,11 +375,6 @@
       </p>
       <div class="picture" role="img" aria-label="Sequence diagram for a user message, processing update, streamed assistant reply, and explicit follow-up disposition">
         <svg viewBox="0 0 1100 760" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/>
-            </marker>
-          </defs>
           <rect x="55" y="30" width="250" height="62" class="box input-fill"/>
           <text x="82" y="68" class="label">InputSession / Conversation</text>
           <rect x="425" y="30" width="250" height="62" class="box bridge-fill"/>
@@ -391,6 +390,7 @@
 
           <path d="M560 196 H910" class="arrow bridge-arrow"/>
           <text x="664" y="186" class="label">UserMessage</text>
+          <text x="636" y="211" class="tiny">input control remains watched until Agent acceptance</text>
 
           <path d="M910 250 H560" class="arrow agent-arrow"/>
           <text x="666" y="240" class="label">ProcessingUpdate</text>
@@ -422,7 +422,7 @@
           <text x="270" y="640" class="tiny">no timeout value</text>
 
           <rect x="55" y="666" width="250" height="62" class="box input-fill"/>
-          <text x="78" y="691" class="small">Input presents the offer, then</text>
+          <text x="78" y="691" class="small">The presenter shows the offer, then</text>
           <text x="78" y="714" class="small">starts its own medium-aware clock</text>
         </svg>
       </div>
@@ -435,6 +435,11 @@
           <h3>If the offer expires</h3>
           <p class="muted">The input sends <code>FollowUpTimedOut</code>; the bridge ends the conversation with a typed reason.</p>
         </article>
+      </div>
+      <div class="callout">
+        On a microphone, speech start is the local commit point. Speech detected at or before timer expiry
+        cancels and suppresses that timeout while STT finishes. If expiry commits first, the adapter emits one
+        <code>FollowUpTimedOut</code> and suppresses later speech. The bridge sees exactly one outcome.
       </div>
     </section>
 
@@ -451,18 +456,28 @@
           </thead>
           <tbody>
             <tr>
+              <td class="bridge-text">Application runtime</td>
+              <td>Signal handling, InputSession registry, admission gate, one graceful deadline, shared-resource close order</td>
+              <td>Conversation message ordering, presentation timing, concrete Agent state</td>
+            </tr>
+            <tr>
               <td class="bridge-text">Core bridge</td>
-              <td>Core startup from ready input, turn order, stream framing, cross-side cancellation, terminal outcome</td>
+              <td>Core startup from ready input, raced Agent-input handoff, turn order, stream framing, cross-side cancellation, terminal outcome</td>
               <td>Websocket JSON, microphone cues, TTS timing, buffer size, concrete agent type</td>
             </tr>
             <tr>
-              <td class="input-text">Websocket adapter</td>
-              <td>JSON schema, delivery, heartbeat, connection close, external rejection, its follow-up presentation</td>
+              <td class="input-text">Server websocket adapter</td>
+              <td>JSON schema, pre-upgrade capacity, transport handoff, follow-up resource lease, heartbeat, connection close, external rejection</td>
+              <td>Client presentation time, client timer, microphone services, agent internals</td>
+            </tr>
+            <tr>
+              <td class="input-text">External websocket client</td>
+              <td>UI presentation, explicit follow-up timeout policy, and serialization of timeout versus user submission</td>
               <td>Microphone driver services, agent internals</td>
             </tr>
             <tr>
               <td class="input-text">Microphone adapter</td>
-              <td>Accepted STT, cues, playback, slow-TTS buffering and pushback, follow-up presentation, recovery and re-arm</td>
+              <td>Accepted STT, cues, playback, slow-TTS buffering and pushback, follow-up presentation, speech-start-over-timeout arbitration, recovery and re-arm</td>
               <td>Websocket events, concrete DSA behavior</td>
             </tr>
             <tr>
@@ -484,11 +499,6 @@
       </p>
       <div class="picture" role="img" aria-label="Failure paths showing conversation-local agent and input failures, session-fatal input closure, and fatal bridge invariant failure">
         <svg viewBox="0 0 1100 510" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/>
-            </marker>
-          </defs>
           <rect x="410" y="38" width="280" height="92" class="box bridge-fill"/>
           <text x="463" y="75" class="label">Active bridge coroutine</text>
           <text x="452" y="103" class="small">any non-terminal state</text>
@@ -511,7 +521,7 @@
           <rect x="835" y="200" width="230" height="105" class="box danger-fill"/>
           <text x="865" y="235" class="label">Bridge invariant</text>
           <text x="865" y="263" class="small">INTERNAL_FAILURE</text>
-          <text x="865" y="285" class="tiny">fail loudly after cleanup</text>
+          <text x="865" y="285" class="tiny">terminate server process non-zero</text>
 
           <path d="M475 130 L215 200" class="arrow agent-arrow"/>
           <path d="M520 130 L440 200" class="arrow input-arrow"/>
@@ -524,27 +534,37 @@
           <path d="M170 305 V345 Q170 362 190 382" class="arrow"/>
           <path d="M430 305 V382" class="arrow"/>
 
-          <rect x="680" y="382" width="350" height="80" class="box danger-fill"/>
-          <text x="735" y="415" class="label">Conversation and input session end</text>
-          <text x="735" y="442" class="small">external websocket violation follows this side</text>
+          <rect x="650" y="382" width="190" height="80" class="box danger-fill"/>
+          <text x="675" y="415" class="label">Input session ends</text>
+          <text x="675" y="442" class="tiny">connection/session scope</text>
           <path d="M690 305 V382" class="arrow danger-arrow"/>
+
+          <rect x="865" y="382" width="210" height="80" class="box danger-fill"/>
+          <text x="891" y="415" class="label">Server process exits</text>
+          <text x="891" y="442" class="tiny">non-zero; supervisor may restart</text>
           <path d="M950 305 V382" class="arrow danger-arrow"/>
         </svg>
       </div>
       <div class="callout">
         A protocol violation by an external websocket client is session-fatal: reject it with a typed response
         where safe, then close. Invalid output from an agent is conversation-local. A broken bridge invariant is
-        an internal defect and terminates the input session after best-effort cleanup. If several results are
-        already ready together, the bridge uses the ratified terminal-priority order rather than scheduler luck.
+        an internal defect and terminates the complete server process non-zero after bounded best-effort
+        notification and logging. If several results are already ready together, the bridge uses the ratified
+        terminal-priority order rather than scheduler luck.
+      </div>
+      <div class="callout">
+        Ordinary application shutdown stays outside the event vocabulary. The application stops admission and
+        closes every InputSession; bridges observe ordinary <code>InputSessionClosed</code>, cancel Agent work,
+        and clean up within one global deadline. Deadline expiry or a second signal hard-exits non-zero.
       </div>
       <div class="grid two" style="margin-top:18px">
         <article class="card input">
           <h3>Expected context outcome</h3>
-          <p class="muted"><code>CONTEXT_REJECTED</code> or <code>CONTEXT_UNAVAILABLE</code> ends only this conversation. The input session may become ready again.</p>
+          <p class="muted"><code>CONTEXT_REJECTED</code> carries a required closed rejection code. It and <code>CONTEXT_UNAVAILABLE</code> end only this conversation, so the input session may become ready again.</p>
         </article>
         <article class="card danger">
           <h3>Broken provider contract</h3>
-          <p class="muted">Malformed results or unexpected exceptions are <code>INTERNAL_FAILURE</code>: terminal delivery is attempted, then the input session closes and the server fails loudly.</p>
+          <p class="muted">Malformed results or unexpected exceptions are <code>INTERNAL_FAILURE</code>: bounded terminal delivery is attempted, then the complete server process terminates non-zero.</p>
         </article>
       </div>
     </section>
@@ -566,13 +586,38 @@
 conversation_id = (
     input_conversation.context.conversation_id
 )
-context = await resolve_agent_context(...)
+input_control = create_task(
+    input_conversation.receive_control()
+)
+context_result = resolve_agent_context(...)
+startup = select_context_or_input_control(
+    context_result,
+    input_control,
+)
+if startup.ends:
+    await finish_startup(startup)
+    return
 
-async with agent.open_conversation(
-        context
-    ) as agent_conversation:
-    await run_state_machine(...)</pre>
-          <p class="muted" style="margin-top:14px">Before the input context returns, setup failures are input-session-local and no core conversation exists. After it returns, every bridge outcome can be reported through the ready InputConversation.</p>
+entry = await race_agent_entry(
+    agent.open_conversation(startup.context),
+    input_control,
+)
+if entry.ends:
+    await finish_startup(entry)
+    return
+delivery = await race_user_delivery(
+    entry.agent_conversation,
+    input_conversation.initial_message,
+    input_control,
+)
+if delivery.ends:
+    await finish_delivery(delivery)
+    return
+await run_state_machine(
+    entry.agent_conversation,
+    pending_input_control=input_control,
+)</pre>
+          <p class="muted" style="margin-top:14px">Before the input context returns, setup failures are input-session-local and no core conversation exists. After it returns, the bridge observes input control continuously—including while either initial or follow-up input waits for Agent acceptance. Input control wins simultaneous readiness; every losing task is joined.</p>
         </article>
         <article class="card input">
           <h3>A slow input pushes back by blocking</h3>
@@ -586,11 +631,6 @@ async with agent.open_conversation(
       </div>
       <div class="picture" style="margin-top:18px" role="img" aria-label="Direct blocking send from bridge to an input-owned sink and optional bounded device buffer">
         <svg viewBox="0 0 1100 310" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L0,6 L9,3 z" fill="context-stroke"/>
-            </marker>
-          </defs>
           <rect x="35" y="92" width="200" height="100" class="box agent-fill"/>
           <text x="69" y="131" class="label">AgentConversation</text>
           <text x="69" y="160" class="small">zero-buffer emit</text>
@@ -625,7 +665,79 @@ async with agent.open_conversation(
         microphone may discard anything still uncommitted in its own bounded renderer buffer. An in-flight
         websocket writer is serialized and allowed to finish or close the session; it is never reinterpreted as
         unsent. Agent cancellation is acknowledged only after all model, tool, producer, and background work has
-        stopped; missing that deadline is a fatal invariant.
+        stopped; missing the entry or cancellation deadline terminates the complete server process non-zero.
+      </div>
+    </section>
+
+    <section id="resource-limits">
+      <h2>Bounded connections; bounded graceful shutdown</h2>
+      <p class="section-intro">
+        Websocket capacity is reserved before upgrade, and follow-up waiting has a server resource lease which
+        is separate from the client's semantic timeout. Application shutdown uses the same sealed InputSession
+        close path and one global deadline.
+      </p>
+      <div class="picture" role="img" aria-label="Websocket capacity admission, follow-up resource lease, and bounded graceful shutdown flows">
+        <svg viewBox="0 0 1100 560" xmlns="http://www.w3.org/2000/svg">
+          <text x="45" y="42" class="title">Connection admission</text>
+          <rect x="45" y="70" width="190" height="76" class="box neutral-fill"/>
+          <text x="82" y="103" class="label">HTTP upgrade</text>
+          <text x="82" y="128" class="tiny">no websocket yet</text>
+          <path d="M235 108 H330" class="arrow"/>
+          <rect x="340" y="70" width="225" height="76" class="box input-fill"/>
+          <text x="376" y="103" class="label">Atomic capacity gate</text>
+          <text x="376" y="128" class="tiny">never waits or queues</text>
+          <path d="M565 91 H680" class="arrow input-arrow"/>
+          <text x="586" y="79" class="tiny">slot reserved</text>
+          <rect x="690" y="55" width="360" height="72" class="box stream-fill"/>
+          <text x="724" y="87" class="label">Upgrade; release slot exactly once</text>
+          <text x="724" y="111" class="tiny">idle · accepting · active all count</text>
+          <path d="M565 132 H680" class="arrow danger-arrow"/>
+          <text x="590" y="157" class="tiny">full</text>
+          <rect x="690" y="140" width="360" height="72" class="box danger-fill"/>
+          <text x="724" y="172" class="label">HTTP 503 + configured Retry-After</text>
+          <text x="724" y="196" class="tiny">request is not upgraded</text>
+
+          <text x="45" y="265" class="title">Follow-up resource lease</text>
+          <rect x="45" y="290" width="245" height="76" class="box bridge-fill"/>
+          <text x="76" y="322" class="label">FollowUpRequested commits</text>
+          <text x="76" y="347" class="tiny">transport handoff starts lease</text>
+          <path d="M290 328 H380" class="arrow bridge-arrow"/>
+          <rect x="390" y="290" width="260" height="76" class="box input-fill"/>
+          <text x="425" y="322" class="label">Wait for client outcome</text>
+          <text x="425" y="347" class="tiny">heartbeats do not extend lease</text>
+          <path d="M650 310 H745" class="arrow input-arrow"/>
+          <rect x="755" y="270" width="295" height="72" class="box stream-fill"/>
+          <text x="789" y="302" class="label">Valid reply: cancel lease</text>
+          <text x="789" y="326" class="tiny">at deadline also wins</text>
+          <path d="M650 350 H745" class="arrow danger-arrow"/>
+          <rect x="755" y="355" width="295" height="72" class="box danger-fill"/>
+          <text x="789" y="387" class="label">Expiry: websocket 1013</text>
+          <text x="789" y="411" class="tiny">InputSessionClosed; never timeout</text>
+
+          <text x="45" y="475" class="title">First signal: one global graceful deadline</text>
+          <rect x="45" y="495" width="180" height="50" class="box neutral-fill"/>
+          <text x="76" y="526" class="label">Stop admission</text>
+          <path d="M225 520 H285" class="arrow"/>
+          <rect x="295" y="495" width="200" height="50" class="box input-fill"/>
+          <text x="323" y="526" class="label">Close all inputs</text>
+          <path d="M495 520 H555" class="arrow"/>
+          <rect x="565" y="495" width="205" height="50" class="box bridge-fill"/>
+          <text x="593" y="526" class="label">Join all bridges</text>
+          <path d="M770 520 H830" class="arrow"/>
+          <rect x="840" y="480" width="210" height="65" class="box stream-fill"/>
+          <text x="868" y="508" class="label">Close shared resources</text>
+          <text x="868" y="531" class="tiny">success → process exit 0</text>
+        </svg>
+      </div>
+      <div class="grid two" style="margin-top:18px">
+        <article class="card input">
+          <h3>Explicit resource configuration</h3>
+          <p class="muted"><code>max_connections</code>, capacity <code>Retry-After</code>, follow-up idle lease, and shutdown grace period are required positive configuration values. There are no hidden defaults.</p>
+        </article>
+        <article class="card danger">
+          <h3>Hard bound remains real</h3>
+          <p class="muted">Lease expiry closes with <code>1013 Try Again Later</code> and never fabricates <code>FollowUpTimedOut</code>. A second shutdown signal or global deadline expiry forces immediate non-zero process exit.</p>
+        </article>
       </div>
     </section>
 
@@ -639,6 +751,7 @@ async with agent.open_conversation(
             <li>Every Agent implementation</li>
             <li>Websocket JSON server and repository clients</li>
             <li>Microphone manager-to-conversation binding</li>
+            <li>Server signal handling, explicit resource limits, and graceful cleanup</li>
             <li>Normative documentation and conformance tests</li>
           </ul>
         </article>
