@@ -18,10 +18,12 @@
 - A config file is required ot start the server. The config file always has to be provided by user in the command-line parameters, regardless if launched directly or trough a wrapper script. Do not hardcode config values in the code. Test tools are the only exception.
 - Abstract components must stay sealed behind their abstract interfaces. DSAs, input modules, microphones, and similar pluggable components must expose behavior only through their interface methods; other parts of the system must not hardcode knowledge of concrete component types, prompts, commands, or shortcuts.
 - Before changing orchestrator or DSA planning architecture, read `docs/orchestrator-dsa-architecture.md`.
-- Before changing `ai_server/messages.py`, `ai_server/interfaces.py`, `ai_server/sessions.py`, websocket clients, or the websocket server, read `docs/ai-server-conversation-protocol.md`.
+- Before changing the conversation core, scoped conversation interfaces, Agent factories, input supervision, or application Conversation shutdown, read `docs/ai-server-conversation-protocol.md` and the active T-004 status in `docs/README.md`.
+- Before changing websocket admission, JSON events, websocket clients, heartbeat, capacity, follow-up gating, or websocket resource leases, read `docs/websocket-conversation-protocol.md` and `docs/ai-server-conversation-protocol.md`.
 - Before changing `ai_server/microphones/`, microphone configuration, or satellite microphone firmware, read `docs/microphone-protocol.md`.
-- Before changing microphone-to-session behavior, read `docs/ai-server-conversation-protocol.md`, `docs/microphone-protocol.md`, and `docs/microphone-conversation-mapping.md`.
+- Before changing microphone-to-conversation behavior, read `docs/ai-server-conversation-protocol.md`, `docs/microphone-protocol.md`, and `docs/microphone-conversation-mapping.md`.
 - Protocol documents define the intended contract once marked `Normative`. Implementation drift from an approved normative protocol is a defect.
+- Draft normative documents describe a proposed contract and do not supersede runtime behavior until Captain approval and the task's atomic cutover.
 - Protocol changes must update the applicable documentation and conformance tests in the same change.
 - Concrete microphone service names, display assets, and LED behavior belong inside drivers and firmware. Other components use only the abstract microphone interface.
 

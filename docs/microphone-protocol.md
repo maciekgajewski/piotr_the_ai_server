@@ -8,7 +8,7 @@
 
 This document defines the abstract protocol between `MicrophoneManager` and a microphone driver. It governs listening, captured speech segments, assistant playback, cues, visual state, correlation, failure, and recovery.
 
-It does not govern Conversation lifecycle, STT internals, speaker recognition internals, or device-specific ESPHome services. Translation to Conversation events is defined by [Microphone-Conversation Mapping](microphone-conversation-mapping.md).
+It does not govern Conversation lifecycle, STT internals, speaker recognition internals, or device-specific ESPHome services. The approved T-004 translation to Conversation events is defined by [Microphone-Conversation Mapping](microphone-conversation-mapping.md); that mapping does not alter this manager-to-driver contract.
 
 Requirement identifiers use the `MP-` prefix.
 
@@ -286,7 +286,7 @@ After `SpeechEnded`, the final transcript determines acceptance.
 | Timeout | Starts | Successful completion | Failure meaning | Owner |
 |---|---|---|---|---|
 | Arm acknowledgement | `StartListening` | `ListeningStarted` | Device did not enter requested mode | Manager |
-| Follow-up speech start | follow-up `ListeningStarted` | `SpeechStarted` | User did not begin follow-up | Mapping/manager using Session deadline |
+| Follow-up speech start | follow-up `ListeningStarted` | `SpeechStarted` | User did not begin follow-up | Mapping/manager using input-adapter policy |
 | Segment liveness | `SpeechStarted` or last segment event | next `AudioChunk`, `AudioProgress`, or `SpeechEnded` | Active capture stalled | Manager |
 | Cue completion | `PlayCue` | `CueFinished` | Cue operation stalled | Manager |
 | Playback completion | `PlaybackBegin` or last playback activity | `PlaybackFinished` | Playback stalled | Manager |

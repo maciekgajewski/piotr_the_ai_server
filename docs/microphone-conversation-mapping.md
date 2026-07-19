@@ -2,320 +2,409 @@
 
 ## Status and scope
 
-- **Authority:** Normative
-- **Audience:** Agents changing the adapter between microphone behavior and Session/Conversation behavior
-- **Read when:** Working on `MicrophoneManager`, microphone session endpoints, voice follow-up, TTS playback sequencing, or microphone Conversation tests
+- **Authority:** Normative mapping; approved for T-004 implementation
+- **Audience:** Maintainers of MicrophoneManager, voice InputSession adaptation, STT/TTS integration, and microphone Conversation tests
+- **Read when:** Changing accepted-speech creation, assistant rendering, follow-up, cancellation, recovery, or re-arm behavior
+- **Approval state:** Approved by Captain on 2026-07-19
 
-This document defines how the normative [Microphone Protocol](microphone-protocol.md) is translated into the normative [AI Server Conversation Protocol](ai-server-conversation-protocol.md).
+This document maps the normative
+[Microphone Protocol](microphone-protocol.md) to the draft
+[AI Server Conversation Bridge Protocol](ai-server-conversation-protocol.md).
+It preserves the manager-to-driver event vocabulary and all T-002/T-003
+ordering, correlation, recovery, reason-string, and re-arm requirements.
 
-It is not a third lifecycle owner. It assigns translation and sequencing responsibilities to a voice adapter implemented by `MicrophoneManager` and its Session endpoint.
+This mapping does not authorize firmware or driver-protocol changes. It replaces
+the old Session/ConversationEndpoint mapping at T-004 atomic cutover.
 
 Requirement identifiers use the `MAP-` prefix.
 
 ## Ownership boundaries
 
-- Session owns Session and Conversation state.
-- MicrophoneManager owns microphone protocol state, capture processing, playback, cues, visual state while connected, and the voice adapter.
-- A microphone driver knows only the Microphone Protocol.
-- Session knows only the Conversation Protocol.
-- An agent knows only `Conversation` and `ConversationEndpoint`.
-- The voice adapter MUST NOT copy Session's lifecycle state machine or expose raw microphone events to Session. (`MAP-OWNER-001`)
+- `MicrophoneManager` owns the persistent voice `InputSession`, input
+  acceptance, capture, STT, optional speaker recognition, cues, playback,
+  connected visual state, follow-up presentation/timing, and media recovery.
+- The per-Conversation voice adapter owns one `InputConversation`, its control
+  stream, assistant sink, follow-up commit token, and exact-once cleanup.
+- The core bridge owns only cross-side Conversation state. It MUST NOT observe
+  listening generations, speech starts, partial transcripts, audio, cues,
+  playback IDs, visual state, concrete drivers, or TTS batching.
+- A microphone driver knows only the Microphone Protocol and MUST NOT create or
+  consume core Conversation events. (`MAP-OWNER-001`)
+- The mapping MUST NOT reproduce the bridge state machine or infer Agent state
+  from device behavior. (`MAP-OWNER-002`)
 
 ## Terminology
 
-- **Voice adapter:** The MicrophoneManager role that translates accepted speech and assistant output across protocols.
-- **Accepted utterance:** Non-empty final text approved by the active capture mode's acceptance rules.
-- **Pending playback:** A complete assistant message received from Session but not yet fully drained by the device.
-- **Re-arm:** Starting a new microphone listening generation after Session is ready and conflicting output is complete.
+- **Voice InputSession:** Persistent manager-owned input scope for one
+  microphone instance.
+- **Voice acceptance:** Atomic boundary at which final non-whitespace text,
+  request context, and a fresh Conversation ID form a ready InputConversation.
+- **Pre-Conversation work:** Readiness, listening, capture, STT, acceptance,
+  accepted cue, and optional speaker recognition before voice acceptance.
+- **Follow-up presentation:** The point at which output has drained, the
+  `FOLLOW_UP_READY` cue completed, and matching `FOLLOW_UP` listening is active.
+- **Rendering batch:** Adapter-local bounded group of assistant text chunks sent
+  to the current TTS implementation.
+- **Re-arm:** Explicitly starting a fresh listening generation after media
+  cleanup and InputSession return to `IDLE`.
+- **Illustrative milestone:** A sequence label such as final transcript accepted;
+  it is not a typed event unless it appears in an event inventory.
 
-## Event and state dependencies
+## Typed event inventory
 
-This mapping defines no new typed events and no independent protocol state machine. It consumes and produces only events defined by the two base protocols:
+### Microphone side to voice adapter
 
-- Conversation events and states come from the [AI Server Conversation Protocol](ai-server-conversation-protocol.md).
-- Listening, capture, cue, playback, visual, and driver events and states come from the [Microphone Protocol](microphone-protocol.md).
+These events are defined by the Microphone Protocol. Only the subset that can
+affect mapping decisions is listed; other driver events remain manager-local.
 
-The adapter MAY keep implementation bookkeeping such as pending playback or a queued Session event, but such bookkeeping is not a third lifecycle authority. Its valid actions are determined by the current state of both base protocols.
+| Event/result | Fields used by mapping | Valid mapping states | Mapping effect |
+|---|---|---|---|
+| `ListeningStarted` | `listen_id`, `mode` | `ACCEPTING`, `PRESENTING_FOLLOW_UP` | Readiness or follow-up presentation may complete |
+| `SpeechStarted` | `listen_id`, `utterance_id`, audio format, optional wake word | `ACCEPTING`, `AWAITING_FOLLOW_UP` | Start capture; wins exact follow-up boundary race |
+| `AudioChunk`/`AudioProgress` | correlation fields | active capture | Feed/observe private STT path |
+| `SpeechEnded` | correlation fields, reason | active capture | Complete STT/acceptance decision |
+| `CueFinished` | `cue_id` | matching cue operation | Continue pre-Conversation or follow-up presentation |
+| `PlaybackFinished` | `playback_id` | `RENDERING` | Release rendered batch/output drain |
+| `MicrophoneUnavailable` | operation correlation, reason | any non-terminal adapter state | Recover locally or fail/close input scope |
+| `DriverClosed` | none | every non-terminal state | Close InputSession |
 
-## Transition principle
+Partial STT snapshots and wake-candidate decisions remain internal manager
+results. They MUST NOT cross into the core. (`MAP-INPUT-001`)
 
-For every cross-protocol action, all prerequisites from both base protocols MUST be satisfied. If one side is not ready, the adapter retains the already-received event in order and waits; it MUST NOT fabricate a transition on the other side.
+### Voice adapter to bridge
 
-The detailed sections below are the normative transition table for each supported mapping trigger. Any cross-protocol trigger not listed is invalid until this document is amended.
+| Core field/event | Source condition | Constraint |
+|---|---|---|
+| `InputConversation.initial_message` | Accepted final STT for new Conversation | Complete non-whitespace text, exposed once |
+| `UserMessage` | Accepted final STT during acknowledged follow-up | Complete non-whitespace text |
+| `FollowUpTimedOut` | Manager's presenter timer wins | Exactly once for acknowledged interval |
+| `ConversationCancelled` | User or input-local cancellation | Every active Conversation state |
+| `InputConversationFailed` | Media failure recovered without closing persistent input | Active Conversation only |
+| `InputSessionClosed` | Driver/session cannot continue | Every active Conversation state |
 
-## Session establishment
+Wake detection, `SpeechStarted`, partial text, rejected final text, empty capture,
+cue completion, and playback progress are not core events. (`MAP-INPUT-002`)
 
-Each microphone has one persistent local Session.
+### Bridge to voice adapter operations
 
-- The adapter MUST create it with validated `medium=voice` attributes. (`MAP-SESSION-001`)
-- The adapter MAY include configured `area`.
-- `user` MUST be a Conversation attribute derived from accepted speaker recognition, not a permanent microphone Session attribute.
-- The trusted local Session skips external `HANDSHAKE` and begins in Conversation Protocol `IDLE`.
-- The adapter MUST close the Session when the driver is permanently closed.
+| Operation | Microphone mapping | Commit point |
+|---|---|---|
+| assistant sink `start()` | Open bounded per-turn renderer and set `PROCESSING` | Renderer accepts stream start |
+| `send_text(chunk)` | Feed bounded text batching/synthesis path | Chunk accepted into bounded renderer; external media commit may occur later |
+| `complete()` | Flush final batch and drain every correlated playback | Last required playback completes, or empty stream closes |
+| `abort(reason, detail)` | Discard uncommitted text, cancel synthesis, stop rendering where supported, clean media | Adapter commits abort before completion commit |
+| `request_follow_up()` | Drain assistant output, set `LISTENING`, play `FOLLOW_UP_READY`, arm `FOLLOW_UP` listening and timer | User has actually been presented the offer |
+| `acknowledge_follow_up_ready(token)` | Open outcome eligibility for matching local interval | Synchronous matching-token acknowledgement |
+| `end_conversation(event)` | Record typed result and complete/abort media cleanup | Adapter accepts terminal result |
 
-## Ready-for-conversation mapping
+The token is created only after presentation commits. Before acknowledgement,
+speech/timeout arbitration may retain one adapter-local outcome but MUST NOT
+expose it to the bridge. Terminal input bypasses and clears that retained value.
+(`MAP-FOLLOWUP-001`)
 
-When Session emits `ReadyForConversation`, the adapter MUST wait until:
+`ConversationEnded.context_rejection_code` remains a typed enum through this
+mapping. The adapter MAY select a configured medium-specific response from the
+enum but MUST NOT parse diagnostic `detail`. (`MAP-TERMINAL-001`)
 
-- no assistant playback is pending or draining;
-- no cue is active;
-- no previous listening generation is stopping;
-- the driver is connected and disarmed.
+### Voice adapter to Microphone Protocol
 
-It then MUST:
+The adapter uses only these existing abstract commands:
 
-1. send `SetVisualState(IDLE)`;
-2. generate a new `listen_id`;
-3. send `StartListening` in the microphone's configured new-conversation mode: `WAKE_WORD` or `OPEN_MIC`;
-4. await matching `ListeningStarted`.
+| Mapping action | Commands |
+|---|---|
+| Announce new-Conversation readiness | `SetVisualState(IDLE)`, then `StartListening` with `WAKE_WORD` or `OPEN_MIC` |
+| Indicate wake/candidate input | `SetVisualState(LISTENING)` |
+| Accept utterance | `SetVisualState(PROCESSING)`, optional `StopListening`, `PlayCue(UTTERANCE_ACCEPTED)` |
+| Present follow-up | `SetVisualState(LISTENING)`, `PlayCue(FOLLOW_UP_READY)`, `StartListening(FOLLOW_UP)` |
+| Follow-up timeout | `StopListening`, `PlayCue(FOLLOW_UP_TIMEOUT)`, `SetVisualState(IDLE)` after cue |
+| Render assistant | `SetVisualState(PROCESSING)`, `PlaybackBegin`, `PlaybackChunk`*, `PlaybackEnd` |
+| Close | matching stop/cleanup, then `Close` when persistent driver boundary ends |
 
-`ReadyForConversation` does not itself create a Conversation. (`MAP-SESSION-002`)
+Exact command legality, correlation, and acknowledgement remain governed by the
+Microphone Protocol.
 
-## Accepted new-conversation utterance
+## State inventory
 
-An accepted wake-word or open-mic utterance maps to exactly one Conversation and exactly one user message. (`MAP-INPUT-001`)
+The core InputSession state is authoritative for acceptance cardinality. The
+mapping uses these media substates only to serialize microphone work:
 
-Before sending Conversation events, the adapter MUST:
+| Media substate | Compatible InputSession state | Meaning |
+|---|---|---|
+| `QUIESCENT` | `IDLE` | No readiness or media operation active |
+| `ACCEPTING` | `ACCEPTING` | New-Conversation listening/capture/STT is active |
+| `ACTIVE` | `ACTIVE` | InputConversation exists; Agent may be working |
+| `RENDERING` | `ACTIVE` | Assistant text is being synthesized or played |
+| `PRESENTING_FOLLOW_UP` | `ACTIVE` | Output drain/cue/arm is committing a follow-up offer |
+| `AWAITING_FOLLOW_UP` | `ACTIVE` | Follow-up listening/timer arbitration is active |
+| `RECOVERING` | `ACCEPTING` or `ACTIVE` | Manager is restoring a trusted microphone boundary |
+| `CLOSING` | `CLOSING` | Pending input and media operations are being released |
+| `CLOSED` | `CLOSED` | Driver and InputSession are terminal |
 
-1. possess non-empty accepted final text;
-2. ensure the capture segment is complete;
-3. stop and join any still-active listening generation;
-4. set the visual state to `PROCESSING`;
-5. complete the `UTTERANCE_ACCEPTED` cue;
-6. await speaker recognition only if it was enabled for the accepted utterance.
+Capture-open, cue-active, and playback-active remain Microphone Protocol states,
+not additional mapping states.
 
-It then sends, without interleaving another microphone utterance:
+## Complete transition tables
 
-```text
-NewConversation(attributes)
-MessageBegin(message_id)
-MessageFragment(message_id, final_text)
-MessageEnd(message_id)
-```
+### New-Conversation acceptance matrix
 
-Rules:
+`V` is valid, `L` is handled locally without exposing a core Conversation, `P`
+is a trusted protocol violation requiring boundary recovery, and `I` is
+inapplicable after close.
 
-- `message_id` MUST be new.
-- `attributes.user` is included only when speaker recognition produced an accepted user.
-- `medium` MUST NOT be overridden in `NewConversation`.
-- Empty or whitespace-only fragments MUST NOT be used to manufacture a valid utterance.
-- Text MUST be final accepted text, never a partial transcript.
+| Trigger/result | `QUIESCENT` | `ACCEPTING` | `ACTIVE` | `RENDERING` | `PRESENTING_FOLLOW_UP` | `AWAITING_FOLLOW_UP` | `RECOVERING` | `CLOSING` | `CLOSED` |
+|---|---|---|---|---|---|---|---|---|---|
+| core calls `accept_conversation()` | V -> `ACCEPTING` | P | P | P | P | P | P | I | I |
+| accepted new final text | P | V -> `ACTIVE` and return InputConversation | P | P | P | P | P | I | I |
+| rejected/empty new final text | P | L, remain/re-arm `ACCEPTING` | P | P | P | P | L | I | I |
+| recoverable pre-Conversation failure | P | L -> `RECOVERING`/`ACCEPTING` | P | P | P | P | L | I | I |
+| unrecoverable/driver closed | V -> `CLOSING` | V -> `CLOSING` | V -> `CLOSING` | V -> `CLOSING` | V -> `CLOSING` | V -> `CLOSING` | V -> `CLOSING` | V | I |
+| InputConversation context exits | P | P | V -> `QUIESCENT` | V after drain/abort -> `QUIESCENT` | V after abort -> `QUIESCENT` | V after stop -> `QUIESCENT` | V after cleanup -> `QUIESCENT` | V -> `CLOSED` | I |
 
-## Wake-word mode mapping
+### Active mapping trigger matrix
 
-```text
-ReadyForConversation
--> SetVisualState(IDLE)
--> StartListening(WAKE_WORD)
--> ListeningStarted
--> SpeechStarted(wake_word=...)
--> SetVisualState(LISTENING)
--> captured audio
--> SpeechEnded
--> final STT
--> accepted non-empty text
--> SetVisualState(PROCESSING)
--> accepted cue
--> NewConversation and one complete user message
-```
+| Trigger/result | `ACTIVE` | `RENDERING` | `PRESENTING_FOLLOW_UP` | `AWAITING_FOLLOW_UP` | `RECOVERING` | `CLOSING` | `CLOSED` |
+|---|---|---|---|---|---|---|---|
+| `ProcessingUpdate` presentation | V, remain | P | P | P | P | I | I |
+| assistant sink `start()` | V -> `RENDERING` | P | P | P | P | I | I |
+| `send_text()` | P | V, remain | P | P | P | I | I |
+| sink `complete()` | P | V -> `ACTIVE` after drain | P | P | P | I | I |
+| sink `abort()` | P | V -> `ACTIVE` after abort | P | P | V | V | I |
+| `request_follow_up()` | V -> `PRESENTING_FOLLOW_UP` | P | P | P | P | I | I |
+| follow-up presentation committed | P | P | V -> `AWAITING_FOLLOW_UP` | P | P | I | I |
+| matching token acknowledgement | P | P | P | V/G | P | I | I |
+| accepted follow-up final text | P | P | retain until ack | V -> `ACTIVE` and emit `UserMessage` | P | I | I |
+| follow-up timeout wins | P | P | retain until ack | V -> `ACTIVE` and emit `FollowUpTimedOut` | P | I | I |
+| empty/no-transcript follow-up | P | P | local retry after new presentation | local retry or typed failure | V | I | I |
+| Conversation cancellation | V, emit terminal control | V, abort then emit | V, abort then emit | V, stop then emit | V, emit | I | I |
+| recoverable media failure | V -> `RECOVERING` and emit `InputConversationFailed` | same | same | same | V | I | I |
+| unrecoverable/driver closed | emit `InputSessionClosed` -> `CLOSING` | same | same | same | same | V | I |
 
-- `SpeechStarted` with a wake word moves the visual state to `LISTENING` immediately.
-- Wake detection without usable final text MUST NOT create a Conversation. (`MAP-WAKE-001`)
-- If wake-word capture produces no usable text, the adapter MUST wait for Session to remain `IDLE`, restore `IDLE`, and explicitly start a new listening generation.
+`G` means acknowledgement opens the gate and immediately releases one retained
+ordinary outcome, if present. Ordinary follow-up outcomes are structurally
+impossible outside the acknowledged interval at the core boundary.
 
-## Open-mic mode mapping
+## Invariants
 
-Open-mic candidate detection and acceptance follow the Microphone Protocol.
-
-### Ordinary or rejected segment
-
-- Ordinary speech without an accepted wake phrase MUST remain private.
-- It MUST NOT send `NewConversation`, `MessageBegin`, `MessageFragment`, `MessageEnd`, or `ConversationEnded`.
-- If a partial candidate changed the visual to `LISTENING`, final rejection MUST reset candidate UI and restore `IDLE`.
-- The current open-mic listening generation remains active.
-
-### Accepted segment
-
-- Acceptance occurs only after final transcript validation.
-- The adapter MUST set `PROCESSING`, stop the active open-mic generation, complete the accepted cue, and then send one new-Conversation message sequence.
-- The accepted segment MUST be forwarded exactly once even if multiple partials detected the wake phrase. (`MAP-OPENMIC-001`)
-
-## Follow-up mapping
-
-When Session emits `FollowUpRequested(timeout_seconds)`, the adapter MUST use that supplied deadline. It MUST NOT substitute a microphone configuration timeout. (`MAP-FOLLOWUP-001`)
-
-If assistant playback is pending, the adapter MUST:
-
-1. keep `PROCESSING` visible;
-2. complete playback and await `PlaybackFinished`;
-3. set `LISTENING`;
-4. play and complete `FOLLOW_UP_READY`;
-5. start a new `FOLLOW_UP` listening generation using the remaining Session deadline.
-
-If there is no pending playback, it begins at step 3.
-
-An accepted follow-up maps to one message in the existing Conversation:
-
-```text
-MessageBegin(message_id)
-MessageFragment(message_id, final_text)
-MessageEnd(message_id)
-```
-
-It MUST NOT send `NewConversation`.
-
-After accepted follow-up text:
-
-- set `PROCESSING`;
-- send the complete user message;
-- do not re-arm until another `FollowUpRequested` or `ReadyForConversation` is received.
-
-### Follow-up timeout
-
-If `SpeechStarted` does not occur before the supplied deadline:
-
-1. stop and join the follow-up listening generation;
-2. play and complete `FOLLOW_UP_TIMEOUT`;
-3. send `ConversationEnded(reason="follow_up_timeout")` to Session;
-4. set `IDLE` only after the timeout cue is complete;
-5. wait for `ReadyForConversation` before starting a new generation.
-
-A segment that completes without usable text does not reset the deadline. The adapter MAY re-arm follow-up for the remaining time, or end it when no time remains, but MUST NOT create an empty message. (`MAP-FOLLOWUP-002`)
-
-## Assistant message mapping
-
-Session-to-endpoint assistant message events are assembled by `message_id`.
-
-- The adapter MUST validate begin, fragment, and end ordering.
-- It MUST NOT begin TTS for a message before matching `MessageEnd` unless a future normative streaming-TTS extension is approved.
-- A complete non-empty assistant message is synthesized into exactly one playback stream.
-- An empty assistant message produces no playback but remains a valid Conversation Protocol message.
-- Multiple assistant messages are played in protocol order.
-
-For one non-empty message:
-
-```text
-MessageBegin(assistant-message-id)
-MessageFragment(...)*
-MessageEnd(assistant-message-id)
-SetVisualState(PROCESSING)
-PlaybackBegin(playback-id, format)
-PlaybackChunk(playback-id, data)*
-PlaybackEnd(playback-id)
-PlaybackFinished(playback-id)
-```
-
-`PROCESSING` MUST remain visible throughout synthesis and playback. (`MAP-OUTPUT-001`)
+1. One accepted microphone utterance creates exactly one ready
+   InputConversation or one follow-up `UserMessage`, never both.
+   (`MAP-INVARIANT-001`)
+2. A fresh Conversation ID is assigned only at voice acceptance. Wake detection,
+   capture start, partial text, and rejected final text create no Conversation.
+3. Rejected open-mic speech, wake without usable text, and empty follow-up
+   capture never reach Agent. (`MAP-INVARIANT-002`)
+4. New-Conversation listening uses `WAKE_WORD` or `OPEN_MIC`; follow-up uses
+   `FOLLOW_UP`. A follow-up never creates another InputConversation.
+5. One microphone InputSession has at most one active bridge. Readiness and
+   re-arm never overlap prior output drain or cleanup. (`MAP-INVARIANT-003`)
+6. `PROCESSING` covers accepted input, Agent work, synthesis, and assistant
+   playback. It does not revert to `IDLE` merely because text or a core terminal
+   event arrived.
+7. Every listen, utterance, cue, and playback ID follows Microphone Protocol
+   correlation; stale events cannot affect a newer Conversation.
+8. Concrete service names, images, LEDs, and driver types remain inside drivers
+   and firmware.
+9. Assistant text flows through an adapter-owned bounded renderer. The bridge
+   contains no voice output queue. (`MAP-BACKPRESSURE-001`)
+10. T-002/T-003 explicit-stop ordering and exact reason strings are preserved.
 
 ## Processing-update mapping
 
-`ProcessingUpdate` carries no response content.
+While the adapter is `ACTIVE` and no assistant stream is open, a
+`ProcessingUpdate` keeps `PROCESSING` visible and MAY play one configured spoken
+processing cue through the ordinary cue/playback exclusion rules. It MUST NOT
+overlap assistant rendering, re-arm listening, present follow-up, or end the
+Conversation. Repeated updates MAY be throttled by the Agent-side processing
+policy. (`MAP-PROGRESS-001`)
 
-- The adapter MUST keep the main visual state `PROCESSING`.
-- It MAY synthesize one configured spoken processing cue.
-- A processing cue MUST use normal cue/playback exclusion rules and MUST NOT overlap another cue or assistant playback.
-- A processing update MUST NOT re-arm listening, request follow-up, or end the Conversation.
-- Repeated updates MAY be throttled by the agent/Session processing-update policy.
+## Assistant rendering and bounded backpressure
 
-## Conversation termination and output draining
+The voice adapter MUST consume assistant chunks incrementally through a required
+positive integer `microphones.assistant_text_buffer_characters` bound. A full
+buffer blocks `send_text()` until a rendering worker consumes text; it MUST NOT
+drop, overwrite, or create an unbounded secondary queue. (`MAP-OUTPUT-001`)
 
-Session may emit `ConversationEnded` before already queued assistant audio has fully drained.
+With a non-streaming TTS engine, the worker MAY form bounded phrase batches from
+ordered chunks and synthesize batches sequentially. It MUST preserve text order,
+MUST await each correlated playback according to the Microphone Protocol, and
+MUST leave room by consuming batches rather than waiting for the complete Agent
+message. Empty assistant streams produce no synthesis or playback.
 
-- The adapter MUST preserve event order and complete already accepted assistant playback unless the endpoint or driver closes or playback fails. (`MAP-END-001`)
-- It MUST keep `PROCESSING` visible until playback completes.
-- It MUST NOT start a new listening generation merely because `ConversationEnded` was received.
-- It MUST wait for the subsequent `ReadyForConversation`, and for playback/cues to finish, before setting `IDLE` and re-arming.
+`start()` commits when the bounded renderer opens. `send_text()` returns when
+the chunk is accepted into that renderer; acceptance is not external media
+commit. Text commits as its batch is handed to irreversible playback.
+`complete()` commits only when every accepted batch has synthesized and drained,
+or when an empty stream closes. `abort()` discards uncommitted buffered text,
+cancels synthesis, and stops future playback; audio already handed to
+irreversible playback is not retracted.
+(`MAP-OUTPUT-002`)
 
-Endpoint or driver closure cancels pending output and closes the Session rather than re-arming.
+If the current abstract driver cannot acknowledge mid-playback interruption,
+the adapter waits for or closes that driver operation according to the existing
+protocol. A future playback-abort command requires a separate Microphone
+Protocol decision.
 
-## Failure mapping
+## Follow-up timing and boundary arbitration
 
-### Capture failure before Conversation creation
+Agent follow-up intent and the core event carry no duration. The manager uses its
+explicit per-microphone `follow_up_timeout_seconds` policy and starts a monotonic
+timer only after previous assistant output drained, `FOLLOW_UP_READY` completed,
+and `ListeningStarted(FOLLOW_UP)` confirmed. That instant is the presentation
+commit point. (`MAP-FOLLOWUP-002`)
 
-- Do not send Conversation events.
-- Stop or discard the failed generation.
-- Select an explicit connected visual state.
-- Retry with a new `listen_id` only while Session remains ready for a new Conversation.
+Speech start and expiry commit through one adapter-local atomic arbiter:
 
-### Capture failure during follow-up
+1. `SpeechStarted` committed at or before the deadline wins, including exact
+   equality; the timer is cancelled permanently.
+2. The adapter completes STT and emits `UserMessage` only for accepted complete
+   non-whitespace final text.
+3. Empty or rejected text begins a newly presented interval when policy permits,
+   or emits typed input failure; it never revives the losing prior timer.
+4. Expiry committed first emits exactly one `FollowUpTimedOut`; later speech is
+   ignored or rejected locally.
 
-- Do not send a partial or empty user message.
-- Retry only within the remaining Session deadline.
-- If recovery cannot complete before the deadline, use the normative follow-up-timeout sequence.
+Only one outcome may be retained before token acknowledgement and only one may
+cross the interface. (`MAP-FOLLOWUP-003`)
 
-### Cue or playback failure
-
-- Do not infer that audio completed successfully.
-- Abort the correlated operation.
-- End or preserve the Conversation according to Session state, but never start listening while the driver may still be playing.
-- A protocol-state mismatch requires closing and recreating the microphone boundary rather than guessing.
-
-### Driver unavailable
-
-Temporary unavailability does not create or end a Conversation by itself. The adapter logs and retries only when the current Session state still permits the intended operation.
+On timeout, the manager stops and joins the matching listening generation, plays
+and completes `FOLLOW_UP_TIMEOUT`, exposes `FollowUpTimedOut` when the gate is
+eligible, and does not re-arm until the Conversation scope exits and a new
+`accept_conversation()` exposes readiness.
 
 ## Timeouts and cancellation
 
-- Follow-up timing uses only `FollowUpRequested.timeout_seconds` and the rules in the Follow-up mapping.
-- Microphone operation timeouts remain owned by MicrophoneManager under the Microphone Protocol.
-- Endpoint closure cancels active capture processing, STT, speaker recognition, cues, playback, and agent work as applicable, then closes both boundaries.
-- Session Conversation termination does not cancel already accepted assistant playback; the output-draining rules apply.
-- Cancellation MUST preserve correlation in logs and MUST prevent late results from crossing into a newer generation or Conversation.
+- Arm, segment-liveness, cue, playback, and connection timeouts remain owned by
+  MicrophoneManager under the Microphone Protocol.
+- Follow-up semantic timeout is owned by this adapter as described above.
+- Cancellation stops input production, suppresses late STT/speaker results,
+  aborts uncommitted output, performs correlated media cleanup, and releases the
+  bridge through `ConversationCancelled`.
+- InputSession `close()` commits `CLOSING` before awaiting microphone teardown;
+  pending acceptance raises `InputSessionClosed`, while an active Conversation's
+  control receive emits `InputSessionClosed`.
+- No timeout or late callback may create an empty message or mutate a newer
+  generation.
 
-## Cross-protocol invariants
+## Failure and recovery
 
-- One accepted microphone utterance produces exactly one complete user message. (`MAP-INVARIANT-001`)
-- A new Conversation is created only for accepted wake-word or open-mic text.
-- Follow-up text belongs to the existing Conversation.
-- Rejected open-mic speech, wake detection without usable text, and empty follow-up capture never reach an agent. (`MAP-INVARIANT-002`)
-- No driver creates or consumes Conversation Protocol events.
-- No Session creates or consumes Microphone Protocol events.
-- No concrete driver knowledge escapes the abstract microphone interface.
-- Listening is re-armed only after an explicit Session event and after conflicting output finishes. (`MAP-INVARIANT-003`)
-- Stale microphone events cannot affect a new listening generation or Conversation.
-- The Session-supplied follow-up deadline has one meaning across both protocols.
-- `PROCESSING` covers agent work, synthesis, and assistant playback.
+| Failure boundary | Core result | Persistent InputSession | Required microphone action |
+|---|---|---|---|
+| Capture/STT failure before voice acceptance | No core event | Reuse if trusted | Stop/discard generation and re-arm with new IDs |
+| Empty/rejected new utterance | No core event | Reuse | Preserve open mic or explicitly re-arm |
+| Capture/STT failure during active follow-up, recovered | `InputConversationFailed` if Conversation cannot continue | Reuse | Stop, restore trusted disarmed state |
+| Cue/TTS/playback failure with trusted recovery | `InputConversationFailed` | Reuse | Abort correlated operation and restore state |
+| Driver unavailable but manager can recreate boundary | `InputConversationFailed` for active Conversation | Recreate then reuse | New driver/session correlation |
+| Driver closed or recovery cannot restore trust | `InputSessionClosed` | Close | Stop all work and close boundary |
+| Invalid driver state/correlation | `InputSessionClosed` if active | Recreate, never guess | Close old driver boundary |
+
+The adapter MUST distinguish recoverable Conversation-local failure from
+persistent InputSession closure based on actual recovery, not exception class
+names or free-text detail. (`MAP-FAILURE-001`)
+
+## Normal sequences
+
+### Accepted wake-word Conversation
+
+```text
+accept_conversation() enters ACCEPTING
+SetVisualState(IDLE)
+StartListening(WAKE_WORD) -> ListeningStarted
+SpeechStarted(wake_word) -> SetVisualState(LISTENING)
+AudioChunk* -> SpeechEnded -> final STT accepted
+SetVisualState(PROCESSING)
+join stopped generation, play accepted cue, resolve optional speaker identity
+atomically create InputConversation(initial_message, context, Conversation ID)
+bridge runs Conversation
+context exit drains/aborts media; InputSession returns IDLE
+```
+
+### Open-mic candidate rejection
+
+```text
+StartListening(OPEN_MIC) -> ListeningStarted
+SpeechStarted -> partial STT detects candidate -> SetVisualState(LISTENING)
+final STT rejects candidate
+ResetWakeCandidate and SetVisualState(IDLE)
+no core Conversation; same open-mic generation remains active
+```
+
+### Assistant rendering and follow-up
+
+```text
+sink start -> SetVisualState(PROCESSING)
+ordered chunks enter bounded renderer and bounded batches play
+sink complete drains final PlaybackFinished
+request_follow_up -> SetVisualState(LISTENING)
+PlayCue(FOLLOW_UP_READY) -> StartListening(FOLLOW_UP) -> ListeningStarted
+presentation commits token and timer
+bridge acknowledges token after entering WAITING_FOR_FOLLOW_UP
+accepted final STT emits one UserMessage
+```
 
 ## Invalid sequences
 
-- Sending `NewConversation` on wake detection before final usable text exists;
-- forwarding a partial open-mic transcript;
-- sending an empty user message after no-transcript capture;
-- sending `NewConversation` for follow-up input;
-- starting follow-up listening before pending assistant playback drains;
-- replacing the Session follow-up deadline with microphone configuration;
-- re-arming on `ConversationEnded` without waiting for `ReadyForConversation`;
-- setting `IDLE` when assistant playback begins;
-- sending driver events directly to Session;
-- invoking concrete firmware services outside a driver.
+- Creating InputConversation on wake detection, `SpeechStarted`, partial text, or
+  rejected/empty final text;
+- sending raw microphone events to the bridge;
+- creating a new InputConversation for follow-up;
+- starting follow-up timing before output, cue, and listening presentation
+  complete;
+- allowing timeout to beat speech committed exactly at the deadline;
+- exposing an ordinary outcome before token acknowledgement;
+- retaining more than one follow-up outcome;
+- starting playback before a half-duplex driver is disarmed;
+- re-arming merely because `ConversationEnded` arrived;
+- setting `IDLE` while synthesis or playback is outstanding;
+- buffering unbounded assistant text or waiting for complete output while a full
+  bounded buffer prevents completion;
+- parsing terminal diagnostic detail to choose control flow;
+- letting stale STT, cue, playback, or driver events affect a newer scope;
+- invoking concrete firmware services outside the driver.
 
 ## Observability requirements
 
-- Mapping logs MUST include microphone instance, Session ID, Conversation ID when available, `listen_id`, `utterance_id`, message ID, cue ID, and playback ID as applicable. (`MAP-OBS-001`)
-- Every cross-protocol translation MUST be logged on DEBUG without requiring transcript content.
-- Accepted utterance, follow-up timeout, playback start/finish, and re-arm are crucial events and MUST be logged briefly on INFO.
-- Logs MUST make it possible to distinguish wake candidate, final rejection, final acceptance, Conversation creation, agent processing, playback, and re-arm.
+- Logs MUST use stable
+  `MicrophoneInputSession[<microphone>:<input_session_id>]` and
+  `MicrophoneInputConversation[<conversation_id>]` prefixes.
+  (`MAP-OBS-001`)
+- Every cross-protocol translation and mapping substate transition MUST log on
+  DEBUG with available Conversation, session, listen, utterance, cue, and
+  playback IDs.
+- Readiness, accepted utterance, voice acceptance, assistant rendering start and
+  drain, follow-up presentation, timeout arbitration, Conversation outcome,
+  recovery, and re-arm MUST be logged briefly on INFO.
+- Boundary-race logs MUST include monotonic decision values and the winning
+  branch without requiring transcript content.
+- Raw/partial/rejected transcript content remains governed by `MP-OBS-003` and
+  MUST be DEBUG-only with explicit opt-in.
 
 ## Implementation and conformance references
 
-Stage 3 implementation targets:
+Planned implementation owners:
 
-- `ai_server/microphones/manager.py`
-- `ai_server/microphones/agent_endpoint.py`
-- `ai_server/sessions.py`
-- microphone TTS/STT adapters
+- replacement for `ai_server/microphones/agent_endpoint.py` implementing the
+  sealed voice InputSession/InputConversation;
+- `ai_server/microphones/manager.py` for acceptance, presentation, timing,
+  rendering, cleanup, and recovery;
+- existing `ai_server/microphones/interfaces.py`, `messages.py`, `protocol.py`,
+  `stt.py`, and `tts.py` behind their current abstract boundaries.
 
-Conformance targets:
-
-- `tests/test_microphones.py`
-- `tests/test_mic_protocol_test.py`
-- focused Conversation state tests
-- [Protocol Conformance Catalogue](protocol-conformance-catalogue.md)
+Planned tests are indexed by the
+[Protocol Conformance Catalogue](protocol-conformance-catalogue.md), including
+accepted-STT creation, exact follow-up boundaries, bounded renderer pushback,
+sink commit races, cancellation, recovery, T-002/T-003 regressions, and one-device
+hardware checks.
 
 ## Compatibility policy
 
-Stage 3 migrates the manager and Session adapter together. Legacy mappings from `WaitForNewConversation`, `WaitForNewMessage`, `RequestFollowUp`, and overloaded audio events are not retained.
+The old microphone `CommunicationEndpoint`/Session adapter and mappings from
+`ReadyForConversation`, message begin/fragment/end, timeout-bearing
+`FollowUpRequested`, and endpoint `ConversationEnded` are removed at atomic
+cutover. There is no compatibility adapter. (`MAP-COMPAT-001`)
 
-## Unresolved decisions
+The normative Microphone Protocol is not superseded or changed by this mapping.
 
-None. Streaming TTS, full-duplex operation, or alternative follow-up ownership requires a normative protocol extension before implementation.
+## Explicitly unresolved decisions
+
+None for T-004. Streaming synthesis, explicit playback-abort acknowledgement,
+and incremental hardware-rendering capability negotiation remain future
+Microphone Protocol work and do not block this mapping.

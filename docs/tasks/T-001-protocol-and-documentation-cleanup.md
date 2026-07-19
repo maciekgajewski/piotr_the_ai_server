@@ -20,7 +20,7 @@ Stage 3 must not begin until the normative documents produced by Stage 2 have be
 ## Progress
 
 - **Stage 1:** Completed on 2026-07-12. Added the documentation index, agent routing, authority labels, and the protocol documentation standard.
-- **Stage 2:** Completed on 2026-07-12. Approved normative Conversation and Microphone protocols, their mapping, and the conformance catalogue are indexed under `docs/`.
+- **Stage 2:** Completed on 2026-07-12. It produced the historical Conversation contract and mapping plus the still-normative Microphone Protocol. T-004 has since replaced the Conversation and mapping documents with approved target contracts awaiting implementation.
 - **Stage 3:** In progress only for remaining microphone-device evidence. The historical Conversation/websocket milestone, correlated Microphone Protocol, manager mapping, Box3 Python driver, and Box3/Voice Preview firmware visual ownership are implemented and green. T-002 and T-003 are fixed and live-verified on Box3, including bounded pre-roll, prompt warmed-STT `LISTENING`, clean explicit device stop, reply playback, and return to `IDLE` without `ERROR`. Explicit-stop firmware is deployed to all three Voice PE units. The unrun old-runtime websocket smoke test moved out of T-001 when T-004 superseded that scope.
 
 The implemented Conversation/websocket milestone above describes the current
@@ -42,9 +42,10 @@ Read, in order:
 
 1. root `AGENTS.md` and README architecture decisions;
 2. `docs/microphone-protocol.md`;
-3. `docs/microphone-conversation-mapping.md`, only as needed to interpret the
-   currently deployed microphone behavior;
-4. `docs/protocol-conformance-catalogue.md`;
+3. current code and runtime evidence for the deployed microphone mapping; the
+   approved `docs/microphone-conversation-mapping.md` describes the T-004 target
+   and is not yet the current runtime contract;
+4. the existing `MP-` section of `docs/protocol-conformance-catalogue.md`;
 5. T-002 and T-003 for the preserved Box3 fixes;
 6. this task's current-failures and next-steps sections below.
 

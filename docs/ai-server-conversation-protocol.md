@@ -1,374 +1,475 @@
-# AI Server Conversation Protocol
+# AI Server Conversation Bridge Protocol
 
 ## Status and scope
 
-- **Authority:** Normative
-- **Audience:** Agents changing sessions, conversation endpoints, websocket communication, or microphone-to-session behavior
-- **Read when:** Working on `ai_server/messages.py`, `ai_server/interfaces.py`, `ai_server/sessions.py`, websocket clients, or the websocket server
+- **Authority:** Normative target contract; approved for T-004 implementation
+- **Audience:** Maintainers of conversation state, agents, input adapters, application lifecycle, and conformance tests
+- **Read when:** Changing conversation messages or interfaces, agent construction, input supervision, websocket or microphone bindings, or shutdown behavior
+- **Approval state:** Approved by Captain on 2026-07-19
 
-This document defines the lifecycle and message protocol shared by all text and voice input adapters. It supersedes the previous informal Conversation Protocol.
+This document defines the typed, in-process protocol between one persistent
+`InputSession`, one per-conversation bridge coroutine, and one
+`AgentConversation`. It replaces the old shared `Session`/`ConversationEndpoint`
+contract when T-004 reaches atomic production cutover.
 
-The protocol begins where a communication endpoint exchanges typed events with a `Session`. Transport framing, microphone capture, STT, TTS, and device presentation are outside its boundary.
+The current implementation does not conform to this draft. Until this draft is
+approved and the cutover is complete, implementation drift reported by this
+document is planned migration work rather than a runtime regression.
+
+Websocket JSON is defined by the
+[Websocket Conversation Binding](websocket-conversation-protocol.md). Voice
+translation is defined by the
+[Microphone-Conversation Mapping](microphone-conversation-mapping.md). The
+manager-to-driver contract remains the separate
+[Microphone Protocol](microphone-protocol.md).
 
 Requirement identifiers use the `CP-` prefix.
 
 ## Ownership boundaries
 
-- `Session` MUST exclusively own session and Conversation lifecycle.
-- A Session MUST have zero or one active Conversation.
-- A Session MUST NOT depend on a concrete endpoint, microphone, driver, agent, or transport type.
-- A communication adapter MUST translate its transport into protocol events without reproducing Session lifecycle rules.
-- An agent MUST receive only an active `Conversation` and a limited `ConversationEndpoint`.
-- An agent MUST NOT create, replace, or re-arm Sessions or Conversations.
-- `ConversationEndpoint` MUST enforce active-conversation message ordering and conversational-floor ownership.
-- Session MUST own the effective follow-up timeout. Agents express follow-up intent through `ConversationEndpoint.request_follow_up()` and MUST NOT select endpoint timeout policy.
+- One bridge coroutine MUST own all cross-side state for one Conversation.
+  (`CP-OWNER-001`)
+- One persistent `InputSession` MUST have zero or one active
+  `InputConversation`. (`CP-OWNER-002`)
+- One bridge MUST connect exactly one `InputConversation` to exactly one
+  `AgentConversation`; neither side may be replaced during the Conversation.
+  (`CP-OWNER-003`)
+- A shared `Agent` factory MAY serve concurrent Conversations, but every opened
+  `AgentConversation` MUST own isolated mutable state. (`CP-OWNER-004`)
+- Input acceptance, presentation, media cleanup, and follow-up timing belong to
+  the input adapter. Agent execution and agent-local work belong to the
+  `AgentConversation`. Cross-side sequencing belongs only to the bridge.
+- Application admission and graceful shutdown belong above the Conversation
+  protocol. Shutdown closes `InputSession` objects; it does not add a shutdown
+  event to the Conversation vocabulary.
+- Core code MUST use only sealed directional interfaces. It MUST NOT inspect a
+  concrete input adapter, transport, microphone, driver, agent, prompt, or
+  device service. (`CP-OWNER-005`)
 
-## Terminology
+## Terminology and typed context
 
-- **Endpoint:** Adapter exchanging Conversation Protocol events with a Session.
-- **Session:** Long-lived protocol owner associated with one endpoint.
-- **Conversation:** One bounded interaction within a Session.
-- **Message:** One ordered stream of text fragments from one sender.
-- **Floor:** Permission to begin the next message or complete the current turn.
-- **Protocol violation:** An event that is invalid in the current state or violates a field invariant.
-- **Endpoint closure:** Transport or adapter termination that prevents further events.
+- **InputSession:** Persistent input-adapter scope which accepts sequential
+  Conversations.
+- **InputConversation:** Input-owned, per-Conversation control and output scope.
+- **Bridge:** The sole cross-side state machine for one Conversation.
+- **Agent:** Long-lived factory for isolated Agent Conversations.
+- **AgentConversation:** Active per-Conversation agent endpoint.
+- **Assistant sink:** Input-owned transactional output interface.
+- **Commit point:** Binding-owned boundary after which an operation cannot be
+  reclassified as not having happened.
+- **Protocol violation:** A source/event/state combination classified `P` in a
+  complete matrix below.
+- **Internal failure:** A broken sealed-interface or bridge invariant which
+  requires application-wide fatal containment.
 
-Names in event tables are protocol events. Uppercase names in state tables are protocol states.
+IDs are non-empty opaque strings from one common process-wide ID factory and
+MUST NOT be reused during the process lifetime.
 
-## Attributes
+The following contexts are immutable typed values. Optional values are explicit
+fields; there is no generic attributes or extension dictionary.
 
-### Session attributes
-
-`SessionAttributes.attributes` is a string-to-string mapping.
-
-- `medium` MUST be present and MUST be `text` or `voice`. (`CP-ATTR-001`)
-- `medium` MUST remain unchanged for the lifetime of the Session. (`CP-ATTR-002`)
-- `user` and `area` MAY be present.
-- All keys and values MUST be non-empty strings.
-- Unknown attributes MAY be preserved but MUST NOT acquire undocumented protocol semantics.
-
-External endpoints MUST send `SessionAttributes` during `HANDSHAKE`. A trusted local adapter MAY supply validated attributes while constructing the Session and begin directly in `IDLE`.
-
-### Conversation attributes
-
-`NewConversation.attributes` contains overrides for the new Conversation.
-
-- Conversation attributes MAY override `user`, `area`, and unknown non-protocol attributes.
-- Conversation attributes MUST NOT override `medium`. (`CP-ATTR-003`)
-- Effective attributes MUST be copied into the Conversation and MUST NOT mutate Session attributes.
-- Conversation-scoped mutable state MUST NOT survive into another Conversation. (`CP-SESSION-004`)
-
-## Typed event inventory
-
-### Endpoint to Session
-
-| Event | Fields | Constraints | Meaning |
+| Context | Required fields | Optional fields | Owner |
 |---|---|---|---|
-| `SessionAttributes` | `attributes` | Valid Session attribute mapping | Establish Session identity and medium |
-| `NewConversation` | `attributes` | Valid Conversation overrides | Create one Conversation |
-| `MessageBegin` | `message_id` | Non-empty and unique within the Conversation | Begin one user message |
-| `MessageFragment` | `message_id`, `text` | ID matches the open user message; text is a string | Append text, including an empty fragment if intentionally emitted |
-| `MessageEnd` | `message_id` | ID matches the open user message | Complete the user message |
-| `ConversationEnded` | `reason` | Non-empty stable reason | Decline or stop further input for the active Conversation |
-| endpoint closure | none | Transport-defined | Permanently end the Session |
+| `InputSessionContext` | `input_session_id`, `medium` | `user`, `area` | Input adapter |
+| `InputConversationContext` | `conversation_id`, `input_session_id`, `medium` | `user`, `area` | Input adapter |
+| `ConversationContext` | all resolved identity fields plus immutable `user_settings` | `user`, `area` | Context provider |
 
-### Session to endpoint
+`medium` is the closed enum `TEXT` or `VOICE`. Context fields MUST remain
+unchanged for their scope. Mutable agent state MUST NOT be stored in any context
+or shared with another `AgentConversation`. (`CP-CONTEXT-001`)
 
-| Event | Fields | Constraints | Meaning |
-|---|---|---|---|
-| `ReadyForConversation` | none | Emitted once on entry to `IDLE` | Endpoint may start a Conversation |
-| `FollowUpRequested` | `timeout_seconds` | Positive finite number supplied by Session | Agent returned the floor for one follow-up message |
-| `ProcessingUpdate` | none | No assistant message open | Agent is still working; carries no response content |
-| `MessageBegin` | `message_id` | Non-empty and unique within the Conversation | Begin one assistant message |
-| `MessageFragment` | `message_id`, `text` | ID matches the open assistant message | Append assistant text |
-| `MessageEnd` | `message_id` | ID matches the open assistant message | Complete the assistant message |
-| `ConversationEnded` | `reason` | Non-empty stable reason | Conversation cleanup is complete |
-| `SessionRejected` | `reason` | Non-empty diagnostic safe to expose to the endpoint | Protocol violation prevents continuation |
+The synchronous context provider has this closed result set:
 
-`WaitForNewConversation`, `WaitForNewMessage`, and `RequestFollowUp` are not part of the normative protocol. Stage 3 MUST remove them rather than maintain aliases unless a separate compatibility decision is approved.
+| Result | Fields | Meaning |
+|---|---|---|
+| `ContextResolved` | `context` | Continue Agent entry |
+| `ContextRejected` | `code`, optional `detail` | Valid request is rejected |
+| `ContextUnavailable` | optional `detail` | Required maintained snapshot is temporarily unavailable |
 
-## Message stream rules
+`ContextRejectionCode` is the closed enum `UNKNOWN_USER`, `NOT_AUTHORIZED`, or
+`UNSUPPORTED_INPUT_CONTEXT`. `resolve()` MUST perform no I/O, await, retry, task
+creation, or mutable external lookup. (`CP-CONTEXT-002`)
 
-- Every message MUST begin with `MessageBegin`, contain zero or more matching `MessageFragment` events, and end with matching `MessageEnd`. (`CP-MESSAGE-001`)
-- A message ID MUST be unique within its Conversation and MUST NOT be reused by either sender. (`CP-MESSAGE-002`)
-- At most one user message and at most one assistant message MAY be open. (`CP-MESSAGE-003`)
-- User and assistant messages MUST NOT be open simultaneously. (`CP-FLOOR-001`)
-- A fragment or end for an unknown, stale, or mismatched message ID is a protocol violation. (`CP-MESSAGE-004`)
-- A nested `MessageBegin` from the same side is a protocol violation.
-- Message fragments are ordered exactly as received. Session MUST NOT reorder or merge them.
+## Typed event and operation inventory
 
-## Protocol states
+### InputConversation to bridge events
 
-### `HANDSHAKE`
+`initial_message` is a required immutable field on `InputConversation`, not an
+event on the active control stream.
 
-The Session has not accepted endpoint attributes.
+| Event | Fields and constraints | Sender | Receiver | Valid states |
+|---|---|---|---|---|
+| `UserMessage` | `text`: non-whitespace string | InputConversation | Bridge | `WAITING_FOR_FOLLOW_UP` |
+| `FollowUpTimedOut` | none | InputConversation | Bridge | `WAITING_FOR_FOLLOW_UP` |
+| `ConversationCancelled` | none | InputConversation | Bridge | Every non-terminal bridge state |
+| `InputConversationFailed` | optional diagnostic `detail` | InputConversation | Bridge | Every non-terminal bridge state |
+| `InputSessionClosed` | optional diagnostic `detail` | InputConversation | Bridge | Every non-terminal bridge state |
 
-On entry: no event is emitted.
+The adapter MUST serialize follow-up response and timeout locally so at most one
+ordinary follow-up outcome reaches the bridge. (`CP-INPUT-001`)
 
-### `IDLE`
+### Bridge to InputConversation operations
 
-The Session has no active Conversation.
+| Operation | Arguments/result | Valid states |
+|---|---|---|
+| `assistant_output.start()` | `AssistantSinkStarted` or `InputSessionClosed` | `WAITING_FOR_AGENT` |
+| `assistant_output.send_text(chunk)` | non-empty text; `AssistantTextAccepted` or `InputSessionClosed` | `STREAMING_ASSISTANT` |
+| `assistant_output.complete()` | `COMPLETED`, `ABORTED`, or `INPUT_SESSION_CLOSED` | `STREAMING_ASSISTANT` |
+| `assistant_output.abort(reason, detail)` | `ABORTED`, `COMPLETED`, or `INPUT_SESSION_CLOSED` | Any non-terminal state after sink start |
+| `request_follow_up()` | `FollowUpRequestCommitted` or `InputSessionClosed` | `COMMITTING_FOLLOW_UP` |
+| `acknowledge_follow_up_ready(token)` | synchronous, no return value | Transition to `WAITING_FOR_FOLLOW_UP` only |
+| `end_conversation(event)` | bounded best effort | `ENDING` |
 
-On entry: Session emits `ReadyForConversation` exactly once. (`CP-SESSION-001`)
+`FollowUpRequestCommitted` is a single-use token scoped to one follow-up
+interval. The adapter MUST NOT expose an ordinary follow-up outcome before the
+matching token is acknowledged. (`CP-FOLLOWUP-001`)
 
-### `AWAITING_USER_MESSAGE`
+The assistant sink is a transactional state machine owned by the input adapter:
 
-A Conversation exists and the endpoint owns the floor, but no user message is open.
+| Sink state | Legal operations |
+|---|---|
+| `NOT_STARTED` | `start()` |
+| `OPEN` | `send_text()`, `complete()`, `abort()` |
+| `COMPLETING` | completion may commit; `abort()` may win only before the binding commit point |
+| `COMPLETED` | cleanup and repeated terminal inspection only |
+| `ABORTED` | cleanup and repeated terminal inspection only |
 
-This state is entered immediately after `NewConversation` and after `FollowUpRequested`.
+Exactly one of completion or abort commits. Cancellation of an awaiting bridge
+task MUST NOT erase a binding commit that already occurred. (`CP-SINK-001`)
 
-### `RECEIVING_USER_MESSAGE`
+### Bridge to AgentConversation operations
 
-One user message is open. The endpoint retains the floor until matching `MessageEnd`.
+| Operation | Arguments/result | Valid states |
+|---|---|---|
+| `send_user_message(message)` | complete `UserMessage`; returns `AgentInputAccepted` at acceptance commit | `DELIVERING_USER_MESSAGE` |
+| `cancel(reason)` | `AgentCancellationReason`; returns `AgentCancellationAcknowledged` after all owned work is quiescent | Every non-terminal state after Agent entry starts |
 
-### `AGENT_ACTIVE`
+Both operations are idempotent only where explicitly stated: `cancel()` is
+idempotent and the first reason wins; `send_user_message()` is one offer for one
+turn and MUST NOT be retried after its acceptance status is uncertain.
 
-A complete user message is available and the agent owns the floor. The agent may produce complete assistant messages, processing updates, request one follow-up, or return.
+### AgentConversation to bridge events
 
-### `AWAITING_FOLLOW_UP`
+| Event | Fields and constraints | Sender | Receiver | Valid states |
+|---|---|---|---|---|
+| `ProcessingUpdate` | no response content | AgentConversation | Bridge | `WAITING_FOR_AGENT` before a stream starts |
+| `AssistantMessageStarted` | none | AgentConversation | Bridge | `WAITING_FOR_AGENT`; zero or one per turn |
+| `AssistantTextChunk` | non-empty `text` | AgentConversation | Bridge | `STREAMING_ASSISTANT` |
+| `AssistantMessageCompleted` | none | AgentConversation | Bridge | `STREAMING_ASSISTANT`; exactly once for an opened stream |
+| `TurnDisposition` | `END_CONVERSATION` or `REQUEST_FOLLOW_UP` | AgentConversation | Bridge | `WAITING_FOR_AGENT` or `WAITING_FOR_DISPOSITION`; exactly once after successful turn |
+| `AgentConversationFailed` | optional diagnostic `detail` | AgentConversation | Bridge | Any active Agent state |
 
-The agent requested another user message. The endpoint owns the floor until it begins that message, explicitly ends the Conversation, closes, or reaches the supplied deadline.
+An Agent turn may produce no assistant stream, but successful completion always
+requires one explicit `TurnDisposition`. Agent failure and cancellation are
+terminal alternatives and produce no disposition. (`CP-AGENT-001`)
 
-### `ENDING_CONVERSATION`
+Agent output MUST use a zero-capacity rendezvous. Production blocks until the
+bridge receives the event; no Agent-owned unbounded output queue is permitted.
+(`CP-BACKPRESSURE-001`)
 
-The Session is cancelling or joining Conversation-owned work, checking invariants, and destroying Conversation state.
+### Bridge to input terminal event
 
-On successful cleanup, Session emits `ConversationEnded` if the endpoint is available, then enters `IDLE`.
+```python
+ConversationEnded(
+    reason: ConversationEndReason,
+    context_rejection_code: ContextRejectionCode | None = None,
+    detail: str | None = None,
+)
+```
 
-### `CLOSED`
+`ConversationEndReason` is the closed enum `COMPLETED`, `INPUT_CANCELLED`,
+`FOLLOW_UP_TIMEOUT`, `CONTEXT_REJECTED`, `CONTEXT_UNAVAILABLE`, `AGENT_FAILED`,
+`INPUT_FAILED`, `INPUT_SESSION_CLOSED`, or `INTERNAL_FAILURE`.
 
-Terminal state. No further events are accepted or emitted.
+`context_rejection_code` is required exactly for `CONTEXT_REJECTED` and
+forbidden for every other reason. `detail` is diagnostic and MUST NOT be parsed
+for control flow. (`CP-TERMINAL-001`)
 
-## Transition table
+The separate `AssistantAbortReason` enum is `INPUT_CANCELLED`, `AGENT_FAILED`,
+`INPUT_FAILED`, `INPUT_SESSION_CLOSED`, or `INTERNAL_FAILURE`.
 
-`Violation` means Session MUST reject an external endpoint when possible and close it. `Internal failure` means an impossible agent or trusted-adapter action MUST fail an invariant and terminate the affected work.
+## State inventory
 
-| Current state | Input or internal result | Action | Next state |
-|---|---|---|---|
-| `HANDSHAKE` | valid `SessionAttributes` | Store attributes | `IDLE` |
-| `HANDSHAKE` | endpoint closure | Release Session | `CLOSED` |
-| `HANDSHAKE` | any other endpoint event | Violation | `CLOSED` |
-| `IDLE` | valid `NewConversation` | Create Conversation | `AWAITING_USER_MESSAGE` |
-| `IDLE` | endpoint closure | Release Session | `CLOSED` |
-| `IDLE` | any other endpoint event | Violation | `CLOSED` |
-| `AWAITING_USER_MESSAGE` | `MessageBegin` | Open user message | `RECEIVING_USER_MESSAGE` |
-| `AWAITING_USER_MESSAGE` | `ConversationEnded` | Record reason | `ENDING_CONVERSATION` |
-| `AWAITING_USER_MESSAGE` | endpoint closure | Cancel Conversation and Session | `CLOSED` |
-| `AWAITING_USER_MESSAGE` | any other endpoint event | Violation | `CLOSED` |
-| `RECEIVING_USER_MESSAGE` | matching `MessageFragment` | Forward fragment | `RECEIVING_USER_MESSAGE` |
-| `RECEIVING_USER_MESSAGE` | matching `MessageEnd` | Close input and run/resume agent | `AGENT_ACTIVE` |
-| `RECEIVING_USER_MESSAGE` | endpoint closure | Cancel Conversation and Session | `CLOSED` |
-| `RECEIVING_USER_MESSAGE` | any other endpoint event | Violation | `CLOSED` |
-| `AGENT_ACTIVE` | agent `ProcessingUpdate` | Send update | `AGENT_ACTIVE` |
-| `AGENT_ACTIVE` | agent `MessageBegin` | Open assistant message | `AGENT_ACTIVE` |
-| `AGENT_ACTIVE` | matching agent `MessageFragment` | Send fragment | `AGENT_ACTIVE` |
-| `AGENT_ACTIVE` | matching agent `MessageEnd` | Close assistant message | `AGENT_ACTIVE` |
-| `AGENT_ACTIVE` | agent calls `request_follow_up()` | Emit `FollowUpRequested` with Session timeout and arm deadline | `AWAITING_FOLLOW_UP` |
-| `AGENT_ACTIVE` | agent returns | Begin cleanup | `ENDING_CONVERSATION` |
-| `AGENT_ACTIVE` | endpoint closure | Cancel agent and Session | `CLOSED` |
-| `AWAITING_FOLLOW_UP` | `MessageBegin` | Cancel deadline and open user message | `RECEIVING_USER_MESSAGE` |
-| `AWAITING_FOLLOW_UP` | `ConversationEnded` | Record reason | `ENDING_CONVERSATION` |
-| `AWAITING_FOLLOW_UP` | deadline expires | Record `follow_up_timeout` | `ENDING_CONVERSATION` |
-| `AWAITING_FOLLOW_UP` | endpoint closure | Cancel Conversation and Session | `CLOSED` |
-| `AWAITING_FOLLOW_UP` | any other endpoint event | Violation | `CLOSED` |
-| `ENDING_CONVERSATION` | cleanup succeeds | Emit end when possible; destroy state | `IDLE` |
-| `ENDING_CONVERSATION` | endpoint closure | Destroy state | `CLOSED` |
-| `CLOSED` | any event | No action; event is inapplicable | `CLOSED` |
+### InputSession states
 
-While an assistant message is open in `AGENT_ACTIVE`, only its matching `MessageFragment`, matching `MessageEnd`, or endpoint closure is valid. `ProcessingUpdate`, `request_follow_up()`, another `MessageBegin`, and agent return are internal failures. (`CP-MESSAGE-005`)
+| State | Meaning |
+|---|---|
+| `IDLE` | No readiness operation or Conversation is active |
+| `ACCEPTING` | `accept_conversation().__aenter__()` is presenting readiness and preparing complete accepted input |
+| `ACTIVE` | One ready `InputConversation` was returned |
+| `CLOSING` | Closure committed and pending operations are being released |
+| `CLOSED` | Terminal persistent-session state |
 
-## Conversational floor
+### Bridge states
 
-- The endpoint owns the floor in `AWAITING_USER_MESSAGE` and `RECEIVING_USER_MESSAGE`.
-- The agent owns the floor in `AGENT_ACTIVE`.
-- The endpoint regains the floor only after Session emits `FollowUpRequested`. (`CP-FLOOR-002`)
-- Endpoint message input while the agent owns the floor is a protocol violation.
-- The agent MUST NOT call `request_follow_up()` before a complete user message or while an assistant message is open. (`CP-FOLLOWUP-001`)
-- At most one follow-up request MAY be outstanding. (`CP-FOLLOWUP-002`)
-- Session supplies `FollowUpRequested.timeout_seconds`; it is the sole follow-up deadline. An agent or adapter MUST NOT substitute a separate duration. (`CP-FOLLOWUP-003`)
+| State | Meaning |
+|---|---|
+| `STARTING` | Context resolution and Agent entry are in progress |
+| `DELIVERING_USER_MESSAGE` | One complete user turn is being offered to Agent |
+| `WAITING_FOR_AGENT` | User input was accepted; no assistant stream is open |
+| `STREAMING_ASSISTANT` | One assistant stream is open |
+| `WAITING_FOR_DISPOSITION` | Assistant stream completed; disposition is required |
+| `COMMITTING_FOLLOW_UP` | Follow-up presentation is committing or draining |
+| `WAITING_FOR_FOLLOW_UP` | Input-side presenter owns the follow-up interval |
+| `ENDING` | Terminal notification and scoped cleanup are in progress |
+| `CLOSED` | All scoped work is quiescent |
 
-## Conversation termination
+## Complete transition tables
 
-Stable reasons include:
+### InputSession operation matrix
 
-- `completed`: agent returned normally;
-- `endpoint_ended`: endpoint explicitly ended the Conversation;
-- `follow_up_timeout`: endpoint did not begin a follow-up before the deadline;
-- `agent_failed`: agent failed and the failure was converted into orderly cleanup.
+`V` is valid with the stated transition; `P` is a protocol violation; `I` is
+inapplicable because the session is terminal.
 
-Endpoint closure closes the entire Session and does not require a `ConversationEnded` event.
+| Operation/result | `IDLE` | `ACCEPTING` | `ACTIVE` | `CLOSING` | `CLOSED` |
+|---|---|---|---|---|---|
+| call `accept_conversation()` | V -> `ACCEPTING` | P | P | P | I |
+| accepted complete input | P | V -> `ACTIVE` | P | P | I |
+| recoverable pre-Conversation rejection/failure | P | V -> `IDLE` | P | P | I |
+| InputSession becomes unavailable | V -> `CLOSED` | V -> `CLOSED` | V -> `CLOSING` | V -> `CLOSED` | I |
+| InputConversation context exits normally | P | P | V -> `IDLE` | V -> `CLOSED` | I |
+| call `close()` | V -> `CLOSING` | V -> `CLOSING` | V -> `CLOSING` | V, await same close | I |
 
-On orderly termination, Session MUST:
+`accept_conversation().__aenter__()` MUST return only after it has atomically
+created a ready `InputConversation` with a complete non-whitespace
+`initial_message`, immutable context, a fresh Conversation ID, live control
+receive, and live output operations. (`CP-SESSION-001`)
 
-1. prevent new Conversation events;
-2. cancel or join Conversation-owned work;
-3. assert that no user or assistant message remains open;
-4. destroy Conversation-scoped state;
-5. emit `ConversationEnded(reason)` when the endpoint remains usable;
-6. enter `IDLE` and emit `ReadyForConversation`.
+Close wins if acceptance and close are simultaneously eligible. If active
+creation already committed, the active control receive resolves
+`InputSessionClosed`; otherwise no core Conversation is exposed.
+(`CP-SESSION-002`)
 
-Cleanup MUST have one implementation path regardless of termination reason. (`CP-SESSION-003`)
+The first `close()` call MUST commit `CLOSING` before its first suspension,
+release pending acceptance or control receive, and own the one close result.
+Repeated calls await that same result. InputConversation context exit MUST finish
+or abort assistant output and media cleanup before `ACTIVE` can return to
+`IDLE`; it cannot restore `IDLE` after close has committed.
+(`CP-SESSION-003`)
 
-## Timeouts and cancellation
+### Bridge source/event/state matrix
 
-- The Session owns the follow-up deadline after emitting `FollowUpRequested`.
-- The endpoint adapter MAY implement the timer on Session's behalf, but it MUST use the supplied value and report expiration as `ConversationEnded(reason="follow_up_timeout")`.
-- Message streams have no protocol timeout. A transport or adapter MAY have a liveness policy, but such a failure closes the endpoint rather than inventing a completed message.
-- Endpoint closure MUST cancel active agent work and Conversation-owned tasks.
+Codes are: `V` valid; `P` protocol violation; `T` terminal input valid and
+pre-emptive; `F` internal fatal result; `I` inapplicable in terminal states.
+Rows explicitly cover every typed source event and operation result.
+
+| Source event/result | `STARTING` | `DELIVERING` | `WAITING_AGENT` | `STREAMING` | `WAITING_DISP` | `COMMIT_FU` | `WAITING_FU` | `ENDING` | `CLOSED` |
+|---|---|---|---|---|---|---|---|---|---|
+| `ContextResolved` | V: enter Agent | P | P | P | P | P | P | P | I |
+| `ContextRejected` | V -> `ENDING` | P | P | P | P | P | P | P | I |
+| `ContextUnavailable` | V -> `ENDING` | P | P | P | P | P | P | P | I |
+| malformed/exceptional context result | F | P | P | P | P | P | P | P | I |
+| Agent entry success | V -> `DELIVERING` | P | P | P | P | P | P | P | I |
+| `AgentInputAccepted` | P | V -> `WAITING_AGENT` | P | P | P | P | P | P | I |
+| Agent handoff/entry failure | V -> `ENDING` | V -> `ENDING` | P | P | P | P | P | P | I |
+| `ProcessingUpdate` | P | P | V, no transition | P | P | P | P | P | I |
+| `AssistantMessageStarted` | P | P | V -> `STREAMING` | P | P | P | P | P | I |
+| `AssistantTextChunk` | P | P | P | V, no transition | P | P | P | P | I |
+| `AssistantMessageCompleted` | P | P | P | V -> `WAITING_DISP` after sink commit | P | P | P | P | I |
+| `TurnDisposition(END)` | P | P | V -> `ENDING` | P | V -> `ENDING` | P | P | P | I |
+| `TurnDisposition(FOLLOW_UP)` | P | P | V -> `COMMIT_FU` | P | V -> `COMMIT_FU` | P | P | P | I |
+| `AgentConversationFailed` | V -> `ENDING` | V -> `ENDING` | V -> `ENDING` | V -> `ENDING` and abort | V -> `ENDING` | V -> `ENDING` | V -> `ENDING` | P | I |
+| `FollowUpRequestCommitted` | P | P | P | P | P | V -> `WAITING_FU` plus synchronous ack | P | P | I |
+| follow-up `UserMessage` | P | P | P | P | P | P | V -> `DELIVERING` | P | I |
+| `FollowUpTimedOut` | P | P | P | P | P | P | V -> `ENDING` | P | I |
+| `ConversationCancelled` | T | T | T | T | T | T | T | P | I |
+| `InputConversationFailed` | T | T | T | T | T | T | T | P | I |
+| `InputSessionClosed` | T | T | T | T | T | T | T | V, affects delivery | I |
+| sink operation failure/inconsistent result | F | F | F | F | F | F | F | F | I |
+| bridge invariant failure | F | F | F | F | F | F | F | F | I |
+
+`DELIVERING`, `WAITING_AGENT`, `STREAMING`, `WAITING_DISP`, `COMMIT_FU`, and
+`WAITING_FU` abbreviate the full state names only inside this matrix.
+
+The bridge MUST inspect the complete ready set at each race decision and apply
+this priority: `INTERNAL_FAILURE`, `INPUT_SESSION_CLOSED`, `INPUT_FAILED`,
+`INPUT_CANCELLED`, `CONTEXT_UNAVAILABLE`, `CONTEXT_REJECTED`, `AGENT_FAILED`,
+`FOLLOW_UP_TIMEOUT`, then ordinary Agent acceptance/output/disposition.
+(`CP-RACE-001`)
+
+Priority does not undo a commit which already occurred. If input termination and
+`AgentInputAccepted` are ready together, terminal input wins the state
+transition, the accepted result remains true, and the bridge uses acknowledged
+Agent cancellation.
+
+## Invariants
+
+1. A Conversation begins only after input acceptance has produced complete,
+   non-whitespace initial text. The core never waits for an initial message.
+   (`CP-CREATION-001`)
+2. The bridge starts one continuously pending input-control receive before
+   context resolution and replaces it immediately after every consumed
+   non-terminal control event. (`CP-CANCEL-001`)
+3. Input terminal control remains observable during Agent entry, every Agent
+   input handoff, Agent output, every sink operation, and follow-up commitment.
+4. The bridge contains no assistant-output queue. It awaits each input sink
+   operation before receiving the next ordinary Agent event.
+   (`CP-BACKPRESSURE-002`)
+5. There is zero or one assistant stream per turn; chunks are ordered; progress
+   cannot interleave with text; successful turns have exactly one disposition.
+6. Follow-up intent contains no timeout. Only the component that presents the
+   offer owns its semantic timer. (`CP-FOLLOWUP-002`)
+7. The state transition to `WAITING_FOR_FOLLOW_UP` and acknowledgement of the
+   matching token occur synchronously with no intervening suspension point.
+8. Every owned watcher, handoff, model, tool, producer, and renderer operation is
+   joined or contained before scoped context exit. (`CP-LIFETIME-001`)
+9. Sequential Conversations on one InputSession do not overlap cleanup or
+   readiness; concurrent InputSessions may run independent bridges.
+10. Internal JSON-like dictionaries omit fields whose values are `None` unless
+    an external protocol explicitly requires `null`.
+11. Agent context entry is an owned task raced against the already-pending input
+    control receive. Input terminal control cancels and joins entry. A committed
+    entry is registered for exact-once exit; an uncommitted `__aenter__()` owns
+    cleanup of every partially acquired resource because Python will not invoke
+    `__aexit__()` for it. (`CP-STARTUP-001`)
+12. Each `send_user_message()` is an owned rendezvous raced against input
+    control. Cancellation before acceptance commit guarantees the message cannot
+    later be accepted. Acceptance at or before cancellation remains committed,
+    and the bridge then uses acknowledged Agent cancellation.
+    (`CP-HANDOFF-001`)
+
+## Timeouts, cancellation, and application shutdown
+
+The core owns no user follow-up timer. A missing presenter outcome may leave the
+bridge in `WAITING_FOR_FOLLOW_UP`; bindings MUST define resource containment.
+
+Agent entry and acknowledged cancellation share a required positive finite
+`conversation.agent_cancellation_deadline_seconds`. The value has no built-in
+fallback. Deadline expiry is a sealed-lifetime failure and invokes the
+application-wide fatal termination controller. (`CP-CANCEL-002`)
+
+Fatal terminal notification uses a separate required positive finite
+`conversation.fatal_notification_seconds`. After this bound the process exits
+non-zero without waiting for escaped Agent work.
+
+Application shutdown uses required positive finite
+`shutdown.grace_period_seconds`, with no built-in fallback. On the first
+`SIGINT` or `SIGTERM`, the application MUST atomically close admission, snapshot
+the registered InputSessions, call every `close()` concurrently, await their
+supervisors and bridges, then close shared Agent and external resources within
+the one global deadline. (`CP-SHUTDOWN-001`)
+
+A session is registered before readiness is exposed and deregistered only after
+its session and supervisor close. Deadline expiry or a second signal during
+shutdown MUST invoke immediate non-zero hard exit. Successful cleanup exits
+zero. (`CP-SHUTDOWN-002`)
 
 ## Failure and recovery
 
-### External endpoint violation
+| Failure | Conversation result | InputSession reusable | Process result |
+|---|---|---|---|
+| Valid context rejection | `CONTEXT_REJECTED` with code | Yes | Continue |
+| Context snapshot unavailable | `CONTEXT_UNAVAILABLE` | Yes | Continue |
+| Agent failure or unhandled Agent exception | `AGENT_FAILED`; abort open sink | Yes after input cleanup | Continue |
+| Recoverable input failure | `INPUT_FAILED`; abort open sink | Yes | Continue |
+| Input disconnect/unrecoverable failure | `INPUT_SESSION_CLOSED`; abort open sink | No | Continue |
+| User cancellation | `INPUT_CANCELLED`; abort open sink if needed | Yes | Continue |
+| Presenter timeout | `FOLLOW_UP_TIMEOUT` | Yes | Continue |
+| Invalid provider result/exception | `INTERNAL_FAILURE` best effort | No guarantee | Fatal non-zero exit |
+| Broken bridge/sink invariant | `INTERNAL_FAILURE` best effort | No guarantee | Fatal non-zero exit |
+| Agent entry/cancellation deadline missed | `INTERNAL_FAILURE` best effort | No guarantee | Fatal non-zero exit |
 
-When transport permits, Session or its adapter MUST:
-
-1. send `SessionRejected(reason)`;
-2. close with a protocol-error indication;
-3. cancel active Conversation work;
-4. remove the Session.
-
-It MUST NOT remain connected and guess the endpoint's intent. (`CP-ERROR-001`)
-
-### Internal violation
-
-Trusted adapters and agents MUST fail an assertion or equivalent invariant when they emit an impossible event. The Session MUST be torn down if state can no longer be trusted. (`CP-ERROR-002`)
+External binding violations are rejected and close only that InputSession unless
+they expose an internal invariant failure. There is no automatic Agent or
+context retry. (`CP-FAILURE-001`)
 
 ## Normal sequences
 
-### Single-turn text Conversation
+### Single-turn Conversation
 
 ```text
-Endpoint                                 Session                         Agent
-   |-- SessionAttributes(medium=text) ---->|
-   |<-- ReadyForConversation --------------|
-   |-- NewConversation ------------------->|
-   |-- MessageBegin(user-1) -------------->|
-   |-- MessageFragment(user-1, text) ----->|
-   |-- MessageEnd(user-1) ---------------->|
-   |                                       |-- run/resume -------------->|
-   |<-- MessageBegin(assistant-1) ----------|<-- output ------------------|
-   |<-- MessageFragment(assistant-1, text) -|
-   |<-- MessageEnd(assistant-1) ------------|
-   |                                       |<-- return ------------------|
-   |<-- ConversationEnded(completed) -------|
-   |<-- ReadyForConversation ---------------|
+InputSession.accept_conversation() returns initial UserMessage
+Bridge resolves context and opens AgentConversation
+Bridge delivers initial UserMessage -> AgentInputAccepted
+Agent emits AssistantMessageStarted
+Agent emits AssistantTextChunk one or more times
+Agent emits AssistantMessageCompleted
+Agent emits TurnDisposition(END_CONVERSATION)
+Bridge sends ConversationEnded(COMPLETED)
+Both scoped contexts exit; InputSession returns to IDLE
 ```
 
 ### Follow-up Conversation
 
 ```text
-complete user message
-complete assistant message
-agent calls request_follow_up()
-Session emits FollowUpRequested(timeout_seconds=60)
-complete follow-up user message
-complete assistant message
-ConversationEnded(completed)
-ReadyForConversation
+successful first turn
+Agent emits TurnDisposition(REQUEST_FOLLOW_UP)
+Input request_follow_up() returns FollowUpRequestCommitted
+Bridge enters WAITING_FOR_FOLLOW_UP and synchronously acknowledges token
+Input emits UserMessage
+Bridge delivers message -> AgentInputAccepted
+successful second turn ends explicitly
 ```
 
-### Processing update
+### Cancellation during Agent handoff
 
 ```text
-MessageEnd(user-1)
-ProcessingUpdate
-ProcessingUpdate
-MessageBegin(assistant-1)
-MessageFragment(assistant-1, "...")
-MessageEnd(assistant-1)
+Bridge races send_user_message() against pending input control
+Input cancellation and AgentInputAccepted become ready together
+Bridge selects INPUT_CANCELLED, preserves acceptance commit,
+awaits AgentConversation.cancel(INPUT_CANCELLED), aborts open sink if any,
+sends ConversationEnded(INPUT_CANCELLED), and closes both scopes
 ```
 
 ## Invalid sequences
 
-The following are protocol violations or internal failures:
-
-- `SessionAttributes` without `medium`;
-- changing `medium` in `NewConversation`;
-- `MessageBegin` in `IDLE`;
-- `MessageFragment` before `MessageBegin`;
-- `MessageEnd` with a different message ID;
-- endpoint message input in `AGENT_ACTIVE`;
-- `ProcessingUpdate` inside an assistant message;
-- agent return with an assistant message open;
-- duplicate `request_follow_up()`;
-- follow-up input after its deadline;
-- reusing a message ID in the same Conversation.
-
-## Websocket JSON serialization
-
-Each websocket text frame contains exactly one JSON object. Event names use snake case. Unknown fields MUST be rejected. Fields whose value would be `None` MUST be omitted unless this external contract explicitly requires `null`; no event currently requires `null`.
-
-### Endpoint to Session examples
-
-```json
-{"type":"session_attributes","attributes":{"medium":"text","user":"Maciek","area":"office"}}
-{"type":"new_conversation","attributes":{"area":"kitchen"}}
-{"type":"message_begin","message_id":"user-1"}
-{"type":"message_fragment","message_id":"user-1","text":"cześć"}
-{"type":"message_end","message_id":"user-1"}
-{"type":"conversation_ended","reason":"endpoint_ended"}
-```
-
-### Session to endpoint examples
-
-```json
-{"type":"ready_for_conversation"}
-{"type":"processing_update"}
-{"type":"follow_up_requested","timeout_seconds":60.0}
-{"type":"message_begin","message_id":"assistant-1"}
-{"type":"message_fragment","message_id":"assistant-1","text":"odpowiedź"}
-{"type":"message_end","message_id":"assistant-1"}
-{"type":"conversation_ended","reason":"completed"}
-{"type":"session_rejected","reason":"message_fragment received before message_begin"}
-```
-
-## Agent API
-
-The abstract shape remains:
-
-```python
-async def run_conversation(
-    self,
-    conversation: Conversation,
-    endpoint: ConversationEndpoint,
-) -> None:
-    ...
-```
-
-High-level helpers MAY assemble complete text messages, but they MUST preserve protocol ordering and unique IDs. An agent that needs another user message MUST call `ConversationEndpoint.request_follow_up()` before awaiting it. Session then emits `FollowUpRequested` with the configured Session timeout.
+- Exposing an empty or whitespace-only initial or follow-up message;
+- opening a second InputConversation while one is active;
+- receiving Agent output before an accepted user message;
+- emitting a text chunk outside an open assistant stream;
+- emitting progress after assistant streaming starts;
+- completing two assistant streams in one turn;
+- completing a successful turn without a disposition;
+- emitting a disposition after Agent failure or cancellation;
+- exposing a follow-up outcome before token acknowledgement;
+- attaching a timeout to Agent follow-up intent;
+- buffering Agent output ahead of a blocked bridge receive;
+- cancelling a bridge task and leaving its watcher, handoff, or Agent task alive;
+- parsing diagnostic detail as a reason or rejection code;
+- handling a broken sealed-lifetime invariant by closing only one session.
 
 ## Observability requirements
 
-- Every Session transition MUST be logged on DEBUG with `Session[session_id]` context, old state, triggering event, and new state. (`CP-OBS-001`)
-- Every Conversation start and end MUST be logged on INFO with Session ID, Conversation ID, medium, user, area, and termination reason.
-- Message begin and end MUST be logged on DEBUG with Conversation and message IDs.
-- Message text MUST follow the project's privacy and logging policy; transition logs MUST NOT require content.
-- Protocol rejection MUST be logged on WARNING with peer or adapter identity, state, event type, and reason.
+- Every InputSession transition MUST be logged on DEBUG with
+  `InputSession[<id>]`, old state, cause, and new state. (`CP-OBS-001`)
+- Every bridge transition MUST be logged on DEBUG with
+  `ConversationBridge[<conversation_id>]`, old state, source/result, selected
+  race outcome, and new state. (`CP-OBS-002`)
+- Conversation acceptance and terminal outcome MUST be logged briefly on INFO
+  with Conversation ID, InputSession ID, medium, user, area, and typed reason.
+- Agent entry, each user-input acceptance, assistant stream start/completion,
+  follow-up commitment, cancellation request/acknowledgement, context exit, and
+  cleanup MUST be logged.
+- LLM requests and replies MUST include model, token count, and duration under
+  the project logging rules.
+- Diagnostic detail and content logging MUST NOT be required to reconstruct the
+  state machine.
 
 ## Implementation and conformance references
 
-Stage 3 implementation targets:
+Planned implementation owners:
 
-- `ai_server/messages.py`
-- `ai_server/interfaces.py`
-- `ai_server/sessions.py`
-- `ai_server/websocket_server.py`
-- `ai_server/ws_client_common.py`
+- `ai_server/conversations/` for contexts, messages, interfaces, bridge, state,
+  supervision, and lifecycle registry;
+- `ai_server/agent/` and `ai_server/orchestrator/` for Agent factories and
+  AgentConversation implementations;
+- `ai_server/server.py` for fatal containment and bounded shutdown;
+- concrete bindings named in the websocket and microphone documents.
 
-Conformance targets:
-
-- `tests/test_messages.py`
-- `tests/test_interfaces.py`
-- focused Session state-machine tests
-- `tests/test_websocket_server.py`
-- [Protocol Conformance Catalogue](protocol-conformance-catalogue.md)
-
-Voice adaptation is defined by [Microphone-Conversation Mapping](microphone-conversation-mapping.md).
+Planned conformance coverage is indexed by the
+[Protocol Conformance Catalogue](protocol-conformance-catalogue.md). T-004 is
+the authoritative migration plan:
+[Conversation Bridge Protocol Redesign](tasks/T-004-conversation-bridge-protocol-redesign.md).
 
 ## Compatibility policy
 
-This protocol intentionally replaces the legacy waiting events and message streams without IDs. Stage 3 MUST migrate all in-repository producers and consumers together. No compatibility aliases or permissive parsing are required.
+The migration is a clean break. The old `Session`, generic mutable
+`Conversation.state`, bidirectional `CommunicationEndpoint` and
+`ConversationEndpoint`, old message-stream vocabulary, and old websocket events
+are removed at atomic production cutover. No version negotiation, alias,
+translation facade, or permissive legacy parser is provided. (`CP-COMPAT-001`)
 
-## Unresolved decisions
+## Explicitly unresolved decisions
 
-None. Changes to the event vocabulary, state machine, floor ownership, or termination semantics require a normative document change before implementation.
+None. Captain approved this protocol on 2026-07-19. Implementation and
+conformance evidence remain tracked by T-004.

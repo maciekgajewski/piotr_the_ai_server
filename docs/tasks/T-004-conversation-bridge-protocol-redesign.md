@@ -3,16 +3,17 @@
 ## Status
 
 - **Authority:** Active design and implementation task
-- **Status:** Architecture reviewed; ready for Stage 1 protocol drafting; implementation not started
-- **Decision dates:** Initial architecture 2026-07-17; architecture review closed 2026-07-18
+- **Status:** Protocol suite approved; ready for implementation; implementation not started
+- **Decision dates:** Initial architecture 2026-07-17; architecture review closed 2026-07-18; protocol suite approved 2026-07-19
 - **Audience:** Maintainers of agents, sessions, websocket inputs, microphone inputs, clients, and protocol tests
 - **Supersedes:** The conversation-core and websocket redesign scope in T-001
 - **Does not supersede:** T-002 or T-003; their microphone-driver fixes and verification remain valid
 
 This task records the approved architecture and the work required to make it
-normative and implemented. Until the documentation stage below is reviewed and
-approved, the existing normative protocol documents continue to describe the
-current contract. This task is a plan, not a runtime protocol.
+normative and implemented. The Stage 1 core protocol, websocket binding,
+microphone mapping, and conformance catalogue are approved normative contracts.
+They define the implementation target but do not yet describe current runtime
+behavior. This task remains the active implementation plan.
 
 The companion [illustrated design aid](T-004-agent-boundary-options.html) explains
 the approved architecture visually. It is informative, not normative.
@@ -1130,6 +1131,8 @@ requires a separate explicit design decision before changing the protocol.
 
 ### Stage 1: Write and approve the protocol suite
 
+**Completed and approved by Captain on 2026-07-19.**
+
 1. Rewrite `docs/ai-server-conversation-protocol.md` as the typed in-process core
    bridge contract.
 2. Add `docs/websocket-conversation-protocol.md` as the external JSON binding.
@@ -1470,8 +1473,8 @@ T-004 is complete only when:
 
 ## Review gates
 
-- **Gate A — protocol approval:** Captain approves the rewritten normative
-  documents before production code changes begin.
+- **Gate A — protocol approval:** Passed on 2026-07-19. Captain approved the
+  rewritten normative documents before implementation began.
 - **Gate B — additive core review:** typed interfaces, bridge state machine,
   adapter commit contract, AgentConversation rendezvous/cancellation, typed
   context resolution, and exhaustive fake-based core tests are reviewed while

@@ -2,142 +2,243 @@
 
 ## Status and scope
 
-- **Authority:** Normative conformance plan
-- **Audience:** Agents implementing or reviewing Conversation, Microphone, and mapping protocols
-- **Read when:** Planning Stage 3 implementation, adding conformance tests, or reviewing protocol coverage
+- **Authority:** Normative conformance plan for T-004 and the Microphone Protocol
+- **Audience:** Implementers and reviewers of the Conversation bridge, websocket binding, microphone mapping, and driver protocol
+- **Read when:** Implementing T-004, adding protocol tests, reviewing coverage, or closing the migration
+- **Approval state:** T-004 sections approved by Captain on 2026-07-19
 
-This catalogue maps stable normative requirements to their implementation owners and required Stage 3 tests. A requirement is not implemented until its automated test exists and passes.
+This catalogue maps stable requirements to implementation owners and required
+evidence. T-004 entries name planned tests because implementation has not
+started. They become conformance claims only when the referenced test exists and
+passes. Existing `MP-` entries continue to describe the current normative
+Microphone Protocol.
 
-Test filenames marked **new** are planned Stage 3 targets; implementation MAY choose a comparably focused filename but MUST update this catalogue in the same change.
+Equivalent focused filenames are permitted only when this catalogue is updated
+in the same change.
 
-## Conversation Protocol
+## Conversation Bridge Protocol
 
-| Requirement | Summary | Implementation owner | Required conformance test |
+### Ownership, context, and creation
+
+| Requirement | Summary | Planned owner | Required automated evidence |
 |---|---|---|---|
-| `CP-ATTR-001` | `medium` is required and valid | `interfaces.py`, `sessions.py`, JSON parsing | `tests/test_interfaces.py`; websocket handshake cases |
-| `CP-ATTR-002` | Session medium is immutable | `sessions.py` | new `tests/test_sessions.py`: reject medium change |
-| `CP-ATTR-003` | Conversation cannot override medium | `sessions.py` | new `tests/test_sessions.py`: reject override |
-| `CP-SESSION-001` | Emit readiness once on each `IDLE` entry | `sessions.py` | new `tests/test_sessions.py`: initial and repeated idle entry |
-| `CP-SESSION-003` | One cleanup path for all orderly endings | `sessions.py` | parameterized termination-reason tests |
-| `CP-SESSION-004` | Conversation state never leaks | `sessions.py` | consecutive Conversation isolation test |
-| `CP-MESSAGE-001` | Begin/fragments/end ordering | `sessions.py`, endpoint helper | valid zero/one/many-fragment streams |
-| `CP-MESSAGE-002` | Message IDs are unique | `sessions.py` | reject reused user and assistant IDs |
-| `CP-MESSAGE-003` | At most one message per side is open | `sessions.py` | reject nested begins |
-| `CP-MESSAGE-004` | Fragment/end ID must match | `sessions.py` | reject stale and mismatched IDs |
-| `CP-MESSAGE-005` | No control/update/return inside assistant stream | `sessions.py`, `ConversationEndpoint` | each forbidden agent action fails invariant |
-| `CP-FLOOR-001` | User and assistant streams do not overlap | `sessions.py` | reject endpoint input while output open |
-| `CP-FLOOR-002` | Endpoint regains floor only after follow-up | `ConversationEndpoint` | read without follow-up fails/ends as specified; requested read succeeds |
-| `CP-FOLLOWUP-001` | `request_follow_up()` only after complete input and closed output | `ConversationEndpoint` | forbidden-state assertions |
-| `CP-FOLLOWUP-002` | Only one follow-up is outstanding | `ConversationEndpoint` | duplicate method-call assertion |
-| `CP-FOLLOWUP-003` | Session supplies the sole effective deadline | Session and adapters | agents supply no timeout; websocket and voice adapters receive the exact Session value |
-| `CP-ERROR-001` | External violation rejects and closes | websocket adapter, Session | `SessionRejected` precedes protocol close |
-| `CP-ERROR-002` | Internal violation fails invariant | Session and trusted adapters | representative impossible internal events assert |
-| `CP-OBS-001` | Every Session transition is context-logged | `sessions.py` | `caplog` verifies session, old/new state, event |
+| `CP-OWNER-001` | One bridge owns all cross-side state | conversation bridge | state ownership/illegal-call tests in `tests/test_conversation_bridge.py` |
+| `CP-OWNER-002` | One active InputConversation per InputSession | input supervision | sequential and second-accept rejection tests |
+| `CP-OWNER-003` | One fixed input and AgentConversation per bridge | bridge | factory cardinality and no-replacement tests |
+| `CP-OWNER-004` | Concurrent AgentConversations isolate mutable state | Agent factories | barrier-based concurrent isolation test |
+| `CP-OWNER-005` | Core uses sealed directional abstractions only | interfaces and bridge | fake-only core test plus architecture import check |
+| `CP-CONTEXT-001` | Context is typed, immutable, and scope-correct | contexts | mutation/type tests and absence of generic state/attributes |
+| `CP-CONTEXT-002` | Context resolution is synchronous and has closed outcomes | context provider | resolved/rejected/unavailable/malformed/exception tests |
+| `CP-CREATION-001` | Core starts only with accepted non-whitespace initial text | InputSession adapters | empty/whitespace rejection and atomic creation tests |
+| `CP-SESSION-001` | Acceptance returns one fully usable InputConversation | InputSession implementations | accepting-to-active readiness/capability test |
+| `CP-SESSION-002` | Close wins acceptance race unless active creation committed | InputSession implementations | barrier tests on both sides of commit |
+| `CP-SESSION-003` | Close commits before suspension and context exit gates reuse | InputSession implementations | idempotent close and cleanup-before-readiness tests |
+| `CP-STARTUP-001` | Agent entry is raced, joined, and partial entry self-cleans | bridge and Agent factory | terminal-input entry races and partial-`__aenter__()` cleanup |
+| `CP-HANDOFF-001` | User-message acceptance commit survives cancellation correctly | bridge and AgentConversation | before/simultaneous/after-commit handoff races |
 
-Additional exhaustive coverage:
+### Event order, flow control, and follow-up
 
-- JSON round trips for every event and every optional-field shape in `tests/test_messages.py`.
-- Unknown event, unknown field, wrong type, empty ID, invalid number, and explicit unexpected `null` rejection.
-- Every state/event pair from the normative transition table.
-- Endpoint closure in every non-terminal state.
-- Normal single-turn, multi-assistant-message, follow-up, follow-up-timeout, and rejection sequences.
+| Requirement | Summary | Planned owner | Required automated evidence |
+|---|---|---|---|
+| `CP-INPUT-001` | Input exposes one serialized follow-up outcome | input adapters | duplicate/outcome arbitration tests |
+| `CP-AGENT-001` | Successful turn has exactly one explicit disposition | AgentConversation and bridge | zero-stream/one-stream/end/follow-up/failure cases |
+| `CP-SINK-001` | Assistant completion and abort have one definitive commit | input sink | before/at/after commit race tests |
+| `CP-BACKPRESSURE-001` | Agent output is a zero-capacity rendezvous | AgentConversation | blocked producer proof while bridge/input is blocked |
+| `CP-BACKPRESSURE-002` | Bridge has no assistant output queue | bridge | slow sink test and task/queue inspection |
+| `CP-FOLLOWUP-001` | Token gates outcomes until bridge acknowledgement | input adapter and bridge | early outcome, token mismatch, duplicate, terminal bypass tests |
+| `CP-FOLLOWUP-002` | Presenter owns semantic follow-up timing | input adapters | prove no core timer; websocket and voice timing tests |
+| `CP-RACE-001` | Complete ready set uses normative priority | bridge state machine | pairwise and multi-ready deterministic race table |
+| `CP-CANCEL-001` | Input terminal receive is continuously pending | bridge | cancellation in every non-terminal state and handoff race |
+| `CP-CANCEL-002` | Agent entry/cancel deadline is explicit and fatal | bridge/top-level termination | injected hook unit tests plus subprocess non-zero exit |
+| `CP-LIFETIME-001` | All conversation-owned work is joined or contained | bridge/AgentConversation | task-leak tests across every exit path |
+
+### Terminal behavior, shutdown, logging, and cutover
+
+| Requirement | Summary | Planned owner | Required automated evidence |
+|---|---|---|---|
+| `CP-TERMINAL-001` | Terminal reason/code/detail invariants are structural | typed messages and bindings | constructor and serialization matrix |
+| `CP-FAILURE-001` | Each failure has ratified isolation/reuse behavior | bridge and supervisors | parameterized failure/reuse cases |
+| `CP-SHUTDOWN-001` | First signal atomically closes admission and sessions within one deadline | application lifecycle registry | idle/accepting/active fake-session unit tests and subprocess zero exit |
+| `CP-SHUTDOWN-002` | Deadline or second signal hard-exits non-zero | top-level lifecycle | two subprocess escalation tests |
+| `CP-OBS-001` | Every InputSession transition has stable context | InputSession implementations | `caplog` transition coverage |
+| `CP-OBS-002` | Every bridge transition/race has stable context | bridge | `caplog` state and selected-ready-set coverage |
+| `CP-COMPAT-001` | Legacy in-process surfaces are absent after cutover | repository | import/symbol/reference absence checks |
+
+Additional exhaustive core coverage:
+
+- Every cell in the InputSession operation matrix and bridge
+  source/event/state matrix.
+- Agent entry and initial/follow-up input delivery raced with cancellation,
+  recoverable failure, and session close before and simultaneous with commit.
+- Progress before streaming and rejection during streaming.
+- Agent failure before output, during progress, and during streaming.
+- Sink send and completion blocked while terminal input arrives.
+- Repeated sequential Conversations and multiple concurrent InputSessions.
+- Exact-once `__aexit__()` for partial startup, normal end, cancellation, and
+  fatal containment paths.
+- Startup rejection for missing, invalid, non-positive, or non-finite
+  Conversation/shutdown deadline settings.
+
+## Websocket Conversation Protocol
+
+### Schema, state, and transport
+
+| Requirement | Summary | Planned owner | Required automated evidence |
+|---|---|---|---|
+| `WS-OWNER-001` | One websocket maps to one InputSession and one active Conversation | websocket adapter | sequential/overlapping start tests |
+| `WS-OWNER-002` | Background reader remains live during Agent/writer blocking | websocket adapter | delayed Agent and blocked-send disconnect/liveness tests |
+| `WS-SCHEMA-001` | One strict JSON object per UTF-8 text frame | message parser | round trips plus unknown/null/duplicate/non-text/wrong-type cases |
+| `WS-CREATION-001` | Start event includes complete initial text | websocket InputSession | empty/whitespace rejection and one-step creation test |
+| `WS-STREAM-001` | External assistant stream IDs are fresh and ordered | websocket sink | start/chunk/complete/abort ID matrix |
+| `WS-TERMINAL-001` | Context rejection code is conditional and typed | websocket serializer | every reason/code/detail shape |
+| `WS-BACKPRESSURE-001` | Writes serialize without unbounded output queue | writer/sink | concurrent send and blocked drain tests |
+| `WS-COMMIT-001` | Transport handoff commit survives cancellation | writer/sink | abort before handoff and cancellation after handoff tests |
+| `WS-ERROR-001` | External violation rejects then closes | websocket adapter | every rejection code and close-order test |
+| `WS-OBS-001` | Connection logs carry peer and stable InputSession ID | websocket adapter | `caplog` admission/state/gate/close coverage |
+| `WS-COMPAT-001` | Old vocabulary is rejected | parser/adapter | parameterized legacy event list |
+
+### Capacity, configuration, and follow-up gate
+
+| Requirement | Summary | Planned owner | Required automated evidence |
+|---|---|---|---|
+| `WS-CAPACITY-001` | Every pre-upgrade slot has one owner and exact release | admission controller | handshake/rejection/failure/shutdown release paths |
+| `WS-CAPACITY-002` | Full capacity returns `503` plus configured `Retry-After` | HTTP admission | below/at/above-capacity concurrent tests |
+| `WS-CONFIG-001` | Required bounds have no hidden defaults | config parser | missing/Boolean/zero/negative/non-integer/non-finite matrix |
+| `WS-FOLLOWUP-001` | Gate retains at most one outcome; terminal input bypasses | websocket InputConversation | early/duplicate/cancel/close cases |
+| `WS-FOLLOWUP-002` | Outcome exposure follows bridge state acknowledgement | adapter and bridge | before handoff, during drain, before ack, after ack cases |
+| `WS-FOLLOWUP-003` | Repository clients require explicit semantic timeout | client configuration/CLI | missing and invalid policy rejection |
+| `WS-FOLLOWUP-004` | Client submission at/before expiry wins and sends one event | shared client state | controllable-clock before/equal/after tests |
+| `WS-LEASE-001` | Server lease closes `1013` without forging timeout | websocket adapter | start/cancel/heartbeat/equal-boundary/expiry cases |
+
+Additional websocket coverage:
+
+- Handshake timeout, maximum frame bound, bounded ingress overflow, heartbeat,
+  invalid state, duplicate outcome, and every documented close code/reason.
+- Slot release after HTTP handler exception, websocket preparation failure,
+  invalid handshake, protocol rejection, ordinary close, lease expiry, and
+  application shutdown.
+- Follow-up send failure before handoff and drain failure after handoff.
+- Lease expiry during drain; retained input at the exact lease deadline;
+  suppression of input after committed expiry.
+- Interactive and batch client normal, follow-up, timeout, cancellation,
+  disconnect, and terminal flows.
+- Real server/client delayed-response liveness check using the repository
+  websocket test workflow.
 
 ## Microphone Protocol
 
-| Requirement | Summary | Implementation owner | Required conformance test |
+These requirements are already normative and are not redesigned by T-004.
+
+| Requirement | Summary | Implementation owner | Required conformance evidence |
 |---|---|---|---|
-| `MP-OWNER-001` | Driver does not own STT, Conversation, or re-arm | abstract interface and drivers | reusable black-box harness in `tests/microphone_driver_conformance.py`; architecture review |
+| `MP-OWNER-001` | Driver does not own STT, Conversation, or re-arm | abstract interface and drivers | reusable black-box driver harness; architecture review |
 | `MP-ID-001` | Every listening generation has a new ID | manager | `tests/test_microphones.py`; `tests/test_microphone_protocol.py` |
-| `MP-ID-002` | Every segment has a new associated utterance ID | drivers and manager | `tests/test_microphone_protocol.py`: multiple open-mic segments have distinct IDs |
-| `MP-ID-003` | Stale events cannot mutate state | manager and drivers | `tests/test_microphone_protocol.py`: stale listen/playback/cue and ID-reuse cases |
-| `MP-EVENT-001` | Capture and playback event vocabularies are separate | messages and interfaces | `tests/test_microphone_protocol.py`; `tests/test_box3_esphome_microphone.py` |
-| `MP-STATE-001` | Driver transition table is enforced | every driver | `tests/test_microphone_protocol.py`; reusable Box3 contract exercised from `tests/test_box3_esphome_microphone.py` |
-| `MP-STOP-001` | Stop actively ends a device capture pipeline and awaits its stop notification; run-end alone is not an acknowledgement | streaming microphone drivers and firmware | `tests/test_box3_esphome_microphone.py`: explicit stop ordering, cue ordering, timeout recovery, and rollout compatibility; ESPHome config/compile and generated-source inspection |
-| `MP-VISUAL-001` | `ERROR` is firmware-owned, not commandable | messages, drivers, firmware | reject `SetVisualState(ERROR)`; disconnect firmware validation |
-| `MP-VISUAL-002` | Visual commands are state-independent and idempotent | drivers | duplicate commands in each connected driver state |
-| `MP-VISUAL-003` | Manager explicitly commands connected visuals | manager | all normal sequences assert visual commands |
-| `MP-VISUAL-004` | Driver/firmware does not infer main visual | drivers and firmware | callback tests prove no implicit main-state mutation |
-| `MP-VISUAL-005` | Reconnect remains error until initial command | driver and firmware | disconnect/reconnect/first-command sequence |
-| `MP-VISUAL-006` | Local indicators do not replace main visual | firmware | ESPHome generated-config checks and hardware acceptance |
-| `MP-VISUAL-007` | Processing remains through playback | manager and drivers | visual sequence around begin/end/finished playback |
-| `MP-OPENMIC-001` | First partial candidate immediately shows listening | manager partial-STT path | `tests/test_microphones.py`: controlled timing before final text |
-| `MP-OPENMIC-002` | Rejection resets candidate and idle, without re-arm | manager and driver | candidate rejection ordering and unchanged `listen_id` |
-| `MP-OPENMIC-003` | Acceptance follows final validation | manager | order test: final result before processing/cue/forwarding |
-| `MP-AUDIO-001` | Half-duplex output starts only when disarmed | manager and drivers | `tests/test_microphone_protocol.py`: cue/playback rejected while listening/capturing |
-| `MP-TIMEOUT-001` | Idle open mic has no segment timeout | manager | `tests/test_microphones.py`: asynchronous idle generation remains armed |
-| `MP-ERROR-001` | Untrusted protocol state is closed/recreated | manager | `tests/test_microphones.py`: unavailable boundary closes and recreates protocol state |
-| `MP-OBS-001` | Commands/events include state and correlation logs | manager and drivers | `tests/test_microphones.py`: `caplog` command/event context |
-| `MP-OBS-002` | Visual transitions include old/new/cause logs | manager and drivers | `caplog` visual transition test |
-| `MP-OBS-003` | Transcript content is DEBUG-only and requires explicit opt-in | STT config and implementation | `tests/test_config.py`; `tests/test_speech_to_text.py` opt-in and default-off cases |
+| `MP-ID-002` | Every segment has a new associated utterance ID | drivers and manager | multiple open-mic segment cases |
+| `MP-ID-003` | Stale events cannot mutate state | manager and drivers | stale listen/playback/cue and ID-reuse cases |
+| `MP-EVENT-001` | Capture and playback vocabularies are separate | messages and interfaces | microphone protocol and Box3 tests |
+| `MP-STATE-001` | Driver transition table is enforced | every driver | reusable conformance suite and Box3 contract |
+| `MP-STOP-001` | Stop actively ends device capture and awaits its notification | streaming drivers and firmware | explicit-stop ordering, timeout recovery, ESPHome generated-source inspection |
+| `MP-VISUAL-001` | `ERROR` is firmware-owned, not commandable | messages, drivers, firmware | reject command plus disconnect firmware validation |
+| `MP-VISUAL-002` | Visual commands are state-independent and idempotent | drivers | duplicate command in every connected driver state |
+| `MP-VISUAL-003` | Manager explicitly commands connected visuals | manager | normal-sequence assertions |
+| `MP-VISUAL-004` | Driver/firmware does not infer main visual | drivers and firmware | callback tests |
+| `MP-VISUAL-005` | Reconnect remains error until first command | driver and firmware | disconnect/reconnect/first-command sequence |
+| `MP-VISUAL-006` | Local indicators do not replace main visual | firmware | generated-config and hardware checks |
+| `MP-VISUAL-007` | Processing remains through playback | manager and drivers | visual sequence around playback |
+| `MP-OPENMIC-001` | First partial candidate immediately shows listening | manager partial-STT path | controlled timing before final text |
+| `MP-OPENMIC-002` | Rejection resets candidate and idle without re-arm | manager and driver | rejection ordering and unchanged `listen_id` |
+| `MP-OPENMIC-003` | Acceptance follows final validation | manager | final result before processing/cue/forwarding |
+| `MP-AUDIO-001` | Half-duplex output starts only when disarmed | manager and drivers | cue/playback rejected while active capture |
+| `MP-TIMEOUT-001` | Idle open mic has no segment timeout | manager | asynchronous idle generation remains armed |
+| `MP-ERROR-001` | Untrusted state closes/recreates boundary | manager | unavailable boundary recovery test |
+| `MP-OBS-001` | Commands/events include state and correlation logs | manager and drivers | `caplog` command/event context |
+| `MP-OBS-002` | Visual transitions include old/new/cause | manager and drivers | `caplog` visual transition |
+| `MP-OBS-003` | Transcript content is opt-in DEBUG only | STT config/implementation | config and STT opt-in/default-off tests |
 
-Additional exhaustive coverage:
-
-- Every driver state/command/event combination from the normative transition table.
-- `WAKE_WORD`, `OPEN_MIC`, and `FOLLOW_UP` normal sequences.
-- Arm, segment, cue, playback, and connection timeout recovery.
-- Nested segment, audio outside segment, wrong ID, implicit re-arm, and output-overlap violations.
-- Reusable conformance suite run against Box3 and every Voice Preview driver implementation.
-- ESPHome validation and generated-service inspection for all affected firmware entrypoints.
+Existing additional Microphone Protocol coverage remains required: every driver
+state/command/event combination; all listening modes; correlation failures;
+timeouts and recovery; reusable suites for every driver; ESPHome validation,
+compilation, and generated-source inspection when firmware is affected.
 
 ## Microphone-Conversation Mapping
 
-| Requirement | Summary | Implementation owner | Required conformance test |
+| Requirement | Summary | Planned owner | Required automated evidence |
 |---|---|---|---|
-| `MAP-OWNER-001` | Adapter translates without duplicating Session lifecycle | manager/agent endpoint | focused boundary tests; no concrete driver branches |
-| `MAP-SESSION-001` | Persistent microphone Session has `medium=voice` | manager | Session construction test |
-| `MAP-SESSION-002` | Readiness arms only after output/cue/stop completes | manager | queued readiness while playback drains |
-| `MAP-INPUT-001` | Accepted new input creates exactly one Conversation/message | manager/agent endpoint | wake and open-mic exact event sequence |
-| `MAP-WAKE-001` | Wake without usable text creates no Conversation | manager | no-transcript regression test |
-| `MAP-OPENMIC-001` | Accepted segment forwarded once despite many partials | manager | repeated-candidate exact-once test |
-| `MAP-FOLLOWUP-001` | Follow-up uses Session-supplied deadline | Session/manager adapter | configured mismatch test uses event value |
-| `MAP-FOLLOWUP-002` | Empty follow-up never creates a message | manager | retry within remaining time, then timeout |
-| `MAP-OUTPUT-001` | Processing remains through synthesis/playback | manager | full visual and playback sequence |
-| `MAP-END-001` | Accepted queued output drains before re-arm | manager | Conversation end before playback finish |
-| `MAP-INVARIANT-001` | One accepted utterance equals one user message | manager | property/parameterized mode tests |
-| `MAP-INVARIANT-002` | Rejected/empty input never reaches agent | manager | wake/open-mic/follow-up negative cases |
-| `MAP-INVARIANT-003` | Re-arm requires Session event and finished output | manager | no autonomous re-arm tests |
-| `MAP-OBS-001` | Cross-protocol logs carry all available IDs | manager | `caplog` translation context tests |
+| `MAP-OWNER-001` | Driver does not consume core events | voice adapter boundary | fake-driver/fake-bridge import and interaction tests |
+| `MAP-OWNER-002` | Mapping does not reproduce bridge lifecycle | adapter/bridge boundary | state/source responsibility tests |
+| `MAP-INPUT-001` | Partial STT and candidate state remain private | manager | partial-positive/final-reject cases |
+| `MAP-INPUT-002` | Only closed typed input outcomes cross to bridge | voice InputConversation | accepted/rejected/empty/failure cases |
+| `MAP-INVARIANT-001` | One accepted utterance creates exactly one input | manager/adapter | all listening modes and repeated partials |
+| `MAP-INVARIANT-002` | Rejected/empty input never reaches Agent | manager/adapter | wake/open-mic/follow-up negative cases |
+| `MAP-INVARIANT-003` | Re-arm requires scope exit and finished output | manager | Conversation end before playback drain and cancellation cases |
+| `MAP-PROGRESS-001` | Progress remains processing-only and never overlaps output | manager/voice adapter | repeated progress, cue exclusion, and stream-overlap rejection |
+| `MAP-BACKPRESSURE-001` | Voice renderer is bounded and bridge queue-free | voice sink | full-buffer producer blocking and no-loss tests |
+| `MAP-OUTPUT-001` | Text buffer bound is required and blocking | config and voice sink | invalid config plus slow-TTS bound tests |
+| `MAP-OUTPUT-002` | Voice start/chunk/complete/abort commit points are definitive | voice sink | before/at/after synthesis/playback commit races |
+| `MAP-FOLLOWUP-001` | Token gates early voice outcome | voice InputConversation | speech/timeout before acknowledgement and terminal bypass |
+| `MAP-FOLLOWUP-002` | Timer starts after actual cue/listening presentation | manager | delayed playback/cue/listening tests |
+| `MAP-FOLLOWUP-003` | Speech at/before expiry wins and one outcome crosses | manager arbiter | controllable monotonic before/equal/after barriers |
+| `MAP-TERMINAL-001` | Typed context rejection survives voice mapping | voice adapter | every code and no-detail-parsing tests |
+| `MAP-FAILURE-001` | Recoverable failure differs from session closure | manager/adapter | capture/STT/TTS/playback/driver recovery matrix |
+| `MAP-OBS-001` | Mapping logs stable IDs and race outcome | manager/adapter | `caplog` transition/correlation cases |
+| `MAP-COMPAT-001` | Old microphone Session adapter is absent at cutover | repository | symbol/reference absence checks |
 
-Additional exhaustive coverage:
+Additional mapping coverage:
 
-- New wake-word Conversation, accepted open-mic Conversation, rejected candidate, no transcript, follow-up, timeout, processing update, assistant playback, and termination.
-- Multiple assistant messages remain ordered and separately played.
-- Empty assistant message is valid and produces no playback.
-- Driver unavailability at every translation boundary.
+- Atomic InputConversation creation only after final accepted STT, stopped
+  capture, processing visual, accepted cue, and optional speaker recognition.
+- Wake-word without transcript, ordinary open-mic rejection, repeated partial
+  candidate, accepted open-mic, and follow-up no-transcript behavior.
+- Chunk batching with non-streaming TTS, ordered playback, empty stream, slow TTS
+  pushback, cancellation while blocked, and cleanup before re-arm.
+- Follow-up presentation delayed by assistant playback and cue completion.
+- T-002 audio-progress correlation and T-003 pre-roll/accepted-stop regressions
+  with exact ordering and reason strings.
+- Context rejection mapping without parsing `detail`.
 
 ## Firmware and hardware acceptance
 
-Automated ESPHome validation and hardware checks MUST cover:
+T-004 does not imply firmware changes, but final closure still verifies that the
+unchanged binding preserves these behaviors one device at a time:
 
 | Sequence | Expected main visual |
 |---|---|
 | Server disconnected | `ERROR` |
-| Reconnected before first server visual command | `ERROR` |
+| Reconnected before first server command | `ERROR` |
 | First connected initialization command | `IDLE` |
 | Ordinary open-mic speech | remains `IDLE` |
-| Partial wake candidate while speaking | immediate `LISTENING` |
+| Partial wake candidate | immediate `LISTENING` |
 | Final candidate rejection | `IDLE` |
-| Accepted utterance and agent work | `PROCESSING` |
+| Accepted utterance and Agent work | `PROCESSING` |
 | Assistant playback | remains `PROCESSING` |
-| Playback complete, no follow-up | `IDLE` |
-| Playback complete, follow-up requested | `LISTENING` |
-| Follow-up timeout cue complete | `IDLE` |
+| Playback complete, no follow-up | `IDLE` after Conversation cleanup/readiness |
+| Follow-up is being presented/awaited | `LISTENING` |
+| Follow-up timeout cue complete | `IDLE` only after Conversation cleanup/readiness |
 | Connection loss from any connected state | `ERROR` |
 
-Voice Preview MUST render `ERROR` as low-light red, `IDLE` with LEDs off, `LISTENING` as pulsing blue, and `PROCESSING` as pulsing white. Box3 MUST render the corresponding error, idle, listening, and processing bitmaps.
-
-Mute, setup, timer, volume, and other local indicators MUST be tested not to replace the connected main visual state.
+Voice Preview renders the normative low-light red/off/pulsing blue/pulsing white
+states; Box3 renders the corresponding error/idle/listening/processing bitmaps.
+Orthogonal mute/setup/timer/volume indicators do not replace the main state.
 
 ## Required verification order
 
-1. Focused message, Session, microphone, mapping, and driver conformance tests.
-2. Entire pytest suite.
-3. ESPHome validation and compilation for every affected entrypoint.
-4. Generated firmware inspection for the required services and state ownership.
-5. Entire `orchestrator_and_dsa_tests/` suite using the currently configured model.
-6. Manual websocket protocol smoke test.
-7. Hardware validation one device at a time: Box3, bedroom Voice Preview, office Voice Preview.
+1. Documentation structure, link, requirement-ID, and matrix consistency checks.
+2. Focused core bridge, AgentConversation, websocket, client, mapping, and
+   existing Microphone Protocol tests.
+3. Entire pytest suite.
+4. Subprocess fatal-containment and shutdown-signal tests.
+5. `orchestrator_and_dsa_tests/run.sh --no-transcript` with the currently used
+   model.
+6. Real websocket server/client checks including capacity and follow-up lease.
+7. Microphone runtime checks one device at a time: Box3, bedroom Voice Preview,
+   office Voice Preview.
+8. ESPHome validation, compilation, and generated `main.cpp` inspection only if
+   firmware changes for a separately approved reason.
 
 ## Completion rule
 
-Stage 3 is complete only when every requirement in this catalogue points to an existing passing test or an explicitly documented hardware verification result. Deleting or renaming a requirement requires updating its normative protocol and this catalogue in the same change.
+T-004 cannot pass Gate D until every requirement above points to current passing
+automated evidence or an explicitly recorded manual hardware result, all legacy
+surfaces are absent, and the complete verification order succeeds. Renaming or
+deleting a requirement requires updating its governing protocol and this
+catalogue in the same change.
