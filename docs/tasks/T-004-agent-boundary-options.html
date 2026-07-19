@@ -251,7 +251,7 @@
         exactly one input conversation and exactly one agent conversation. Multiple inputs simply run
         multiple independent bridges.
       </p>
-      <span class="status">Architecture decisions ratified · review fixes in progress</span>
+      <span class="status">Architecture reviewed · ready for Stage 1 protocol drafting</span>
       <nav aria-label="Page sections">
         <a href="#fleet">The fleet view</a>
         <a href="#anatomy">One bridge</a>
@@ -419,7 +419,7 @@
 
           <path d="M540 626 H190" class="arrow bridge-arrow"/>
           <text x="270" y="615" class="label">FollowUpRequested</text>
-          <text x="270" y="640" class="tiny">no timeout value</text>
+          <text x="226" y="640" class="tiny">commit token → enter WAITING → acknowledge gate</text>
 
           <rect x="55" y="666" width="250" height="62" class="box input-fill"/>
           <text x="78" y="691" class="small">The presenter shows the offer, then</text>
@@ -439,7 +439,9 @@
       <div class="callout">
         On a microphone, speech start is the local commit point. Speech detected at or before timer expiry
         cancels and suppresses that timeout while STT finishes. If expiry commits first, the adapter emits one
-        <code>FollowUpTimedOut</code> and suppresses later speech. The bridge sees exactly one outcome.
+        <code>FollowUpTimedOut</code> and suppresses later speech. For websocket input, transport handoff opens
+        an adapter-owned one-value gate. A fast validated reply waits there until the bridge has entered and
+        acknowledged <code>WAITING_FOR_FOLLOW_UP</code>; it never crosses early or queues in the bridge.
       </div>
     </section>
 
@@ -700,11 +702,12 @@ await run_state_machine(
           <text x="45" y="265" class="title">Follow-up resource lease</text>
           <rect x="45" y="290" width="245" height="76" class="box bridge-fill"/>
           <text x="76" y="322" class="label">FollowUpRequested commits</text>
-          <text x="76" y="347" class="tiny">transport handoff starts lease</text>
+          <text x="76" y="347" class="tiny">handoff starts lease + gate</text>
           <path d="M290 328 H380" class="arrow bridge-arrow"/>
           <rect x="390" y="290" width="260" height="76" class="box input-fill"/>
-          <text x="425" y="322" class="label">Wait for client outcome</text>
-          <text x="425" y="347" class="tiny">heartbeats do not extend lease</text>
+          <text x="418" y="316" class="label">Drain; retain ≤ 1 reply</text>
+          <text x="418" y="339" class="tiny">bridge enters WAITING, then ACKs</text>
+          <text x="418" y="358" class="tiny">heartbeats do not extend lease</text>
           <path d="M650 310 H745" class="arrow input-arrow"/>
           <rect x="755" y="270" width="295" height="72" class="box stream-fill"/>
           <text x="789" y="302" class="label">Valid reply: cancel lease</text>
@@ -738,6 +741,12 @@ await run_state_machine(
           <h3>Hard bound remains real</h3>
           <p class="muted">Lease expiry closes with <code>1013 Try Again Later</code> and never fabricates <code>FollowUpTimedOut</code>. A second shutdown signal or global deadline expiry forces immediate non-zero process exit.</p>
         </article>
+      </div>
+      <div class="callout">
+        The websocket adapter—not the bridge—holds at most one validated reply that arrives after handoff while
+        flow-control drain is blocked. The matching commit-token acknowledgement opens the gate only after the
+        bridge state is ready. Cancellation, input failure, and connection close bypass the gate and retain
+        their normal priority; every terminal path clears the held reply.
       </div>
     </section>
 

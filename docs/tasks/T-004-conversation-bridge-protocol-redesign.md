@@ -3,8 +3,8 @@
 ## Status
 
 - **Authority:** Active design and implementation task
-- **Status:** Architecture decisions ratified; review fixes in progress; implementation not started
-- **Decision dates:** Initial architecture 2026-07-17; plan-review resolutions 2026-07-18
+- **Status:** Architecture reviewed; ready for Stage 1 protocol drafting; implementation not started
+- **Decision dates:** Initial architecture 2026-07-17; architecture review closed 2026-07-18
 - **Audience:** Maintainers of agents, sessions, websocket inputs, microphone inputs, clients, and protocol tests
 - **Supersedes:** The conversation-core and websocket redesign scope in T-001
 - **Does not supersede:** T-002 or T-003; their microphone-driver fixes and verification remain valid
@@ -16,11 +16,6 @@ current contract. This task is a plan, not a runtime protocol.
 
 The companion [illustrated design aid](T-004-agent-boundary-options.html) explains
 the approved architecture visually. It is informative, not normative.
-
-The findings in the [T-004 plan review](T-004-plan-review.md) have candidate
-resolutions recorded in this task. Any finding not already closed remains open
-until a fresh independent review verifies its resolution and checks that no
-regression was introduced.
 
 ## Objective
 
@@ -585,6 +580,14 @@ The bridge also sends:
 | `FollowUpRequested` | Agent explicitly requested another user turn; contains no timeout |
 | `ConversationEnded` | The conversation ended with a closed reason, conditional typed rejection code, and optional diagnostic detail |
 
+`FollowUpRequested` is a transactional control operation rather than a
+fire-and-forget event. A successful operation returns a typed
+`FollowUpRequestCommitted` token. The bridge uses that token to acknowledge that
+it has entered `WAITING_FOR_FOLLOW_UP`; an adapter must not expose a follow-up
+outcome before that acknowledgement. The token is scoped to exactly one
+follow-up interval and cannot be reused. It is an in-process operation result;
+it is not serialized to the external websocket client.
+
 The terminal payload is structurally typed:
 
 ```python
@@ -620,13 +623,34 @@ microphone this is the adapter; for websocket input it is the external client.
 `REQUEST_FOLLOW_UP` expresses agent intent only. It carries no duration and does
 not start a core timer.
 
-After forwarding `FollowUpRequested`, the bridge waits for exactly one of:
+After `FollowUpRequested` commits, its send operation completes, and the bridge
+atomically enters `WAITING_FOR_FOLLOW_UP` and acknowledges the commit token, the
+bridge waits for exactly one of:
 
 - `UserMessage`;
 - `FollowUpTimedOut`;
 - `ConversationCancelled`;
 - `InputConversationFailed`;
 - `InputSessionClosed`.
+
+The bridge-side ordering is equivalent to:
+
+```python
+commit = await send_follow_up_or_input_terminal_wins(
+    input_conversation,
+    pending_input_control,
+)
+state_machine.follow_up_committed(commit)
+input_conversation.acknowledge_follow_up_ready(commit)  # synchronous
+```
+
+`send_follow_up_or_input_terminal_wins(...)` owns and joins both operations. If
+terminal input wins, it performs terminal cleanup and never acknowledges a
+follow-up token. If the send crossed an irreversible medium commit point, its
+adapter operation is allowed to drain or fail according to that binding while
+terminal cleanup remains the selected conversation outcome. The final two lines
+have no intervening suspension point: the state changes before acknowledgement
+can expose a retained outcome.
 
 The microphone adapter may base presentation on cues and playback completion.
 For websocket input, the external client—not the server-side websocket adapter—
@@ -668,12 +692,15 @@ A conforming websocket client:
    connection closure;
 5. sends one typed `FollowUpTimedOut` when expiry wins.
 
-Websocket frames preserve the client's chosen order. A duplicate or late timeout
-received outside `WAITING_FOR_FOLLOW_UP` is an external protocol violation and
-follows the binding's rejection/close rule. A client which neither responds nor
-times out leaves the conversation semantically waiting; the separate websocket
-follow-up resource lease below eventually closes that InputSession without
-inventing a presentation time or emitting `FollowUpTimedOut`. Repository
+Websocket frames preserve the client's chosen order. A follow-up outcome
+validated after committed transport handoff but before bridge acknowledgement
+is retained by the gate described below and remains valid. An outcome validated
+before that handoff, a duplicate outcome, or a late timeout after the interval
+closes is an external protocol violation and follows the binding's
+rejection/close rule. A client which neither responds nor times out leaves the
+conversation semantically waiting; the separate websocket follow-up resource
+lease below eventually closes that InputSession without inventing a presentation
+time or emitting `FollowUpTimedOut`. Repository
 interactive and batch clients must implement the same semantic state rule, with
 their timeout supplied by explicit client configuration or command-line input.
 
@@ -695,11 +722,30 @@ has one owner and is released exactly once in the connection handler's final
 cleanup, including handshake failure, protocol rejection, and shutdown.
 
 When `FollowUpRequested` commits at websocket transport handoff, the server-side
-adapter starts one non-semantic resource lease for that
-`WAITING_FOR_FOLLOW_UP` interval. Heartbeats, pings, and pongs do not reset it.
+adapter atomically opens one follow-up-outcome gate and starts one non-semantic
+resource lease for that interval. Heartbeats, pings, and pongs do not reset it.
+The gate remains closed to the bridge until the bridge acknowledges the matching
+`FollowUpRequestCommitted` token after entering `WAITING_FOR_FOLLOW_UP`.
 The lease is cancelled when a valid `UserMessage`, `FollowUpTimedOut`,
 `ConversationCancelled`, input failure, or connection close leaves the interval.
-Every later follow-up interval gets a fresh lease.
+Every later follow-up interval gets a fresh token, gate, and lease.
+
+Websocket flow-control drain may still block after transport handoff. During
+that interval the adapter retains at most one complete, validated
+`UserMessage` or `FollowUpTimedOut` in an input-owned single-value register. It
+does not expose that outcome through `InputConversation` until the bridge
+acknowledges the token. This is not a bridge queue: the register exists only for
+the current committed follow-up request, cannot accept a second outcome, and is
+cleared on acknowledgement-and-delivery or every terminal path. A second
+follow-up outcome is an external protocol violation rather than queued work.
+
+`ConversationCancelled`, `InputConversationFailed`, and `InputSessionClosed`
+remain continuously observable and bypass the follow-up gate. If one is ready
+together with a retained outcome, the normal input-terminal priority wins and
+the adapter discards the retained outcome during exact-once cleanup. The bridge
+performs the state transition and token acknowledgement synchronously, with no
+`await` or cancellation point between them; acknowledgement makes an already
+retained outcome eligible only after the state transition has committed.
 
 Lease expiry and validated client input are serialized by one adapter-owned
 atomic decision. Client input commits to that arbiter when the background reader
@@ -707,6 +753,16 @@ has received and validated one complete frame; raw byte arrival is not a commit.
 An application event committed at or before the monotonic lease deadline wins,
 including simultaneous readiness, cancels the lease, and is exposed normally.
 Once expiry commits, later client input is not exposed to the bridge.
+
+A follow-up outcome received and validated before transport handoff is illegal,
+because no follow-up interval exists. At handoff, creation of the commit token,
+opening the gate, and starting the lease are one adapter transition; a validated
+outcome ordered after that transition is retained or exposed according to the
+gate. If the websocket send fails before handoff, no token, lease, or follow-up
+eligibility exists. If drain or transport fails after handoff but before bridge
+acknowledgement, the adapter clears any retained outcome, closes the input
+session, and exposes only terminal input control. If the lease expires during
+drain before an outcome wins, it follows the same terminal cleanup path.
 
 If the lease expires first, the adapter closes the websocket with code `1013`
 (`Try Again Later`) and the stable close reason
@@ -747,6 +803,10 @@ protocol violation and is logged as server resource-policy enforcement.
    the gate before that write starts; after it starts, the write either commits
    and drains or fails and closes the input session. Thus bridge cancellation can
    never reinterpret an in-flight `send_str()` as definitely unsent.
+   `FollowUpRequested` additionally uses the typed commit-token and single-value
+   outcome gate defined above. Its send still blocks through flow-control drain;
+   an early validated reply is retained by the adapter, not the bridge, until
+   the bridge has entered and acknowledged `WAITING_FOR_FOLLOW_UP`.
 9. A microphone adapter declares commit in terms of its renderer. Text or audio
    waiting only in its bounded buffer is uncommitted and may be discarded;
    anything already handed to irreversible playback remains committed.
@@ -799,6 +859,7 @@ state. The minimum conversation states are:
 | `WAITING_FOR_AGENT` | User message was delivered; no assistant stream is open |
 | `STREAMING_ASSISTANT` | One assistant stream is open |
 | `WAITING_FOR_DISPOSITION` | Assistant stream closed; explicit disposition is required |
+| `COMMITTING_FOLLOW_UP` | `REQUEST_FOLLOW_UP` was accepted and the input operation is committing/draining `FollowUpRequested`; terminal input remains observable, but follow-up outcomes are adapter-gated |
 | `WAITING_FOR_FOLLOW_UP` | Follow-up handling was delegated to the input-side presenter: microphone adapter or external websocket client |
 | `ENDING` | Terminal event is being rendered and scoped resources are closing |
 | `CLOSED` | Cleanup is complete; no further events are legal |
@@ -841,7 +902,11 @@ TurnDisposition(END_CONVERSATION)
 
 TurnDisposition(REQUEST_FOLLOW_UP)
     WAITING_FOR_AGENT or WAITING_FOR_DISPOSITION
-        -> WAITING_FOR_FOLLOW_UP
+        -> COMMITTING_FOLLOW_UP
+
+FollowUpRequestCommitted returned after successful input send/drain;
+bridge enters state and synchronously acknowledges matching token
+    COMMITTING_FOLLOW_UP -> WAITING_FOR_FOLLOW_UP
 
 UserMessage
     WAITING_FOR_FOLLOW_UP -> DELIVERING_USER_MESSAGE
@@ -862,6 +927,12 @@ stream opens also transitions directly to `ENDING`. Cancellation and
 input-session closure are legal in every non-terminal state and pre-empt agent
 work, including while Agent input delivery is blocked. All other unlisted
 transitions are protocol violations, not tolerant no-ops.
+
+`UserMessage` and `FollowUpTimedOut` are never legal bridge-visible events in
+`COMMITTING_FOLLOW_UP`; the adapter gate makes that source/state combination
+unrepresentable for conforming implementations. Terminal input remains legal in
+that state and pre-empts the pending sink operation. A post-handoff websocket
+write is joined according to its non-retractable commit rule before cleanup.
 
 ### Concurrent-event priority
 
@@ -1004,6 +1075,9 @@ binding after approval. It must define:
 - liveness/heartbeat behavior;
 - the websocket transport-handoff commit point, its distinction from
   flow-control drain, and failure after possible handoff;
+- the single-use `FollowUpRequestCommitted` token, adapter-owned one-value early
+  outcome register, bridge readiness acknowledgement, and cleanup before and
+  after transport handoff;
 - mapping between external JSON events and the in-process typed protocol;
 - client-owned follow-up presentation/timing, explicit client timeout policy,
   local timeout-versus-submission serialization, late-event rejection, and
@@ -1129,16 +1203,22 @@ between old and new contracts or require a compatibility facade.
 3. Add required `max_connections`, capacity `Retry-After`, and follow-up idle
    lease configuration. Reserve capacity atomically before upgrade, return HTTP
    `503` without queueing when full, and release each slot exactly once.
-4. Enforce the follow-up resource lease only in `WAITING_FOR_FOLLOW_UP`; on
-   expiry close with `1013` and `follow-up resource lease expired`, producing
+4. Enforce the follow-up resource lease from committed transport handoff through
+   `COMMITTING_FOLLOW_UP` and `WAITING_FOR_FOLLOW_UP`; on expiry close with
+   `1013` and `follow-up resource lease expired`, producing
    `InputSessionClosed` without `FollowUpTimedOut`.
-5. Bound transport ingress explicitly; let outbound `send` block according to
+5. Implement the transactional follow-up gate: atomically create the commit
+   token, open the outcome register, and start the lease at transport handoff;
+   retain at most one validated early outcome while drain blocks; expose it only
+   after the bridge's state acknowledgement; and clear it on every terminal
+   path.
+6. Bound transport ingress explicitly; let outbound `send` block according to
    websocket transport pushback rather than adding a bridge queue.
-6. Migrate interactive and batch clients and shared message helpers.
+7. Migrate interactive and batch clients and shared message helpers.
    Each client owns follow-up presentation and an explicitly configured timer and
    serializes timeout versus user submission.
-7. Propagate conditional `context_rejection_code` through terminal JSON.
-8. Reject old, duplicate, late, or otherwise invalid external events and close
+8. Propagate conditional `context_rejection_code` through terminal JSON.
+9. Reject old, duplicate, late, or otherwise invalid external events and close
    the input session as specified.
 
 #### 3C: Prepare the microphone binding within the cutover
@@ -1244,9 +1324,14 @@ At minimum, automated tests must cover:
 - atomic websocket connection admission at one below/at/above capacity, HTTP
   `503` with configured `Retry-After`, and exact-once slot release on every exit;
 - follow-up resource-lease start at transport commit, cancellation on every exit
-  from `WAITING_FOR_FOLLOW_UP`, heartbeat non-extension, `1013` expiry close with
-  stable reason, input-at-deadline priority, suppression of input after committed
-  expiry, and absence of a server-generated `FollowUpTimedOut`;
+  from the committed follow-up interval, heartbeat non-extension, `1013` expiry
+  close with stable reason, input-at-deadline priority, suppression of input after
+  committed expiry, and absence of a server-generated `FollowUpTimedOut`;
+- follow-up replies before handoff, at handoff, after handoff while drain is
+  blocked, after drain but before acknowledgement, and after acknowledgement;
+  typed token matching; exactly-one adapter retention; duplicate rejection;
+  terminal-input priority; and exact cleanup on pre-commit failure,
+  post-commit drain failure, lease expiry during drain, cancellation, and close;
 - microphone accepted-STT creation, playback, follow-up, cancellation, recovery,
   and T-002/T-003 regressions;
 - resolved, rejected, unavailable, malformed, and exceptional context-provider
@@ -1370,39 +1455,18 @@ T-004 is complete only when:
 13. Websocket connection capacity is bounded before upgrade, and each follow-up
     wait has a non-semantic resource lease which closes with `1013` without
     forging `FollowUpTimedOut`.
-14. First-signal graceful shutdown closes InputSessions and all scoped/shared
+14. Follow-up output commitment and response eligibility are transactional. A
+    websocket adapter retains at most one validated post-handoff outcome until
+    the bridge acknowledges `WAITING_FOR_FOLLOW_UP`; no early outcome can cross
+    into an illegal bridge state and no such buffering exists in the bridge.
+15. First-signal graceful shutdown closes InputSessions and all scoped/shared
     resources within the required configured deadline and exits zero; deadline
     expiry or a second signal exits non-zero immediately.
-15. Microphone driver protocol and T-002/T-003 behavior remain conformant.
-16. Every catalogue requirement links to passing automated evidence or an
+16. Microphone driver protocol and T-002/T-003 behavior remain conformant.
+17. Every catalogue requirement links to passing automated evidence or an
     explicitly documented manual hardware check.
-17. Focused tests, full pytest, the orchestrator/DSA behavior suite, real
+18. Focused tests, full pytest, the orchestrator/DSA behavior suite, real
     websocket checks, and required microphone checks pass.
-
-## Plan-review resolution record
-
-These are candidate resolutions for the open findings in
-`T-004-plan-review.md`. Finding closure still requires the independent pass
-specified by that review.
-
-| Finding | Candidate resolution in this task |
-|---|---|
-| `T004-PLAN-001` | The input adapter completes acceptance before the core lifecycle exists. From the ready InputConversation, the bridge immediately starts an input-control receive, performs only synchronous non-blocking context resolution, and races that same watcher against cancellation-safe AgentConversation entry. Input control wins simultaneous readiness, and partial entry owns its cleanup. |
-| `T004-PLAN-002` | `InputSession` has `IDLE`/`ACCEPTING`/`ACTIVE` plus the later application-lifecycle `CLOSING`/`CLOSED` states, with no reservation state. Its context-managed `accept_conversation()` returns a fully usable InputConversation directly; pre-return failures remain input-local, while context exit provides exact-once cleanup and cannot reopen a closing session. |
-| `T004-PLAN-003` | The bridge queue is removed. Each input binding declares accepted, committed, and drained boundaries. Websocket frames commit at transport handoff before flow-control drain; abort wins only before the binding's commit point, and no client receipt is claimed. |
-| `T004-PLAN-004` | Stage 2 is additive and leaves the old runtime complete. Stage 3 migrates every consumer, activates the new runtime, and removes the old protocol in one coherent atomic cutover without a facade. |
-| `T004-PLAN-005` | A disposition is required only after a successfully completed turn. Agent failure is an alternative outcome, bridge-to-input abort is explicit, and `ConversationEndReason` and `AssistantAbortReason` are separate enums. |
-| `T004-PLAN-006` | T-001 continuation guidance is limited to its remaining microphone, firmware, and hardware evidence; conversation-core and websocket work routes to T-004 and superseded sections are marked historical. |
-| `T004-PLAN-007` | The status now distinguishes ratified architecture decisions from review fixes still in progress. Startup ownership, cancellation behavior, priority order, and adapter commit boundaries are specified, but review closure is not claimed. |
-| `T004-PLAN-008` | Agent output is a zero-capacity rendezvous, so slow-input pushback blocks production structurally. Typed idempotent `cancel(reason)` acknowledges only after all model/tool/background work is quiescent. Missing the Agent entry or cancellation deadline invokes application-wide fatal containment and terminates the server process non-zero. |
-| `T004-PLAN-009` | The context provider returns typed resolved, rejected, or unavailable outcomes. Rejection and unavailability end only the conversation with distinct reasons; invalid results or exceptions are process-fatal `INTERNAL_FAILURE`. |
-| `T004-PLAN-010` | `ConversationEnded` carries an optional closed `context_rejection_code`, required exactly for `CONTEXT_REJECTED` and forbidden otherwise. Websocket and microphone mappings preserve it without parsing diagnostic detail. |
-| `T004-PLAN-011` | The external websocket client owns presentation and an explicitly configured follow-up timer, serializes timeout against user submission, and sends `FollowUpTimedOut` if expiry wins. The server starts no timer or presentation acknowledgement; late/duplicate timeout and disconnect behavior are explicit and tested. |
-| `T004-PLAN-012` | There is no `SERVER_SHUTDOWN` conversation reason, priority entry, or bridge signal. Ordinary graceful cleanup is application-owned and reaches bridges by closing InputSessions through the existing `InputSessionClosed` path; fatal invariant termination remains separate. |
-| `T004-PLAN-013` | The microphone adapter atomically arbitrates speech start against its timer. Speech detected at or before expiry wins, suppresses that timeout, and allows STT to finish; expiry committed first suppresses later speech. Only one event crosses the interface, with focused boundary and no-transcript tests. |
-| `T004-PLAN-014` | Every initial and follow-up `send_user_message()` is an owned zero-capacity handoff raced against a continuously pending input-control receive in `DELIVERING_USER_MESSAGE`. Input terminal control wins simultaneous readiness; typed acceptance commit is preserved, losing tasks are joined, and accepted work is cancelled through acknowledged Agent cancellation. |
-| `T004-PLAN-015` | The existing signal-driven application lifecycle becomes bounded graceful shutdown above the conversation protocol: stop admission, concurrently close all InputSessions, await bridges then shared resources within required `shutdown.grace_period_seconds`, exit zero on success, and hard-exit non-zero on deadline or a second signal. |
-| `T004-PLAN-016` | Required websocket configuration bounds every pre-upgrade connection and each follow-up wait. Saturated admission returns HTTP `503` with configured `Retry-After`; follow-up lease expiry closes with `1013` and `follow-up resource lease expired`, producing `InputSessionClosed` without forging `FollowUpTimedOut`. |
 
 ## Review gates
 
