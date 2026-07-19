@@ -16,9 +16,11 @@ from ai_server.websocket_messages import client_event_to_json, server_event_from
 
 
 DEFAULT_WEBSOCKET_URL = "ws://127.0.0.1:2137/chat"
+DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS = 15.0
 WEBSOCKET_HEARTBEAT_SECONDS = 2.0
 INTERRUPTED_EXIT_CODE = 130
 SystemMessagePrinter = Callable[[str], None]
+AssistantMessageStartedHandler = Callable[[], None]
 
 
 class WsClientInterrupted(Exception):
@@ -69,6 +71,7 @@ def handle_websocket_message(
     message,
     *,
     follow_up_timeout_seconds: float,
+    assistant_message_started_handler: AssistantMessageStartedHandler | None = None,
     system_message_printer: SystemMessagePrinter | None = None,
     show_wait_for_new_conversation_message: bool = True,
 ) -> WaitState | ConversationTerminated | None:
@@ -77,7 +80,11 @@ def handle_websocket_message(
     print_system_message = system_message_printer or _print_system_message
     if message.type == WSMsgType.TEXT:
         event = server_event_from_json(message.data)
-        if isinstance(event, (SessionAccepted, ConversationStarted, AssistantMessageStarted)):
+        if isinstance(event, (SessionAccepted, ConversationStarted)):
+            return None
+        if isinstance(event, AssistantMessageStarted):
+            if assistant_message_started_handler is not None:
+                assistant_message_started_handler()
             return None
         if isinstance(event, AssistantTextChunk):
             print(event.text, end="", flush=True)

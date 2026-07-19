@@ -684,8 +684,8 @@ no `FollowUpPresented` acknowledgement. They wait for `UserMessage`,
 `FollowUpTimedOut`, `ConversationCancelled`, input failure, or connection close.
 A conforming websocket client:
 
-1. is configured with an explicit `follow_up_timeout_seconds` policy rather than
-   a hidden default;
+1. uses the repository-wide 15-second `follow_up_timeout_seconds` default and
+   permits a positive finite explicit override;
 2. starts the timer only after rendering `FollowUpRequested` to the user;
 3. serializes local timeout and user submission so exactly one is sent;
 4. cancels the timer on user submission, cancellation, `ConversationEnded`, or
@@ -702,7 +702,7 @@ conversation semantically waiting; the separate websocket follow-up resource
 lease below eventually closes that InputSession without inventing a presentation
 time or emitting `FollowUpTimedOut`. Repository
 interactive and batch clients must implement the same semantic state rule, with
-their timeout supplied by explicit client configuration or command-line input.
+the shared 15-second timeout unless command-line input explicitly overrides it.
 
 ### Websocket capacity and follow-up resource lease
 
@@ -1079,9 +1079,9 @@ binding after approval. It must define:
   outcome register, bridge readiness acknowledgement, and cleanup before and
   after transport handoff;
 - mapping between external JSON events and the in-process typed protocol;
-- client-owned follow-up presentation/timing, explicit client timeout policy,
-  local timeout-versus-submission serialization, late-event rejection, and
-  disconnect behavior;
+- client-owned follow-up presentation/timing, the shared 15-second client
+  default and explicit override policy, local timeout-versus-submission
+  serialization, late-event rejection, and disconnect behavior;
 - required websocket capacity and lease configuration, atomic pre-upgrade
   admission, HTTP `503`/`Retry-After` rejection, exact-once slot release, and
   follow-up lease close code/reason;
@@ -1222,8 +1222,9 @@ between old and new contracts or require a compatibility facade.
 6. Bound transport ingress explicitly; let outbound `send` block according to
    websocket transport pushback rather than adding a bridge queue.
 7. Migrate interactive and batch clients and shared message helpers.
-   Each client owns follow-up presentation and an explicitly configured timer and
-   serializes timeout versus user submission.
+   Each client owns follow-up presentation, uses the shared 15-second timer by
+   default with a positive finite command-line override, and serializes timeout
+   versus user submission.
 8. Propagate conditional `context_rejection_code` through terminal JSON.
 9. Reject old, duplicate, late, or otherwise invalid external events and close
    the input session as specified.
@@ -1267,7 +1268,7 @@ Two independent closure passes then found additional real boundary defects in
 Agent pre-accept failure, voice media commit ownership and timer origin,
 websocket registration/shutdown/task ownership, typed enums, and repository
 client arbitration. Those findings have been remediated with focused regression
-matrices. The current pre-closure-re-review tree passes 705 pytest cases,
+matrices. The current pre-closure-re-review tree passes 707 pytest cases,
 including real delayed repository websocket-client flow and
 graceful/deadline/second-signal subprocess checks. A clean independent closure
 re-review found no remaining issues. The post-review behavioral suite passed all

@@ -12,6 +12,8 @@ from ai_server.batch_ws_client import BatchWsClientOptions, _wait_for_server_or_
 from ai_server.batch_ws_client import parse_args as parse_batch_args, run_batch_ws_client
 from ai_server.chat_client import parse_args as parse_chat_args
 from ai_server.chat_client import _read_next_interactive_text
+from ai_server.chat_client import CLIENT_TEXT_RESET, CLIENT_TEXT_STYLE, WAITING_FOR_SERVER_PROMPT
+from ai_server.chat_client import _reset_terminal_style, _style_client_prompt
 from ai_server.config import AgentConfig, Config, ConversationConfig, ShutdownConfig, WebsocketConfig
 from ai_server.conversations.agent_runtime import AgentChannel, ConversationAgent
 from ai_server.conversations.contexts import ConversationContext, ConversationMedium
@@ -28,7 +30,8 @@ from ai_server.websocket_messages import server_event_to_json
 from ai_server.websocket_server import WebsocketInputSession, WebsocketState, _WebsocketAssistantSink
 from ai_server.websocket_server import _WebsocketInputConversation
 from ai_server.websocket_server import create_app
-from ai_server.ws_client_common import WaitState, validate_follow_up_timeout
+from ai_server.ws_client_common import DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS, WaitState, handle_websocket_message
+from ai_server.ws_client_common import validate_follow_up_timeout
 
 
 def _unused_port() -> int:
@@ -1221,11 +1224,40 @@ def test_repository_clients_reject_invalid_follow_up_timeout(value) -> None:
         validate_follow_up_timeout(value)
 
 
-def test_repository_client_clis_require_explicit_follow_up_timeout() -> None:
-    with pytest.raises(SystemExit):
-        parse_batch_args([])
-    with pytest.raises(SystemExit):
-        parse_chat_args([])
+def test_repository_client_clis_default_follow_up_timeout_to_fifteen_seconds() -> None:
+    assert DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS == 15.0
+    assert parse_batch_args([]).follow_up_timeout_seconds == DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS
+    assert parse_chat_args([]).follow_up_timeout_seconds == DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS
+
+
+def test_repository_client_clis_accept_explicit_follow_up_timeout_override() -> None:
+    assert parse_batch_args(["--follow-up-timeout-seconds", "23"]).follow_up_timeout_seconds == 23.0
+    assert parse_chat_args(["--follow-up-timeout-seconds", "23"]).follow_up_timeout_seconds == 23.0
+
+
+def test_interactive_assistant_response_resets_dim_client_style(capsys) -> None:
+    print(_style_client_prompt(WAITING_FOR_SERVER_PROMPT), end="", flush=True)
+    handle_websocket_message(
+        None,
+        SimpleNamespace(
+            type=WSMsgType.TEXT,
+            data=server_event_to_json(AssistantMessageStarted("message-1")),
+        ),
+        follow_up_timeout_seconds=DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS,
+        assistant_message_started_handler=_reset_terminal_style,
+    )
+    handle_websocket_message(
+        None,
+        SimpleNamespace(
+            type=WSMsgType.TEXT,
+            data=server_event_to_json(AssistantTextChunk("message-1", "hello")),
+        ),
+        follow_up_timeout_seconds=DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS,
+    )
+
+    assert capsys.readouterr().out == (
+        f"{CLIENT_TEXT_STYLE}{WAITING_FOR_SERVER_PROMPT}{CLIENT_TEXT_RESET}hello"
+    )
 
 
 class _DelayedReplyAgent(ConversationAgent):

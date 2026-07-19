@@ -236,9 +236,10 @@ It MUST NOT drop or overwrite events.
 
 ## Follow-up timing and resource lease
 
-The server sends no semantic timeout. A repository client MUST require an
-explicit positive finite `follow_up_timeout_seconds` setting or command-line
-value and MUST have no hidden fallback. (`WS-FOLLOWUP-003`)
+The server sends no semantic timeout. Repository clients MUST use a shared
+15-second `follow_up_timeout_seconds` default when the command-line option is
+absent. An explicitly supplied override MUST be a positive finite number.
+(`WS-FOLLOWUP-003`)
 
 After rendering `follow_up_requested`, the client atomically opens one local
 interval and starts its monotonic timer. User submission at or before the expiry

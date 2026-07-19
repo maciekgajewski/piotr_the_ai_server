@@ -15,7 +15,8 @@ from urllib.parse import urlparse
 
 from aiohttp import ClientError, ClientSession
 
-from ai_server.ws_client_common import DEFAULT_WEBSOCKET_URL, INTERRUPTED_EXIT_CODE, WebsocketDisconnected
+from ai_server.ws_client_common import DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS, DEFAULT_WEBSOCKET_URL
+from ai_server.ws_client_common import INTERRUPTED_EXIT_CODE, WebsocketDisconnected
 from ai_server.ws_client_common import ConversationTerminated
 from ai_server.ws_client_common import WEBSOCKET_HEARTBEAT_SECONDS
 from ai_server.ws_client_common import WebsocketSessionRejected
@@ -73,7 +74,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Chat with the AI server over websocket.")
     parser.add_argument("--user", help="Optional session user attribute sent in the websocket handshake.")
     parser.add_argument("--area", help="Optional Home Assistant area attribute sent in the websocket handshake.")
-    parser.add_argument("--follow-up-timeout-seconds", required=True, type=float)
+    parser.add_argument(
+        "--follow-up-timeout-seconds",
+        default=DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS,
+        type=float,
+        help=f"Follow-up timeout in seconds. Defaults to {DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS:g}.",
+    )
     parser.add_argument(
         "url",
         nargs="?",
@@ -231,6 +237,7 @@ async def _read_next_wait_state(
         wait_state = handle_websocket_message(
             websocket,
             message,
+            assistant_message_started_handler=_reset_terminal_style,
             system_message_printer=_print_client_message,
             show_wait_for_new_conversation_message=show_wait_for_new_conversation_message,
             follow_up_timeout_seconds=follow_up_timeout_seconds,
@@ -270,6 +277,7 @@ async def _read_next_interactive_text(
                 next_wait_state = handle_websocket_message(
                     websocket,
                     _receive_task_result(receive_task),
+                    assistant_message_started_handler=_reset_terminal_style,
                     system_message_printer=_print_client_message,
                     follow_up_timeout_seconds=follow_up_timeout_seconds,
                 )
@@ -453,6 +461,10 @@ def _style_client_text(text: str) -> str:
 
 def _style_client_prompt(text: str) -> str:
     return f"{CLIENT_TEXT_STYLE}{text}"
+
+
+def _reset_terminal_style() -> None:
+    print(CLIENT_TEXT_RESET, end="", flush=True)
 
 
 class _InteractiveInputSession:

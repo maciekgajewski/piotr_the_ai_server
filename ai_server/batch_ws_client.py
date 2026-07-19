@@ -7,7 +7,8 @@ from dataclasses import dataclass
 
 from aiohttp import ClientSession
 
-from ai_server.ws_client_common import DEFAULT_WEBSOCKET_URL, INTERRUPTED_EXIT_CODE, WebsocketDisconnected
+from ai_server.ws_client_common import DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS, DEFAULT_WEBSOCKET_URL
+from ai_server.ws_client_common import INTERRUPTED_EXIT_CODE, WebsocketDisconnected
 from ai_server.ws_client_common import ConversationTerminated
 from ai_server.ws_client_common import WEBSOCKET_HEARTBEAT_SECONDS
 from ai_server.ws_client_common import WebsocketSessionRejected
@@ -29,7 +30,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Send batch messages to the AI server over websocket.")
     parser.add_argument("--user", help="Optional session user attribute sent in the websocket handshake.")
     parser.add_argument("--area", help="Optional Home Assistant area attribute sent in the websocket handshake.")
-    parser.add_argument("--follow-up-timeout-seconds", required=True, type=float)
+    parser.add_argument(
+        "--follow-up-timeout-seconds",
+        default=DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS,
+        type=float,
+        help=f"Follow-up timeout in seconds. Defaults to {DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS:g}.",
+    )
     parser.add_argument(
         "--message",
         action="append",
