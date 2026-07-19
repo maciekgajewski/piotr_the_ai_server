@@ -219,6 +219,46 @@ Voice Preview renders the normative low-light red/off/pulsing blue/pulsing white
 states; Box3 renders the corresponding error/idle/listening/processing bitmaps.
 Orthogonal mute/setup/timer/volume indicators do not replace the main state.
 
+### Recorded manual hardware results
+
+On 2026-07-19, `voice-pe-03` (office Voice Preview) was exercised against a
+real AI-server process with a private single-device config generated from the
+operator config. The controlled run produced the following evidence:
+
+- first connected initialization selected `IDLE` and armed open-mic capture;
+- ordinary speech without `Ryszardzie` was transcribed, rejected before
+  Conversation creation, and left the main visual `IDLE`;
+- a partial `Ryszardzie` candidate selected `LISTENING`; wake-only final text
+  executed `ResetWakeCandidate`, returned to `IDLE`, played no cue, and kept the
+  same open-mic listening generation;
+- `Ryszardzie, która godzina?` selected `LISTENING`, then `PROCESSING`, stopped
+  capture before the accepted cue, kept `PROCESSING` through assistant
+  playback, completed normally, selected `IDLE`, and re-armed with a new
+  listening generation;
+- a clarification turn presented and awaited follow-up in `LISTENING`; the
+  fixed 15-second deadline won, capture stopped, the timeout cue completed,
+  terminal reason `follow_up_timeout` crossed the bridge, and only then did the
+  device select `IDLE` and re-arm;
+- a center-button announcement interruption stopped playback and the adapter
+  observed `PlaybackFinished`, completed cleanup, selected `IDLE`, and re-armed;
+- controlled server shutdown selected the firmware-owned red `ERROR` visual;
+  restart selected `IDLE` on the first server command and created a fresh
+  open-mic generation.
+
+The initial pre-run observation was a stale pulsing-blue visual despite no
+local AI-server process or local TCP owner. It was not reproduced after the
+controlled shutdown/restart sequence, which produced the required red-to-idle
+transition. Slow-TTS pushback was not demonstrated by this hardware run.
+
+The run also exposed non-binding Agent/configuration findings outside the
+microphone mapping result: the operator config required the new explicit
+`conversation`, `shutdown`, websocket-capacity, and
+`microphones.assistant_text_buffer_characters` fields before startup; one Home
+Assistant imperative was misplanned as `query_state`; and one Wikipedia DSA
+turn fetched its sources successfully but returned invalid final JSON. These
+findings remain open and prevent treating this record as complete Gate D
+evidence.
+
 ## Required verification order
 
 Current automated evidence is organized as follows:
