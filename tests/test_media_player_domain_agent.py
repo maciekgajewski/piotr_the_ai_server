@@ -2,9 +2,9 @@ import asyncio
 import json
 import logging
 
+from conftest import agent_context
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
 from ai_server.domain_agents.media_player.parser import media_task_from_utterance, parse_media_command
-from ai_server.interfaces import Conversation
 from ai_server.orchestrator.known_utterances import collect_known_utterance_tasks, known_utterance_task
 
 
@@ -215,7 +215,7 @@ def test_media_domain_agent_start_last_uses_default_music_when_queue_and_memory_
         "command": {"intent": "start_last", "query": "Spotify!"},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert result["text"] == "Włączam muzykę ze Spotify."
@@ -239,7 +239,7 @@ def test_media_domain_agent_start_last_uses_conversation_user_media_settings() -
         "domain": "media_player",
         "command": {"intent": "start_last", "query": "Spotify!"},
     }
-    conversation = Conversation(
+    conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
         state={"user_settings": _user_media_settings()},
@@ -274,7 +274,7 @@ def test_media_domain_agent_start_last_is_noop_when_target_is_already_playing() 
         "command": {"intent": "start_last", "query": "Spotify!"},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert result["text"] == "Muzyka już gra."
@@ -298,7 +298,7 @@ def test_media_domain_agent_executes_simple_volume_without_llm() -> None:
         "command": {"intent": "volume_delta", "query": "Daj głośniej", "volume_delta": 0.05},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert result["text"] == "Głośność: 40 procent."
@@ -322,7 +322,7 @@ def test_media_domain_agent_keeps_volume_on_direct_entity_when_ma_duplicate_exis
         "command": {"intent": "volume_delta", "query": "Daj głośniej", "volume_delta": 0.05},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert connection.calls == [
@@ -344,7 +344,7 @@ def test_media_domain_agent_interprets_planner_percent_volume_level() -> None:
         "command": {"intent": "set_volume", "query": "Ustaw głośność na 10.", "volume_level": 10.0},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert result["text"] == "Ustawiłem głośność na 10 procent."
@@ -367,7 +367,7 @@ def test_media_domain_agent_does_not_clarify_when_current_area_has_no_speaker() 
         "command": {"intent": "volume_delta", "query": "Przygłośnij muzykę", "volume_delta": 0.05},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "bedroom"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "bedroom"}), task, {}))
 
     assert result == {
         "status": "failed",
@@ -406,7 +406,7 @@ def test_media_domain_agent_uses_llm_for_complex_command() -> None:
         "command": {"query": "zapuść coś do kolacji w salonie"},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert result["text"] == "Włączam Soft Jazz."
@@ -432,7 +432,7 @@ def test_media_domain_agent_falls_back_to_raw_play_media_when_search_config_entr
         "command": {"intent": "play_media", "query": "Włącz hip-hop na Spotify."},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert result["text"] == "Włączam hip-hop."
@@ -456,7 +456,7 @@ def test_media_domain_agent_prefers_ma_duplicate_for_play_media() -> None:
         "command": {"intent": "play_media", "query": "Włącz hip-hop na Spotify."},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert connection.calls == [
@@ -479,7 +479,7 @@ def test_media_domain_agent_uses_conversation_user_liked_songs_without_searching
         "domain": "media_player",
         "command": {"intent": "play_media", "query": "Graj moje ulubione"},
     }
-    conversation = Conversation(
+    conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
         state={"user_settings": _user_media_settings()},
@@ -511,7 +511,7 @@ def test_media_domain_agent_answers_configuration_query_without_service_calls() 
         "domain": "media_player",
         "command": {"intent": "query_configuration", "query": "jaka jest moja domyślna muzyka?"},
     }
-    conversation = Conversation(
+    conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
         state={"user_settings": _user_media_settings()},
@@ -542,7 +542,7 @@ def test_media_domain_agent_resolves_user_playlist_alias() -> None:
         "domain": "media_player",
         "command": {"intent": "play_media", "query": "Muzyka do pracy"},
     }
-    conversation = Conversation(
+    conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
         state={"user_settings": _user_media_settings()},
@@ -592,7 +592,7 @@ def test_media_domain_agent_tries_next_search_candidate_when_playlist_is_unplaya
         "domain": "media_player",
         "command": {"intent": "play_media", "query": "Muzyka do pracy", "all_speakers": True},
     }
-    conversation = Conversation(
+    conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
         state={"user_settings": _user_media_settings()},
@@ -639,7 +639,7 @@ def test_media_domain_agent_uses_llm_to_resolve_inflected_playlist_alias() -> No
         "domain": "media_player",
         "command": {"intent": "play_media", "query": "Graj muzykę do pracy w całym domu.", "all_speakers": True},
     }
-    conversation = Conversation(
+    conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
         state={"user_settings": _user_media_settings()},
@@ -686,7 +686,7 @@ def test_media_domain_agent_groups_whole_home_named_media_before_playback() -> N
         "domain": "media_player",
         "command": {"intent": "play_media", "query": "Graj muzykę do pracy w całym domu.", "all_speakers": True},
     }
-    conversation = Conversation(
+    conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
         state={"user_settings": _user_media_settings()},
@@ -740,7 +740,7 @@ def test_media_domain_agent_warns_when_alias_resolver_exhausts_budget(caplog) ->
         "domain": "media_player",
         "command": {"intent": "play_media", "query": "Graj muzykę do pracy w całym domu.", "all_speakers": True},
     }
-    conversation = Conversation(
+    conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
         state={"user_settings": _user_media_settings()},
@@ -767,7 +767,7 @@ def test_media_domain_agent_start_last_uses_in_memory_recent_media() -> None:
         connection=connection,
         ollama_client=FakeOllamaClient([]),
     )
-    conversation = Conversation("c1", {"medium": "voice", "area": "office", "user": "Maciek"})
+    conversation = agent_context("c1", {"medium": "voice", "area": "office", "user": "Maciek"})
     play_task = {
         "id": "t1",
         "domain": "media_player",
@@ -839,7 +839,7 @@ def test_media_domain_agent_relocates_current_queue_for_only_request() -> None:
         },
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert connection.calls == [
@@ -891,7 +891,7 @@ def test_media_domain_agent_start_last_with_explicit_target_transfers_active_que
         "command": {"intent": "start_last", "query": "Graj muzykę w całym domu", "all_speakers": True},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert connection.calls == [
@@ -968,7 +968,7 @@ def test_media_domain_agent_relocates_current_music_reference_instead_of_searchi
         },
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert connection.calls == [
@@ -1029,7 +1029,7 @@ def test_media_domain_agent_adds_requested_room_to_current_outputs() -> None:
         "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert connection.calls == [
@@ -1082,7 +1082,7 @@ def test_media_domain_agent_treats_join_timeout_as_success_when_state_changed() 
         "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert connection.calls == [
@@ -1136,7 +1136,7 @@ def test_media_domain_agent_falls_back_to_transfer_when_join_is_unavailable() ->
         "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert connection.calls == [
@@ -1170,7 +1170,7 @@ def test_media_domain_agent_start_last_with_explicit_target_resumes_when_nothing
         "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert result["text"] == "Wznawiam muzykę."
@@ -1217,7 +1217,7 @@ def test_media_domain_agent_start_last_resumes_queue_instead_of_replaying_curren
         "command": {"intent": "start_last", "query": "Wznów muzykę", "areas": ["office"]},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert result["text"] == "Wznawiam muzykę."
@@ -1246,7 +1246,7 @@ def test_media_domain_agent_start_last_groups_multiple_targets_and_resumes_idle_
         },
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert result["text"] == "Wznawiam muzykę na wybranych głośnikach."
@@ -1278,7 +1278,7 @@ def test_media_domain_agent_plays_tok_fm_radio_from_music_assistant_search() -> 
         "command": {"intent": "play_media", "query": "Włącz TOK FM w całym domu"},
     }
 
-    result = asyncio.run(agent.run_task(Conversation("c1", {"medium": "voice", "area": "office"}), task, {}))
+    result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
     assert result["status"] == "ok"
     assert result["text"] == "Włączam TOK FM."

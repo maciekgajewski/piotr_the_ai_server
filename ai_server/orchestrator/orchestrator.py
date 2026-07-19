@@ -8,12 +8,13 @@ from typing import Any, Mapping, Protocol
 
 from aiohttp import ClientSession
 
+from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.agent_loop.agent_callable_set import to_json_value
 from ai_server.config import ServerConfig
+from ai_server.conversations.agent_runtime import AgentChannel, ConversationAgent
+from ai_server.conversations.contexts import ConversationContext, ConversationMedium
 from ai_server.domain_agents import DomainAgent, DomainTask, QueryCapability
 from ai_server.home_assistant.interfaces import HomeAssistantInventory
-from ai_server.interfaces import Conversation, ConversationEndpoint, ConversationMedium
-from ai_server.messages import ProcessingUpdate, TextMessage
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
 from ai_server.orchestrator.known_utterances import KnownUtteranceTasks, collect_known_utterance_tasks, known_utterance_task
 from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
@@ -110,7 +111,7 @@ class HomeAssistantInventoryProvider(Protocol):
         raise NotImplementedError
 
 
-class OrchestratorAgent:
+class OrchestratorAgent(ConversationAgent):
     def __init__(
         self,
         orchestrator_model: str,
@@ -151,18 +152,37 @@ class OrchestratorAgent:
         except Exception as exc:
             raise OllamaError(f"failed to preload Ollama model {self._orchestrator_model}") from exc
 
-    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
-        logger = logging.getLogger(f"{__name__}.OrchestratorAgent[{conversation.conversation_id}]")
-        previous_processing_update_callback = conversation.processing_update_callback
-        previous_processing_update_interval_seconds = conversation.processing_update_interval_seconds
+    async def run_agent_conversation(self, context: ConversationContext, channel: AgentChannel) -> None:
         processing_update_throttle = ProcessingUpdateThrottle(
-            lambda: endpoint.send(ProcessingUpdate()),
+            channel.processing_update,
+            interval_seconds=self._processing_update_interval_seconds,
+        )
+        conversation = AgentExecutionContext(
+            conversation=context,
+            processing_update_callback=processing_update_throttle.emit,
+            processing_update_interval_seconds=self._processing_update_interval_seconds,
+        )
+        await self._run_execution_context(conversation, channel, processing_update_throttle)
+
+    async def _run_execution_context(
+        self,
+        conversation: AgentExecutionContext,
+        channel: AgentChannel,
+        processing_update_throttle: ProcessingUpdateThrottle | None = None,
+    ) -> None:
+        logger = logging.getLogger(f"{__name__}.OrchestratorAgent[{conversation.conversation_id}]")
+        processing_update_throttle = processing_update_throttle or ProcessingUpdateThrottle(
+            channel.processing_update,
             interval_seconds=self._processing_update_interval_seconds,
         )
         conversation.processing_update_callback = processing_update_throttle.emit
         conversation.processing_update_interval_seconds = self._processing_update_interval_seconds
         try:
-            async for message in endpoint.messages():
+            while True:
+                try:
+                    message = await channel.receive_user_message()
+                except StopAsyncIteration:
+                    return
                 processing_update_throttle.reset()
                 started_at = time.perf_counter()
                 logger.info("received message text=%r", message.text)
@@ -172,8 +192,9 @@ class OrchestratorAgent:
                 except Exception:
                     elapsed_ms = _elapsed_ms(started_at)
                     logger.exception("orchestration failed request_len=%s duration_ms=%s", len(message.text), elapsed_ms)
-                    await endpoint.send_message(TextMessage(text=GENERATION_FAILURE_MESSAGE))
-                    continue
+                    await channel.send_message(GENERATION_FAILURE_MESSAGE)
+                    await channel.end_conversation()
+                    return
 
                 elapsed_ms = _elapsed_ms(started_at)
                 logger.info(
@@ -182,13 +203,14 @@ class OrchestratorAgent:
                     len(reply_text),
                     elapsed_ms,
                 )
-                await endpoint.send_message(TextMessage(text=reply_text))
+                await channel.send_message(reply_text)
                 if _has_pending_clarification(conversation):
-                    await endpoint.request_follow_up()
+                    await channel.request_follow_up()
+                    continue
+                await channel.end_conversation()
+                return
         finally:
-            conversation.processing_update_callback = previous_processing_update_callback
-            conversation.processing_update_interval_seconds = previous_processing_update_interval_seconds
-            state = conversation.state.get(ORCHESTRATOR_STATE_KEY)
+            state = conversation.agent_state.get(ORCHESTRATOR_STATE_KEY)
             if isinstance(state, dict) and state.get("pending_clarification") is not None:
                 logger.info("dropping unanswered clarification pending=%s", _compact_json(state.get("pending_clarification")))
                 state["pending_clarification"] = None
@@ -201,7 +223,7 @@ class OrchestratorAgent:
             if self._owns_ollama:
                 await self._ollama.close()
 
-    async def _handle_message(self, conversation: Conversation, user_input: str) -> str:
+    async def _handle_message(self, conversation: AgentExecutionContext, user_input: str) -> str:
         state = _orchestrator_state(conversation)
         active_context = _active_context(state)
         if state.get("pending_clarification") is not None:
@@ -286,7 +308,7 @@ class OrchestratorAgent:
     async def _handle_clarification_answer(
         self,
         *,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         user_input: str,
         state: dict[str, Any],
         active_context: dict[str, Any],
@@ -338,7 +360,7 @@ class OrchestratorAgent:
         *,
         user_input: str,
         active_context: dict[str, Any],
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         area_context: dict[str, Any] | None,
     ) -> dict[str, Any]:
         conversation_payload = {
@@ -440,7 +462,7 @@ class OrchestratorAgent:
         user_input: str,
         pending_clarification: dict[str, Any],
         active_context: dict[str, Any],
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
     ) -> dict[str, Any]:
         model = self._clarification_model or self._orchestrator_model
         self._logger.info(
@@ -532,7 +554,7 @@ class OrchestratorAgent:
 
     async def _dispatch_ready_tasks(
         self,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         plan: dict[str, Any],
         active_context: dict[str, Any],
     ) -> list[dict[str, Any]]:
@@ -581,7 +603,7 @@ class OrchestratorAgent:
 
     def _log_clarification_causing_utterance(
         self,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         user_input: str,
         plan: dict[str, Any],
         task_results: list[dict[str, Any]],
@@ -622,7 +644,7 @@ class OrchestratorAgent:
     async def _final_reply(
         self,
         *,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         user_input: str,
         active_context: dict[str, Any],
         plan: dict[str, Any],
@@ -1515,11 +1537,11 @@ def _cancels_pending_clarification(user_input: str) -> bool:
     }
 
 
-def _orchestrator_state(conversation: Conversation) -> dict[str, Any]:
-    state = conversation.state.setdefault(ORCHESTRATOR_STATE_KEY, {})
+def _orchestrator_state(conversation: AgentExecutionContext) -> dict[str, Any]:
+    state = conversation.agent_state.setdefault(ORCHESTRATOR_STATE_KEY, {})
     if not isinstance(state, dict):
         state = {}
-        conversation.state[ORCHESTRATOR_STATE_KEY] = state
+        conversation.agent_state[ORCHESTRATOR_STATE_KEY] = state
     state.setdefault("last_turns", [])
     state.setdefault("salient_entities", [])
     state.setdefault("active_domain", None)
@@ -1528,8 +1550,8 @@ def _orchestrator_state(conversation: Conversation) -> dict[str, Any]:
     return state
 
 
-def _has_pending_clarification(conversation: Conversation) -> bool:
-    state = conversation.state.get(ORCHESTRATOR_STATE_KEY)
+def _has_pending_clarification(conversation: AgentExecutionContext) -> bool:
+    state = conversation.agent_state.get(ORCHESTRATOR_STATE_KEY)
     return isinstance(state, dict) and state.get("pending_clarification") is not None
 
 

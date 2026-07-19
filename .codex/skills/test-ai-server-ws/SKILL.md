@@ -39,7 +39,7 @@ tools/ai-server-chat.sh \
 
 - Start a real `create_app(...)`/`WebsocketCommunicationEndpoint` server path with a slow non-Ollama agent, or start `ai_server.server` with an explicit temporary config if the needed agent is available there.
 - Start `tools/ai-server-chat.sh --user Maciek --area office ws://127.0.0.1:<port>/chat` in a PTY.
-- Confirm the server logs accepted the websocket and session attributes.
+- Confirm the server logs accepted the websocket and typed session start.
 - Send a message, have the server delay longer than the client liveness interval, then send the reply.
 - Require the client to stay connected, print the delayed reply, and return to the next wait prompt. Also require the server side to show no send/reset error.
 
@@ -54,9 +54,10 @@ Clean up the temporary config and verify no temporary server/client process rema
 
 ## Protocol Expectations
 
-- The client sends `session_attributes` immediately after connecting.
-- After `wait_for_new_conversation`, the client sends `new_conversation` and then the first message stream.
-- After `wait_for_new_message`, the client sends only the next message stream.
+- The client sends one `session_start` immediately after connecting.
+- After `conversation_ready`, the client sends one `start_conversation` containing the complete initial message.
+- After `follow_up_requested`, the client sends one `follow_up_message` or `follow_up_timed_out` outcome.
+- Old `session_attributes`, `new_conversation`, `message_*`, and `wait_for_*` vocabulary is rejected; there is no compatibility parser.
 - The interactive client must stay connected while the server is legitimately busy. Connection failures and broken established connections exit without retrying.
 - Batch/scripted clients exit when their requested messages are complete or when a terminal protocol/connection condition is reached.
 

@@ -8,10 +8,9 @@
 - **Approval state:** T-004 sections approved by Captain on 2026-07-19
 
 This catalogue maps stable requirements to implementation owners and required
-evidence. T-004 entries name planned tests because implementation has not
-started. They become conformance claims only when the referenced test exists and
-passes. Existing `MP-` entries continue to describe the current normative
-Microphone Protocol.
+evidence. T-004 implementation is present; a row becomes a conformance claim
+only when its referenced test or recorded manual check exists and passes.
+Existing `MP-` entries continue to describe the normative Microphone Protocol.
 
 Equivalent focused filenames are permitted only when this catalogue is updated
 in the same change.
@@ -20,7 +19,7 @@ in the same change.
 
 ### Ownership, context, and creation
 
-| Requirement | Summary | Planned owner | Required automated evidence |
+| Requirement | Summary | Implementation owner | Required automated evidence |
 |---|---|---|---|
 | `CP-OWNER-001` | One bridge owns all cross-side state | conversation bridge | state ownership/illegal-call tests in `tests/test_conversation_bridge.py` |
 | `CP-OWNER-002` | One active InputConversation per InputSession | input supervision | sequential and second-accept rejection tests |
@@ -38,7 +37,7 @@ in the same change.
 
 ### Event order, flow control, and follow-up
 
-| Requirement | Summary | Planned owner | Required automated evidence |
+| Requirement | Summary | Implementation owner | Required automated evidence |
 |---|---|---|---|
 | `CP-INPUT-001` | Input exposes one serialized follow-up outcome | input adapters | duplicate/outcome arbitration tests |
 | `CP-AGENT-001` | Successful turn has exactly one explicit disposition | AgentConversation and bridge | zero-stream/one-stream/end/follow-up/failure cases |
@@ -54,7 +53,7 @@ in the same change.
 
 ### Terminal behavior, shutdown, logging, and cutover
 
-| Requirement | Summary | Planned owner | Required automated evidence |
+| Requirement | Summary | Implementation owner | Required automated evidence |
 |---|---|---|---|
 | `CP-TERMINAL-001` | Terminal reason/code/detail invariants are structural | typed messages and bindings | constructor and serialization matrix |
 | `CP-FAILURE-001` | Each failure has ratified isolation/reuse behavior | bridge and supervisors | parameterized failure/reuse cases |
@@ -83,7 +82,7 @@ Additional exhaustive core coverage:
 
 ### Schema, state, and transport
 
-| Requirement | Summary | Planned owner | Required automated evidence |
+| Requirement | Summary | Implementation owner | Required automated evidence |
 |---|---|---|---|
 | `WS-OWNER-001` | One websocket maps to one InputSession and one active Conversation | websocket adapter | sequential/overlapping start tests |
 | `WS-OWNER-002` | Background reader remains live during Agent/writer blocking | websocket adapter | delayed Agent and blocked-send disconnect/liveness tests |
@@ -99,7 +98,7 @@ Additional exhaustive core coverage:
 
 ### Capacity, configuration, and follow-up gate
 
-| Requirement | Summary | Planned owner | Required automated evidence |
+| Requirement | Summary | Implementation owner | Required automated evidence |
 |---|---|---|---|
 | `WS-CAPACITY-001` | Every pre-upgrade slot has one owner and exact release | admission controller | handshake/rejection/failure/shutdown release paths |
 | `WS-CAPACITY-002` | Full capacity returns `503` plus configured `Retry-After` | HTTP admission | below/at/above-capacity concurrent tests |
@@ -162,7 +161,7 @@ compilation, and generated-source inspection when firmware is affected.
 
 ## Microphone-Conversation Mapping
 
-| Requirement | Summary | Planned owner | Required automated evidence |
+| Requirement | Summary | Implementation owner | Required automated evidence |
 |---|---|---|---|
 | `MAP-OWNER-001` | Driver does not consume core events | voice adapter boundary | fake-driver/fake-bridge import and interaction tests |
 | `MAP-OWNER-002` | Mapping does not reproduce bridge lifecycle | adapter/bridge boundary | state/source responsibility tests |
@@ -221,6 +220,33 @@ states; Box3 renders the corresponding error/idle/listening/processing bitmaps.
 Orthogonal mute/setup/timer/volume indicators do not replace the main state.
 
 ## Required verification order
+
+Current automated evidence is organized as follows:
+
+| Contract area | Current focused evidence |
+|---|---|
+| Core context outcomes, bridge state/event matrices, rendezvous, cancellation, race priority, entry/exit deadlines, backpressure, typed terminal results, and observability | `tests/test_conversation_protocol_conformance.py`, `tests/test_conversation_bridge.py`, `tests/test_sessions.py`, `tests/test_interfaces.py`, `tests/test_messages.py` |
+| Agent factories, concurrent mutable-state isolation, and migrated Agent/DSA behavior | `tests/test_agent_factory.py`, `tests/test_orchestrator_agent.py`, other Agent and DSA unit modules under `tests/`, `orchestrator_and_dsa_tests/` |
+| Websocket schema, state, stream correlation, transport handoff, admission/release, follow-up gate/lease, client policy, observability, and real delayed server/client transport | `tests/test_websocket_server.py`, `tests/test_messages.py`, `tests/test_config.py` |
+| Voice mapping, follow-up arbitration, recovery, bounded rendering, and Microphone Protocol regressions | `tests/test_microphones.py`, `tests/test_microphone_protocol.py`, `tests/test_box3_esphome_microphone.py`, `tests/microphone_driver_conformance.py` |
+| Application configuration, lifecycle construction, graceful signal shutdown, deadline escalation, second-signal escalation, and logging | `tests/test_config.py`, `tests/test_server_lifecycle.py`, `tests/test_server_logging.py` |
+
+This inventory records test locations, not Gate D by itself. Subprocess hard-exit
+proofs run in `tests/test_server_lifecycle.py`; the manual one-device hardware
+checks below remain explicit closure evidence and may not be inferred from
+ordinary pytest success.
+
+Current automated checkpoint before the final closure re-review:
+
+| Boundary | Exact regression evidence |
+|---|---|
+| InputSession acceptance/close matrix | `test_voice_input_session_accept_operation_matrix_rejects_every_non_idle_state`, `test_voice_session_close_wins_uncommitted_acceptance_and_is_idempotent`, `test_voice_session_close_after_accept_commit_releases_active_control_and_never_rearms`, `test_websocket_input_session_accept_operation_matrix_rejects_every_non_idle_state`, `test_websocket_close_matrix_quiesces_non_active_session_states`, `test_websocket_active_close_waits_for_conversation_scope_cleanup`, `test_websocket_protocol_closure_remains_closing_until_active_scope_exits`, `test_websocket_reader_failure_remains_closing_until_active_scope_exits` |
+| Bridge ready-set and sink races | `test_race_operation_pairwise_and_multi_ready_precedence`, `test_race_operation_deadline_is_selected_only_when_neither_candidate_commits`, `test_terminal_input_preempts_each_inflight_sink_operation`, `test_terminal_input_is_observable_in_every_nonterminal_bridge_stage` |
+| Repository client follow-up arbitration | `test_interactive_submission_before_and_after_expiry_boundary`, `test_interactive_submission_wins_at_exact_expiry_boundary`, `test_interactive_terminal_wins_when_terminal_and_line_are_both_committed`, `test_batch_follow_up_timer_is_cancelled_by_terminal_server_event` |
+| Voice committed-media cancellation and timer origin | `test_voice_sink_cancellation_before_playback_commit_cancels_renderer`, `test_voice_sink_cancellation_at_playback_commit_drains_committed_renderer`, `test_processing_update_cancellation_drains_committed_playback`, `test_follow_up_cancellation_drains_committed_cue_without_starting_listening`, `test_follow_up_cancellation_stops_committed_listening_generation`, `test_voice_cleanup_immediately_after_follow_up_commit_stops_listening_generation`, `test_voice_cleanup_during_follow_up_capture_stops_capturing_generation`, `test_follow_up_deadline_is_fixed_at_listening_started_before_collector_scheduling`, `test_voice_follow_up_monotonic_before_equal_after_arbiter` |
+| Websocket drain, lease, heartbeat, and capacity | `test_follow_up_drain_failure_after_handoff_closes_typed_committed_interval`, `test_follow_up_lease_expiry_during_writer_drain_closes_and_joins_tasks`, `test_follow_up_resource_lease_closes_without_forging_timeout`, `test_capacity_is_released_when_websocket_preparation_fails`, `test_capacity_is_released_after_invalid_handshake_and_timeout` |
+| Full automated checkpoint | 705 passing pytest cases; `git diff --check` clean |
+| Post-review behavioral checkpoint | `orchestrator_and_dsa_tests/run.sh --no-transcript`: 45/45 passing with orchestrator and DSA model `qwen3:14b`; 237.11 seconds |
 
 1. Documentation structure, link, requirement-ID, and matrix consistency checks.
 2. Focused core bridge, AgentConversation, websocket, client, mapping, and

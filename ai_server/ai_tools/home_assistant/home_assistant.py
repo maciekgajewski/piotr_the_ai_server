@@ -8,8 +8,9 @@ from ai_server.ai_tools.interfaces import BaseTool
 from ai_server.config import AgentConfig
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 from ai_server.home_assistant.toolset import HomeAssistantToolSet
-from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import ProcessingUpdate, TextMessage
+from ai_server.conversations.agent_context import AgentExecutionContext
+from ai_server.conversations.agent_runtime import AgentChannel
+from ai_server.conversations.messages import UserMessage
 
 
 class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
@@ -44,7 +45,7 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
         )
         self._start_owned_connection()
 
-    async def run(self, conversation: Conversation, endpoint: ConversationEndpoint, request: TextMessage) -> None:
+    async def run(self, conversation: AgentExecutionContext, channel: AgentChannel, request: UserMessage) -> None:
         self._start_owned_connection()
         system_prompt = self._connection.system_prompt_context(user=conversation.user, area=conversation.area)
         self._logger.debug(
@@ -67,7 +68,7 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
             config=loop_config,
             system_prompt=system_prompt,
             tools=self,
-            processing_update_callback=lambda: endpoint.send(ProcessingUpdate()),
+            processing_update_callback=channel.processing_update,
             processing_update_interval_seconds=self._processing_update_interval_seconds,
         ) as loop:
             self.set_request_context(user_message=request.text, area=conversation.area)
@@ -79,13 +80,17 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
                 reply.end_conversation,
                 loop.eval_count,
             )
-            await endpoint.send_message(TextMessage(text=reply.reply_text))
+            await channel.send_message(reply.reply_text)
             if reply.end_conversation:
                 self._logger.debug("ending Home Assistant conversation after initial reply conversation_id=%s", conversation.conversation_id)
                 return
 
-            await endpoint.request_follow_up()
-            async for follow_up in endpoint.messages():
+            await channel.request_follow_up()
+            while True:
+                try:
+                    follow_up = await channel.receive_user_message()
+                except StopAsyncIteration:
+                    return
                 self._logger.debug(
                     "received Home Assistant follow-up conversation_id=%s message=%r",
                     conversation.conversation_id,
@@ -100,12 +105,11 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
                     reply.end_conversation,
                     loop.eval_count,
                 )
-                await endpoint.send_message(TextMessage(text=reply.reply_text))
+                await channel.send_message(reply.reply_text)
                 if reply.end_conversation:
                     self._logger.debug("ending Home Assistant conversation after follow-up conversation_id=%s", conversation.conversation_id)
                     return
-                await endpoint.request_follow_up()
-        self._logger.debug("Home Assistant conversation input stream ended conversation_id=%s", conversation.conversation_id)
+                await channel.request_follow_up()
 
     async def close(self) -> None:
         if self._start_task is not None:

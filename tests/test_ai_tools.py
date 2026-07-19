@@ -25,9 +25,8 @@ from ai_server.home_assistant.connection import (
     _parse_ws_text_message,
 )
 from ai_server.home_assistant.interfaces import HomeAssistantOptions
-from ai_server.interfaces import Conversation
-from ai_server.messages import TextMessage, text_message_to_events
-from conftest import FakeConversationEndpoint
+from conftest import TextMessage, text_message_to_events
+from conftest import FakeAgentChannel, agent_context, run_agent
 
 
 def test_create_tools_builds_static_dictionary(caplog) -> None:
@@ -71,8 +70,8 @@ def test_create_tools_builds_static_dictionary(caplog) -> None:
 def test_tool_run_stubs_send_default_reply() -> None:
     config = AgentConfig(type="assistant", options={"intent_router_model": "llama3.2:3b"})
     tool = CalculatorTool(config)
-    endpoint = FakeConversationEndpoint([])
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
+    endpoint = FakeAgentChannel([])
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     asyncio.run(tool.run(conversation, endpoint, TextMessage(text="zrób coś")))
 
@@ -94,8 +93,8 @@ def test_time_tool_logs_locale_failure(monkeypatch, caplog) -> None:
         options={"intent_router_model": "llama3.2:3b", "ollama_url": "http://ollama:11434"},
     )
     tool = TimeTool(config)
-    endpoint = FakeConversationEndpoint([])
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
+    endpoint = FakeAgentChannel([])
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     with caplog.at_level("ERROR"):
         asyncio.run(tool.run(conversation, endpoint, TextMessage(text="która godzina?")))
@@ -119,8 +118,8 @@ def test_home_assistant_tool_runs_local_agent_loop_with_context(monkeypatch) -> 
         },
     )
     tool = HomeAssistantTool(config, connection=_sample_connection(_sample_inventory()))
-    endpoint = FakeConversationEndpoint([])
-    conversation = Conversation(
+    endpoint = FakeAgentChannel([])
+    conversation = agent_context(
         conversation_id="conversation-1",
         attributes={"medium": "voice", "area": "office", "user": "maciek"},
     )
@@ -143,8 +142,8 @@ def test_home_assistant_tool_uses_processing_update_interval_from_factory(monkey
         home_assistant_connection=_sample_connection(_sample_inventory()),
         processing_updates=ProcessingUpdatesConfig(interval_seconds=2.5),
     )
-    endpoint = FakeConversationEndpoint([])
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
+    endpoint = FakeAgentChannel([])
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     asyncio.run(tools["home_assistant"].run(conversation, endpoint, TextMessage(text="włącz klimę")))
 

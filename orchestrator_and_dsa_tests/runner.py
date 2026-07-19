@@ -10,7 +10,6 @@ import sys
 import tempfile
 import time
 import unicodedata
-from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -33,9 +32,10 @@ from ai_server.domain_agents.weather.agent import PLANNING_PROMPT as WEATHER_PLA
 from ai_server.domain_agents.weather.astronomy import AstronomyRecord, AstronomySnapshot
 from ai_server.domain_agents.wikipedia import PLANNING_PROMPT as WIKIPEDIA_PLANNING_PROMPT
 from ai_server.domain_agents.wikipedia import WikipediaArticle, WikipediaDomainAgent, WikipediaSearchResult
-from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import ConversationInputEvent, ConversationOutputEvent, MessageBegin, MessageEnd
-from ai_server.messages import MessageFragment, TextMessage, text_message_to_events
+from ai_server.conversations.agent_context import AgentExecutionContext
+from ai_server.conversations.contexts import ConversationContext, ConversationMedium
+from ai_server.conversations.messages import AssistantMessageCompleted, AssistantMessageStarted
+from ai_server.conversations.messages import AssistantTextChunk, ProcessingUpdate, UserMessage
 from ai_server.ollama_client import OllamaClient
 
 
@@ -123,7 +123,12 @@ class StubDomainAgent:
     def query_capabilities_prompt(self) -> str:
         return ""
 
-    async def run_task(self, conversation: Conversation, task: dict[str, Any], active_context: dict[str, Any]) -> dict[str, Any]:
+    async def run_task(
+        self,
+        conversation: AgentExecutionContext,
+        task: dict[str, Any],
+        active_context: dict[str, Any],
+    ) -> dict[str, Any]:
         del conversation, active_context
         result = copy.deepcopy(self._result_for_task(task["id"]))
         self._traces.append({"task": copy.deepcopy(task), "result": copy.deepcopy(result)})
@@ -161,7 +166,12 @@ class TracingDomainAgent:
     def query_capabilities_prompt(self) -> str:
         return self._inner.query_capabilities_prompt()
 
-    async def run_task(self, conversation: Conversation, task: dict[str, Any], active_context: dict[str, Any]) -> dict[str, Any]:
+    async def run_task(
+        self,
+        conversation: AgentExecutionContext,
+        task: dict[str, Any],
+        active_context: dict[str, Any],
+    ) -> dict[str, Any]:
         result = await self._inner.run_task(conversation, task, active_context)
         self._traces.append({"domain": self._domain, "task": copy.deepcopy(task), "result": copy.deepcopy(result)})
         return result
@@ -170,43 +180,47 @@ class TracingDomainAgent:
         await self._inner.close()
 
 
-class FakeConversationEndpoint(ConversationEndpoint):
-    def __init__(self, incoming: list[TextMessage]) -> None:
-        self._incoming: list[ConversationInputEvent] = []
-        for message in incoming:
-            self._incoming.extend(text_message_to_events(message))
-        self.sent: list[ConversationOutputEvent] = []
+class FakeAgentChannel:
+    def __init__(self, incoming: list[UserMessage]) -> None:
+        self._incoming = list(incoming)
+        self.sent: list[object] = []
+        self._stream_open = False
 
-    async def receive(self) -> ConversationInputEvent:
+    async def receive_user_message(self) -> UserMessage:
         if not self._incoming:
             raise AssertionError("unexpected receive")
         return self._incoming.pop(0)
 
-    async def send(self, event: ConversationOutputEvent) -> None:
-        self.sent.append(event)
+    async def processing_update(self) -> None:
+        assert not self._stream_open
+        self.sent.append(ProcessingUpdate())
 
-    async def messages(self) -> AsyncIterator[TextMessage]:
-        while self._incoming:
-            text_parts: list[str] = []
-            while True:
-                event = await self.receive()
-                if isinstance(event, MessageBegin):
-                    text_parts.clear()
-                    continue
-                if isinstance(event, MessageFragment):
-                    text_parts.append(event.text)
-                    continue
-                if isinstance(event, MessageEnd):
-                    yield TextMessage(text="".join(text_parts))
-                    break
-                raise AssertionError(f"unsupported test event: {type(event).__name__}")
+    async def start_assistant_message(self) -> None:
+        assert not self._stream_open
+        self._stream_open = True
+        self.sent.append(AssistantMessageStarted())
 
-    async def send_message(self, message: TextMessage) -> None:
-        for event in text_message_to_events(message):
-            await self.send(event)
+    async def send_text(self, text: str) -> None:
+        assert self._stream_open
+        self.sent.append(AssistantTextChunk(text))
+
+    async def complete_assistant_message(self) -> None:
+        assert self._stream_open
+        self._stream_open = False
+        self.sent.append(AssistantMessageCompleted())
+
+    async def send_message(self, text: str) -> None:
+        await self.start_assistant_message()
+        if text:
+            await self.send_text(text)
+        await self.complete_assistant_message()
 
     async def request_follow_up(self) -> None:
-        raise AssertionError("behavior test endpoint does not support follow-up")
+        if not self._incoming:
+            raise AssertionError("behavior case requested an unavailable follow-up message")
+
+    async def end_conversation(self) -> None:
+        return None
 
 
 class FakeTimezoneResolver:
@@ -748,8 +762,9 @@ async def _run_dsa_weather_case(case: TestCase, settings: dict[str, Any]) -> Cas
 
 async def _run_agent_conversation(agent: OrchestratorAgent, raw: dict[str, Any], settings: dict[str, Any], result: CaseResult) -> None:
     messages = _required_string_list(raw, "messages", result.case.name)
-    endpoint = FakeConversationEndpoint([TextMessage(text=message) for message in messages])
-    await agent.run_conversation(_conversation(raw, settings, f"case-{result.case.name}"), endpoint)
+    endpoint = FakeAgentChannel([UserMessage(text=message) for message in messages])
+    conversation = _conversation(raw, settings, f"case-{result.case.name}")
+    await agent.run_agent_conversation(conversation.conversation, endpoint)
     result.replies = _sent_text_messages(endpoint.sent)
 
 
@@ -909,14 +924,26 @@ def _partial_match(expected: Any, actual: Any) -> bool:
     return expected == actual
 
 
-def _conversation(raw: dict[str, Any], settings: dict[str, Any], conversation_id: str) -> Conversation:
+def _conversation(
+    raw: dict[str, Any],
+    settings: dict[str, Any],
+    conversation_id: str,
+) -> AgentExecutionContext:
     area = _str_or_default(raw.get("area"), settings["area"])
     user = _str_or_default(raw.get("user"), settings["user"])
     medium = _str_or_default(raw.get("medium"), "voice")
-    return Conversation(
-        conversation_id=conversation_id,
-        attributes={"medium": medium, "area": area, "user": user},
-        state={"user_settings": _user_settings_for(user, _dict_or_empty(settings.get("users")))},
+    return AgentExecutionContext(
+        conversation=ConversationContext(
+            conversation_id=conversation_id,
+            input_session_id=f"behavior-{conversation_id}",
+            medium=ConversationMedium(medium),
+            area=area,
+            user=user,
+            user_settings=_user_settings_for(
+                user,
+                _dict_or_empty(settings.get("users")),
+            ),
+        ),
     )
 
 
@@ -1043,11 +1070,11 @@ def _sent_text_messages(events: list[Any]) -> list[str]:
     messages = []
     current: list[str] = []
     for event in events:
-        if isinstance(event, MessageBegin):
+        if isinstance(event, AssistantMessageStarted):
             current = []
-        elif isinstance(event, MessageFragment):
+        elif isinstance(event, AssistantTextChunk):
             current.append(event.text)
-        elif isinstance(event, MessageEnd):
+        elif isinstance(event, AssistantMessageCompleted):
             messages.append("".join(current))
     return messages
 

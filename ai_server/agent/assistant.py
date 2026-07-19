@@ -9,8 +9,9 @@ from typing import Mapping
 from aiohttp import ClientSession
 
 from ai_server.ai_tools.interfaces import Tool
-from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import TextMessage
+from ai_server.conversations.agent_context import AgentExecutionContext
+from ai_server.conversations.agent_runtime import AgentChannel, ConversationAgent
+from ai_server.conversations.contexts import ConversationContext
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
 
 
@@ -44,7 +45,7 @@ class ToolRoute:
     confidence: float
 
 
-class AssistantAgent:
+class AssistantAgent(ConversationAgent):
     def __init__(
         self,
         intent_router_model: str,
@@ -81,45 +82,48 @@ class AssistantAgent:
         except Exception as exc:
             raise OllamaError(f"failed to preload Ollama model {self._intent_router_model}") from exc
 
-    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
-        logger = logging.getLogger(f"{__name__}.AssistantAgent[{conversation.conversation_id}]")
-        async for message in endpoint.messages():
-            started_at = time.perf_counter()
+    async def run_agent_conversation(self, context: ConversationContext, channel: AgentChannel) -> None:
+        logger = logging.getLogger(f"{__name__}.AssistantAgent[{context.conversation_id}]")
+        message = await channel.receive_user_message()
+        started_at = time.perf_counter()
 
-            try:
-                route = await self._route_message(message.text)
-            except Exception:
-                elapsed_ms = _elapsed_ms(started_at)
-                logger.exception(
-                    "generation failed request_len=%s duration_ms=%s",
-                    len(message.text),
-                    elapsed_ms,
-                )
-                await endpoint.send_message(TextMessage(text=GENERATION_FAILURE_MESSAGE))
-                continue
-
-            tool = self._tools.get(route.tool)
-            if tool is None:
-                elapsed_ms = _elapsed_ms(started_at)
-                logger.error(
-                    "router selected unknown tool=%s confidence=%s request_len=%s duration_ms=%s",
-                    route.tool,
-                    route.confidence,
-                    len(message.text),
-                    elapsed_ms,
-                )
-                await endpoint.send_message(TextMessage(text=GENERATION_FAILURE_MESSAGE))
-                continue
-
+        try:
+            route = await self._route_message(message.text)
+        except Exception:
             elapsed_ms = _elapsed_ms(started_at)
-            logger.info(
-                "router selected tool=%s confidence=%s request_len=%s duration_ms=%s",
+            logger.exception(
+                "generation failed request_len=%s duration_ms=%s",
+                len(message.text),
+                elapsed_ms,
+            )
+            await channel.send_message(GENERATION_FAILURE_MESSAGE)
+            await channel.end_conversation()
+            return
+
+        tool = self._tools.get(route.tool)
+        if tool is None:
+            elapsed_ms = _elapsed_ms(started_at)
+            logger.error(
+                "router selected unknown tool=%s confidence=%s request_len=%s duration_ms=%s",
                 route.tool,
                 route.confidence,
                 len(message.text),
                 elapsed_ms,
             )
-            await tool.run(conversation, endpoint, message)
+            await channel.send_message(GENERATION_FAILURE_MESSAGE)
+            await channel.end_conversation()
+            return
+
+        elapsed_ms = _elapsed_ms(started_at)
+        logger.info(
+            "router selected tool=%s confidence=%s request_len=%s duration_ms=%s",
+            route.tool,
+            route.confidence,
+            len(message.text),
+            elapsed_ms,
+        )
+        await tool.run(AgentExecutionContext(context), channel, message)
+        await channel.end_conversation()
 
     async def close(self) -> None:
         try:

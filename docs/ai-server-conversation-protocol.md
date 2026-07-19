@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-- **Authority:** Normative target contract; approved for T-004 implementation
+- **Authority:** Normative runtime contract; implemented by T-004
 - **Audience:** Maintainers of conversation state, agents, input adapters, application lifecycle, and conformance tests
 - **Read when:** Changing conversation messages or interfaces, agent construction, input supervision, websocket or microphone bindings, or shutdown behavior
 - **Approval state:** Approved by Captain on 2026-07-19
@@ -10,11 +10,8 @@
 This document defines the typed, in-process protocol between one persistent
 `InputSession`, one per-conversation bridge coroutine, and one
 `AgentConversation`. It replaces the old shared `Session`/`ConversationEndpoint`
-contract when T-004 reaches atomic production cutover.
-
-The current implementation does not conform to this draft. Until this draft is
-approved and the cutover is complete, implementation drift reported by this
-document is planned migration work rather than a runtime regression.
+contract. T-004 performed the atomic production cutover on 2026-07-19; runtime
+drift from this document is now a defect.
 
 Websocket JSON is defined by the
 [Websocket Conversation Binding](websocket-conversation-protocol.md). Voice
@@ -447,7 +444,7 @@ sends ConversationEnded(INPUT_CANCELLED), and closes both scopes
 
 ## Implementation and conformance references
 
-Planned implementation owners:
+Implementation owners:
 
 - `ai_server/conversations/` for contexts, messages, interfaces, bridge, state,
   supervision, and lifecycle registry;
@@ -456,7 +453,7 @@ Planned implementation owners:
 - `ai_server/server.py` for fatal containment and bounded shutdown;
 - concrete bindings named in the websocket and microphone documents.
 
-Planned conformance coverage is indexed by the
+Conformance coverage is indexed by the
 [Protocol Conformance Catalogue](protocol-conformance-catalogue.md). T-004 is
 the authoritative migration plan:
 [Conversation Bridge Protocol Redesign](tasks/T-004-conversation-bridge-protocol-redesign.md).
@@ -471,5 +468,5 @@ translation facade, or permissive legacy parser is provided. (`CP-COMPAT-001`)
 
 ## Explicitly unresolved decisions
 
-None. Captain approved this protocol on 2026-07-19. Implementation and
-conformance evidence remain tracked by T-004.
+None. Captain approved this protocol on 2026-07-19. Verification and conformance
+evidence remain tracked by T-004.

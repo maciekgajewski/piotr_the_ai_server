@@ -13,10 +13,10 @@ import queue
 import socket
 import threading
 import time
-import uuid
 from typing import Any
 
 from ai_server.config import MicrophoneConfig
+from ai_server.conversations.id_factory import new_id
 from ai_server.microphones.messages import AudioChunk, AudioProgress, Close, CueFinished, CueType
 from ai_server.microphones.messages import ListeningMode, ListeningStarted, ListeningStopped, MicrophoneCommand
 from ai_server.microphones.messages import MicrophoneEvent, PlaybackBegin, PlaybackChunk, PlaybackEnd, PlaybackFinished
@@ -829,7 +829,7 @@ class Box3EsphomeMicrophone:
     def _queue_speech_started(self) -> None:
         assert self._utterance_id is None, "nested speech segment"
         listen_id = self._required_listen_id()
-        utterance_id = str(uuid.uuid4())
+        utterance_id = new_id()
         self._utterance_id = utterance_id
         wake_word = self._wake_word if self._listening_mode is ListeningMode.WAKE_WORD else None
         self._events.put_nowait(

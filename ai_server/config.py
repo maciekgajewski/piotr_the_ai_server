@@ -9,7 +9,6 @@ import yaml
 
 DEFAULT_WEBSOCKET_HOST = "0.0.0.0"
 DEFAULT_WEBSOCKET_PATH = "/chat"
-DEFAULT_WEBSOCKET_FOLLOW_UP_TIMEOUT_SECONDS = 60.0
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_STT_MODEL = "medium"
 DEFAULT_STT_LANGUAGE = "pl"
@@ -25,7 +24,6 @@ DEFAULT_STT_PARTIAL_MAX_BACKLOG_SECONDS = 2.0
 DEFAULT_STT_LOG_TRANSCRIPTS = False
 DEFAULT_TTS_VOICE = "pl_PL-bass-high"
 DEFAULT_TTS_VOLUME = 1.0
-DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS = 15.0
 DEFAULT_OPEN_MIC_WAKE_PHRASE = "Ryszardzie"
 DEFAULT_AUDIO_START_TIMEOUT_SECONDS = 5.0
 DEFAULT_AUDIO_EVENT_TIMEOUT_SECONDS = 5.0
@@ -46,9 +44,15 @@ PCM16_MAX_POSITIVE = 32767
 @dataclass(frozen=True)
 class WebsocketConfig:
     port: int
+    max_connections: int
+    capacity_retry_after_seconds: int
+    follow_up_idle_lease_seconds: float
+    max_frame_bytes: int
+    ingress_queue_capacity: int
+    heartbeat_seconds: float
+    handshake_timeout_seconds: float
     host: str = DEFAULT_WEBSOCKET_HOST
     path: str = DEFAULT_WEBSOCKET_PATH
-    follow_up_timeout_seconds: float = DEFAULT_WEBSOCKET_FOLLOW_UP_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -87,7 +91,13 @@ class TtsConfig:
 
 @dataclass(frozen=True)
 class ConversationConfig:
-    follow_up_timeout_seconds: float = DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS
+    agent_cancellation_deadline_seconds: float
+    fatal_notification_seconds: float
+
+
+@dataclass(frozen=True)
+class ShutdownConfig:
+    grace_period_seconds: float
 
 
 @dataclass(frozen=True)
@@ -111,7 +121,8 @@ class MicrophoneDefaultsConfig:
     end_silence_seconds: float = DEFAULT_END_SILENCE_SECONDS
     speech_peak_threshold: int = DEFAULT_SPEECH_PEAK_THRESHOLD
     post_speech_ignore_seconds: float = DEFAULT_POST_SPEECH_IGNORE_SECONDS
-    follow_up_timeout_seconds: float = DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS
+    follow_up_timeout_seconds: float = 15.0
+    assistant_text_buffer_characters: int = 4096
 
 
 @dataclass(frozen=True)
@@ -127,20 +138,22 @@ class MicrophoneConfig:
     end_silence_seconds: float = DEFAULT_END_SILENCE_SECONDS
     speech_peak_threshold: int = DEFAULT_SPEECH_PEAK_THRESHOLD
     post_speech_ignore_seconds: float = DEFAULT_POST_SPEECH_IGNORE_SECONDS
-    follow_up_timeout_seconds: float = DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS
+    follow_up_timeout_seconds: float = 15.0
+    assistant_text_buffer_characters: int = 4096
 
 
 @dataclass(frozen=True)
 class Config:
     agent: AgentConfig
     websocket: WebsocketConfig
+    conversation: ConversationConfig
+    shutdown: ShutdownConfig
     log_level: str = DEFAULT_LOG_LEVEL
     server: ServerConfig = ServerConfig()
     cache_dir: Path = Path(DEFAULT_CACHE_DIR).expanduser()
     data_dir: Path = Path(DEFAULT_DATA_DIR).expanduser()
     stt: SttConfig = SttConfig()
     tts: TtsConfig = TtsConfig()
-    conversation: ConversationConfig = ConversationConfig()
     processing_updates: ProcessingUpdatesConfig = ProcessingUpdatesConfig()
     speaker_recognition: SpeakerRecognitionConfig = SpeakerRecognitionConfig()
     microphone_defaults: MicrophoneDefaultsConfig = MicrophoneDefaultsConfig()
@@ -170,22 +183,23 @@ def load_config_from_yaml(path: str | Path) -> Config:
     if not isinstance(agent_config, dict):
         raise ValueError("config must contain an agent mapping")
 
-    conversation = _parse_conversation_config(raw_config.get("conversation", {}))
+    conversation = _parse_conversation_config(raw_config.get("conversation"))
     microphone_defaults, microphones = _parse_microphones_config(
         raw_config.get("microphones", []),
-        legacy_follow_up_timeout_seconds=conversation.follow_up_timeout_seconds,
+        legacy_follow_up_timeout_seconds=None,
     )
 
     return Config(
         agent=_parse_agent_config(agent_config, raw_config.get("home_assistant")),
         websocket=_parse_websocket_config(websocket_config),
+        conversation=conversation,
+        shutdown=_parse_shutdown_config(raw_config.get("shutdown")),
         log_level=_parse_log_level(raw_config),
         server=_parse_server_config(raw_config.get("server", {})),
         cache_dir=_parse_cache_dir(raw_config.get("cache_dir", DEFAULT_CACHE_DIR)),
         data_dir=_parse_data_dir(raw_config.get("data_dir", DEFAULT_DATA_DIR)),
         stt=_parse_stt_config(raw_config.get("stt", {})),
         tts=_parse_tts_config(raw_config.get("tts", {})),
-        conversation=conversation,
         processing_updates=_parse_processing_updates_config(raw_config.get("processing_updates", {})),
         speaker_recognition=_parse_speaker_recognition_config(raw_config.get("speaker_recognition", {})),
         microphone_defaults=microphone_defaults,
@@ -297,6 +311,11 @@ def _validate_optional_non_empty_string(options: dict[str, Any], key: str, field
 
 
 def _parse_websocket_config(raw_config: dict[str, Any]) -> WebsocketConfig:
+    if "follow_up_timeout_seconds" in raw_config:
+        raise ValueError(
+            "websocket.follow_up_timeout_seconds has been removed; "
+            "follow-up outcome timing is client-owned"
+        )
     if "port" not in raw_config:
         raise ValueError("websocket.port is required")
 
@@ -314,17 +333,37 @@ def _parse_websocket_config(raw_config: dict[str, Any]) -> WebsocketConfig:
     if not isinstance(path, str) or not path.startswith("/"):
         raise ValueError("websocket.path must be a string starting with '/'")
 
-    follow_up_timeout_seconds = _parse_optional_positive_float(
-        raw_config.get("follow_up_timeout_seconds"),
-        DEFAULT_WEBSOCKET_FOLLOW_UP_TIMEOUT_SECONDS,
-        "websocket.follow_up_timeout_seconds",
-    )
-
     return WebsocketConfig(
         port=port,
+        max_connections=_parse_required_positive_int(raw_config, "max_connections", "websocket.max_connections"),
+        capacity_retry_after_seconds=_parse_required_positive_int(
+            raw_config,
+            "capacity_retry_after_seconds",
+            "websocket.capacity_retry_after_seconds",
+        ),
+        follow_up_idle_lease_seconds=_parse_required_positive_finite_float(
+            raw_config,
+            "follow_up_idle_lease_seconds",
+            "websocket.follow_up_idle_lease_seconds",
+        ),
+        max_frame_bytes=_parse_required_positive_int(raw_config, "max_frame_bytes", "websocket.max_frame_bytes"),
+        ingress_queue_capacity=_parse_required_positive_int(
+            raw_config,
+            "ingress_queue_capacity",
+            "websocket.ingress_queue_capacity",
+        ),
+        heartbeat_seconds=_parse_required_positive_finite_float(
+            raw_config,
+            "heartbeat_seconds",
+            "websocket.heartbeat_seconds",
+        ),
+        handshake_timeout_seconds=_parse_required_positive_finite_float(
+            raw_config,
+            "handshake_timeout_seconds",
+            "websocket.handshake_timeout_seconds",
+        ),
         host=host,
         path=path,
-        follow_up_timeout_seconds=follow_up_timeout_seconds,
     )
 
 
@@ -448,18 +487,32 @@ def _parse_conversation_config(raw_config: Any) -> ConversationConfig:
     if not isinstance(raw_config, dict):
         raise ValueError("conversation must be a mapping")
 
-    follow_up_timeout_seconds = raw_config.get(
-        "follow_up_timeout_seconds",
-        DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS,
+    return ConversationConfig(
+        agent_cancellation_deadline_seconds=_parse_required_positive_finite_float(
+            raw_config,
+            "agent_cancellation_deadline_seconds",
+            "conversation.agent_cancellation_deadline_seconds",
+        ),
+        fatal_notification_seconds=_parse_required_positive_finite_float(
+            raw_config,
+            "fatal_notification_seconds",
+            "conversation.fatal_notification_seconds",
+        ),
     )
-    if (
-        not isinstance(follow_up_timeout_seconds, (int, float))
-        or isinstance(follow_up_timeout_seconds, bool)
-        or follow_up_timeout_seconds <= 0
-    ):
-        raise ValueError("conversation.follow_up_timeout_seconds must be a positive number")
 
-    return ConversationConfig(follow_up_timeout_seconds=float(follow_up_timeout_seconds))
+
+def _parse_shutdown_config(raw_config: Any) -> ShutdownConfig:
+    if raw_config is None:
+        raise ValueError("shutdown.grace_period_seconds is required")
+    if not isinstance(raw_config, dict):
+        raise ValueError("shutdown must be a mapping")
+    return ShutdownConfig(
+        grace_period_seconds=_parse_required_positive_finite_float(
+            raw_config,
+            "grace_period_seconds",
+            "shutdown.grace_period_seconds",
+        )
+    )
 
 
 def _parse_processing_updates_config(raw_config: Any) -> ProcessingUpdatesConfig:
@@ -490,13 +543,14 @@ def _parse_processing_updates_config(raw_config: Any) -> ProcessingUpdatesConfig
 
 def _parse_microphones_config(
     raw_config: Any,
-    legacy_follow_up_timeout_seconds: float,
+    legacy_follow_up_timeout_seconds: float | None,
 ) -> tuple[MicrophoneDefaultsConfig, tuple[MicrophoneConfig, ...]]:
     if raw_config is None:
-        return MicrophoneDefaultsConfig(follow_up_timeout_seconds=legacy_follow_up_timeout_seconds), ()
+        return MicrophoneDefaultsConfig(), ()
     if isinstance(raw_config, list):
-        defaults = MicrophoneDefaultsConfig(follow_up_timeout_seconds=legacy_follow_up_timeout_seconds)
-        raw_microphones = raw_config
+        if raw_config:
+            raise ValueError("microphones must be a mapping with explicit follow_up_timeout_seconds and assistant_text_buffer_characters")
+        return MicrophoneDefaultsConfig(), ()
     elif isinstance(raw_config, dict):
         defaults = _parse_microphone_defaults(raw_config, legacy_follow_up_timeout_seconds)
         raw_microphones = raw_config.get("devices", [])
@@ -564,6 +618,11 @@ def _parse_microphones_config(
             defaults.follow_up_timeout_seconds,
             f"microphones[{index}].follow_up_timeout_seconds",
         )
+        assistant_text_buffer_characters = _parse_optional_positive_int(
+            raw_microphone.get("assistant_text_buffer_characters"),
+            defaults.assistant_text_buffer_characters,
+            f"microphones[{index}].assistant_text_buffer_characters",
+        )
 
         options = {
             key: value
@@ -581,6 +640,7 @@ def _parse_microphones_config(
                 "speech_peak_threshold",
                 "post_speech_ignore_seconds",
                 "follow_up_timeout_seconds",
+                "assistant_text_buffer_characters",
             )
         }
         if microphone_type == "box3_esphome":
@@ -605,6 +665,7 @@ def _parse_microphones_config(
                 speech_peak_threshold=speech_peak_threshold,
                 post_speech_ignore_seconds=post_speech_ignore_seconds,
                 follow_up_timeout_seconds=follow_up_timeout_seconds,
+                assistant_text_buffer_characters=assistant_text_buffer_characters,
                 options=options,
             )
         )
@@ -614,7 +675,7 @@ def _parse_microphones_config(
 
 def _parse_microphone_defaults(
     raw_config: dict[str, Any],
-    legacy_follow_up_timeout_seconds: float,
+    legacy_follow_up_timeout_seconds: float | None,
 ) -> MicrophoneDefaultsConfig:
     open_mic_wake_phrase = raw_config.get("open_mic_wake_phrase", DEFAULT_OPEN_MIC_WAKE_PHRASE)
     if not isinstance(open_mic_wake_phrase, str) or not open_mic_wake_phrase:
@@ -652,19 +713,59 @@ def _parse_microphone_defaults(
             DEFAULT_POST_SPEECH_IGNORE_SECONDS,
             "microphones.post_speech_ignore_seconds",
         ),
-        follow_up_timeout_seconds=_parse_optional_positive_float(
-            raw_config.get("follow_up_timeout_seconds"),
-            legacy_follow_up_timeout_seconds,
+        follow_up_timeout_seconds=_parse_required_positive_finite_float(
+            raw_config,
+            "follow_up_timeout_seconds",
             "microphones.follow_up_timeout_seconds",
+        ),
+        assistant_text_buffer_characters=_parse_required_positive_int(
+            raw_config,
+            "assistant_text_buffer_characters",
+            "microphones.assistant_text_buffer_characters",
         ),
     )
 
 
-def _parse_optional_positive_float(value: Any, default: float, field: str) -> float:
+def _parse_required_positive_int(raw_config: dict[str, Any], key: str, field: str) -> int:
+    if key not in raw_config:
+        raise ValueError(f"{field} is required")
+    value = raw_config[key]
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
+
+
+def _parse_optional_positive_int(value: Any, default: int, field: str) -> int:
     if value is None:
         return default
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
-        raise ValueError(f"{field} must be a positive number")
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
+
+
+def _parse_required_positive_finite_float(raw_config: dict[str, Any], key: str, field: str) -> float:
+    import math
+
+    if key not in raw_config:
+        raise ValueError(f"{field} is required")
+    value = raw_config[key]
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or value <= 0
+        or not math.isfinite(value)
+    ):
+        raise ValueError(f"{field} must be a positive finite number")
+    return float(value)
+
+
+def _parse_optional_positive_float(value: Any, default: float, field: str) -> float:
+    import math
+
+    if value is None:
+        return default
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0 or not math.isfinite(value):
+        raise ValueError(f"{field} must be a positive finite number")
     return float(value)
 
 

@@ -5,9 +5,8 @@ import pytest
 from ai_server.agent.assistant import AssistantAgent, ToolRoute, _parse_tool_route
 from ai_server.ai_tools.interfaces import TOOL_NOT_IMPLEMENTED_REPLY
 from ai_server.config import AgentConfig
-from ai_server.interfaces import Conversation
-from ai_server.messages import TextMessage, text_message_to_events
-from conftest import FakeConversationEndpoint
+from conftest import TextMessage, text_message_to_events
+from conftest import FakeAgentChannel, agent_context, run_agent
 
 
 def test_parse_tool_route() -> None:
@@ -42,10 +41,10 @@ def test_assistant_routes_message_to_selected_tool() -> None:
         owns_ollama_client=False,
     )
     request = TextMessage(text="która godzina?")
-    endpoint = FakeConversationEndpoint([request])
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
+    endpoint = FakeAgentChannel([request])
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
 
-    asyncio.run(agent.run_conversation(conversation, endpoint))
+    asyncio.run(run_agent(agent, conversation, endpoint))
 
     assert endpoint.sent == list(text_message_to_events(TextMessage(text=TOOL_NOT_IMPLEMENTED_REPLY)))
     assert tool.request == request

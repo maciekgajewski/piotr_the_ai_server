@@ -2,6 +2,7 @@ import asyncio
 import json
 from typing import Any
 
+from conftest import agent_context
 from ai_server.agent_loop import AgentReply
 from ai_server.domain_agents.wikipedia import (
     DEFAULT_LANGUAGES,
@@ -12,7 +13,6 @@ from ai_server.domain_agents.wikipedia import (
     WikipediaSearchResult,
     _parse_domain_reply,
 )
-from ai_server.interfaces import Conversation
 
 
 def test_wikipedia_domain_agent_runs_agent_loop_and_parses_json_reply() -> None:
@@ -41,7 +41,7 @@ def test_wikipedia_domain_agent_runs_agent_loop_and_parses_json_reply() -> None:
         loop_factory=loop_factory.factory,
         ollama_connection=FakeOllamaConnection(),
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     result = asyncio.run(
         agent.run_task(
@@ -90,7 +90,7 @@ def test_wikipedia_domain_agent_rejects_non_json_agent_reply() -> None:
         loop_factory=FakeLoopFactory("to nie jest json").factory,
         ollama_connection=FakeOllamaConnection(),
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     result = asyncio.run(
         agent.run_task(
@@ -257,7 +257,7 @@ def test_wikipedia_domain_agent_asks_for_missing_topic_from_model() -> None:
         ).factory,
         ollama_connection=FakeOllamaConnection(),
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     result = asyncio.run(
         agent.run_task(

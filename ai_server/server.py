@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 
@@ -10,6 +11,8 @@ from aiohttp import web
 
 from ai_server.agent import create_agent
 from ai_server.config import Config, LOG_LEVELS, load_config_from_yaml
+from ai_server.conversations.bridge import FatalTerminationController
+from ai_server.conversations.context_provider import ConfigContextProvider
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
 from ai_server.microphones.manager import init_mics
 from ai_server.user_settings import create_user_settings_provider
@@ -71,6 +74,7 @@ async def run_server(config: Config, ollama_url: str) -> None:
     runner = None
     microphone_manager = None
     home_assistant_connection = None
+    fatal_termination = _ProcessFatalTerminationController()
 
     try:
         home_assistant_connection = create_home_assistant_connection(config)
@@ -80,6 +84,7 @@ async def run_server(config: Config, ollama_url: str) -> None:
             home_assistant_connection=home_assistant_connection,
             fallback_settings=config.users,
         )
+        context_provider = await _build_context_snapshot(config, user_settings_provider)
 
         agent = await create_agent(
             config.agent,
@@ -98,11 +103,17 @@ async def run_server(config: Config, ollama_url: str) -> None:
             config.speaker_recognition,
             agent,
             user_settings=config.users,
-            user_settings_provider=user_settings_provider,
+            context_provider=context_provider,
+            fatal_termination=fatal_termination,
             processing_update_spoken_cues=config.processing_updates.spoken_cues,
             open_mic_wake_phrase=config.microphone_defaults.open_mic_wake_phrase,
         )
-        app = create_app(config, agent, user_settings_provider=user_settings_provider)
+        app = create_app(
+            config,
+            agent,
+            context_provider=context_provider,
+            fatal_termination=fatal_termination,
+        )
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
@@ -116,23 +127,66 @@ async def run_server(config: Config, ollama_url: str) -> None:
         )
 
         stop_event = asyncio.Event()
+        shutdown_started = False
         loop = asyncio.get_running_loop()
+
+        def request_shutdown() -> None:
+            nonlocal shutdown_started
+            if shutdown_started:
+                fatal_termination.hard_exit("second signal during shutdown")
+            shutdown_started = True
+            stop_event.set()
+
         for signame in ("SIGINT", "SIGTERM"):
             try:
-                loop.add_signal_handler(getattr(signal, signame), stop_event.set)
+                loop.add_signal_handler(getattr(signal, signame), request_shutdown)
             except NotImplementedError:
                 pass
 
         await stop_event.wait()
     finally:
-        if microphone_manager is not None:
-            await microphone_manager.close()
-        if runner is not None:
-            await runner.cleanup()
-        if agent is not None:
-            await agent.close()
-        if home_assistant_connection is not None:
-            await home_assistant_connection.close()
+        try:
+            await asyncio.wait_for(
+                _close_runtime(
+                    microphone_manager=microphone_manager,
+                    runner=runner,
+                    agent=agent,
+                    home_assistant_connection=home_assistant_connection,
+                ),
+                timeout=config.shutdown.grace_period_seconds,
+            )
+        except asyncio.TimeoutError:
+            fatal_termination.hard_exit("shutdown grace period exceeded")
+
+
+async def _build_context_snapshot(config: Config, user_settings_provider) -> ConfigContextProvider:
+    users = {}
+    for user in config.users:
+        users[user] = await user_settings_provider.settings_for_user(user)
+    return ConfigContextProvider(users)
+
+
+async def _close_runtime(*, microphone_manager, runner, agent, home_assistant_connection) -> None:
+    input_closers = []
+    if microphone_manager is not None:
+        input_closers.append(microphone_manager.close())
+    if runner is not None:
+        input_closers.append(runner.cleanup())
+    if input_closers:
+        await asyncio.gather(*input_closers)
+    if agent is not None:
+        await agent.close()
+    if home_assistant_connection is not None:
+        await home_assistant_connection.close()
+
+
+class _ProcessFatalTerminationController(FatalTerminationController):
+    async def terminate(self, detail: str):
+        self.hard_exit(detail)
+
+    def hard_exit(self, detail: str) -> None:
+        logging.getLogger(f"{__name__}.server").critical("fatal process termination detail=%s", detail)
+        os._exit(1)
 
 
 def create_home_assistant_connection(config: Config) -> HomeAssistantConnection | None:

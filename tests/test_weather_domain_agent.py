@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from conftest import agent_context
 from ai_server.agent_loop import AgentReply
 from ai_server.domain_agents.weather import (
     CurrentWeather,
@@ -30,7 +31,6 @@ from ai_server.domain_agents.weather.formatting import format_current_weather
 from ai_server.domain_agents.weather.local_cache import LOCAL_FORECAST_REQUESTS, WeatherLocalCache
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider, _station_slug
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
-from ai_server.interfaces import Conversation
 from ai_server.orchestrator.known_utterances import collect_known_utterance_tasks, known_utterance_task
 from ai_server.utils import JsonFileStore
 
@@ -446,7 +446,7 @@ def test_weather_domain_agent_fast_lane_uses_local_cache() -> None:
 
     result = asyncio.run(
         agent.run_task(
-            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
+            agent_context(conversation_id="c1", attributes={"medium": "voice"}),
             {"id": "t1", "domain": "weather", "command": {"tool": "get_weather_now", "query": "Pogoda?"}},
             {},
         )
@@ -471,7 +471,7 @@ def test_weather_domain_agent_fast_lane_returns_astronomy_without_agent_loop() -
 
     result = asyncio.run(
         agent.run_task(
-            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
+            agent_context(conversation_id="c1", attributes={"medium": "voice"}),
             {"id": "t1", "domain": "weather", "command": {"query": "o której dzisiaj zachód słońca."}},
             {},
         )
@@ -512,7 +512,7 @@ def test_weather_domain_agent_formats_simple_current_weather() -> None:
 
     result = asyncio.run(
         agent.run_task(
-            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
+            agent_context(conversation_id="c1", attributes={"medium": "voice"}),
             {"id": "t1", "domain": "weather", "command": {"tool": "get_weather_now", "query": "Pogoda?"}},
             {},
         )
@@ -555,7 +555,7 @@ def test_weather_domain_agent_runs_agent_loop_for_non_fast_lane_query() -> None:
 
     result = asyncio.run(
         agent.run_task(
-            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
+            agent_context(conversation_id="c1", attributes={"medium": "voice"}),
             {
                 "id": "t1",
                 "domain": "weather",
@@ -608,7 +608,7 @@ def test_weather_domain_agent_removes_celsius_degree_symbol_from_agent_loop_repl
 
     result = asyncio.run(
         agent.run_task(
-            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
+            agent_context(conversation_id="c1", attributes={"medium": "voice"}),
             {"id": "t1", "domain": "weather", "command": {"query": "Jaka pogoda w Gdańsku?"}},
             {},
         )
@@ -632,7 +632,7 @@ def test_weather_domain_agent_rejects_non_json_agent_loop_reply() -> None:
 
     result = asyncio.run(
         agent.run_task(
-            Conversation(conversation_id="c1", attributes={"medium": "voice"}),
+            agent_context(conversation_id="c1", attributes={"medium": "voice"}),
             {"id": "t1", "domain": "weather", "command": {"query": "Czy brać parasol?"}},
             {},
         )

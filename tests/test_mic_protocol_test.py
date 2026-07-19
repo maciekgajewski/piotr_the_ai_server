@@ -7,7 +7,8 @@ import sys
 
 import pytest
 
-from ai_server.config import AgentConfig, Config, MicrophoneConfig, WebsocketConfig
+from ai_server.config import AgentConfig, Config, ConversationConfig, MicrophoneConfig
+from ai_server.config import ShutdownConfig, WebsocketConfig
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "tools" / "lib" / "mic_protocol_test.py"
@@ -59,6 +60,21 @@ def _pcm16_chunk(*samples: int) -> bytes:
 def _config(microphones: tuple[MicrophoneConfig, ...]) -> Config:
     return Config(
         agent=AgentConfig(type="interrogator", options={}),
-        websocket=WebsocketConfig(port=8765),
+        websocket=_websocket_config(8765),
+        conversation=ConversationConfig(5.0, 1.0),
+        shutdown=ShutdownConfig(15.0),
         microphones=microphones,
+    )
+
+
+def _websocket_config(port: int) -> WebsocketConfig:
+    return WebsocketConfig(
+        port=port,
+        max_connections=8,
+        capacity_retry_after_seconds=3,
+        follow_up_idle_lease_seconds=120.0,
+        max_frame_bytes=65536,
+        ingress_queue_capacity=16,
+        heartbeat_seconds=30.0,
+        handshake_timeout_seconds=10.0,
     )

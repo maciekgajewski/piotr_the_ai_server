@@ -5,8 +5,8 @@ import time
 
 from aiohttp import ClientSession
 
-from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import TextMessage
+from ai_server.conversations.agent_runtime import AgentChannel, ConversationAgent
+from ai_server.conversations.contexts import ConversationContext
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
 
 
@@ -23,7 +23,7 @@ GENERATION_OPTIONS = {
 GENERATION_FAILURE_MESSAGE = "Przepraszam, nie mogę teraz odpowiedzieć."
 
 
-class PoliteReplyAgent:
+class PoliteReplyAgent(ConversationAgent):
     def __init__(
         self,
         model: str,
@@ -50,31 +50,31 @@ class PoliteReplyAgent:
         except Exception as exc:
             raise OllamaError(f"failed to preload Ollama model {self._model}") from exc
 
-    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
-        logger = logging.getLogger(f"{__name__}.PoliteReplyAgent[{conversation.conversation_id}]")
-        async for message in endpoint.messages():
-            started_at = time.perf_counter()
+    async def run_agent_conversation(self, context: ConversationContext, channel: AgentChannel) -> None:
+        logger = logging.getLogger(f"{__name__}.PoliteReplyAgent[{context.conversation_id}]")
+        message = await channel.receive_user_message()
+        started_at = time.perf_counter()
 
-            try:
-                reply = await self._generate_reply(message.text)
-            except Exception:
-                elapsed_ms = _elapsed_ms(started_at)
-                logger.exception(
-                    "generation failed request_len=%s duration_ms=%s",
-                    len(message.text),
-                    elapsed_ms,
-                )
-                await endpoint.send_message(TextMessage(text=GENERATION_FAILURE_MESSAGE))
-                continue
-
+        try:
+            reply = await self._generate_reply(message.text)
+        except Exception:
             elapsed_ms = _elapsed_ms(started_at)
-            logger.debug(
-                "request_len=%s reply_len=%s duration_ms=%s",
+            logger.exception(
+                "generation failed request_len=%s duration_ms=%s",
                 len(message.text),
-                len(reply),
                 elapsed_ms,
             )
-            await endpoint.send_message(TextMessage(text=reply))
+            reply = GENERATION_FAILURE_MESSAGE
+
+        elapsed_ms = _elapsed_ms(started_at)
+        logger.debug(
+            "request_len=%s reply_len=%s duration_ms=%s",
+            len(message.text),
+            len(reply),
+            elapsed_ms,
+        )
+        await channel.send_message(reply)
+        await channel.end_conversation()
 
     async def close(self) -> None:
         if self._owns_ollama:

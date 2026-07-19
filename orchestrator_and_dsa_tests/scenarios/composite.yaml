@@ -246,15 +246,12 @@ cases:
     expected_replies:
       - contains_all: [klimatyz, Einstein, "1879"]
 
-  - id: followup_context
+  - id: clarification_followup
     messages:
-      - Włącz klimatyzację w salonie
-      - Super! I ustaw ją na 22 stopnie
+      - Ustaw klimatyzację w salonie
+      - Na 22 stopnie
     expected_tasks:
       - domain: home_assistant
-        command:
-          operation:
-            intent: turn_on
       - domain: home_assistant
         command:
           selection:
@@ -271,20 +268,14 @@ cases:
       - tool: modify_device
         arguments:
           device: Living room air conditioner
-      - tool: modify_device
-        arguments:
-          device: Living room air conditioner
           property_name: target_temperature
           value: 22
     expected_effects:
       - device: Living room air conditioner
-        property_name: hvac_mode
-        value: cool
-      - device: Living room air conditioner
         property_name: target_temperature
         value: 22
     expected_replies:
-      - contains_all: [klimatyz, salon]
+      - contains_all: [temperatur]
       - contains_all: ["22"]
     expected_planning_context:
       - message_index: 1

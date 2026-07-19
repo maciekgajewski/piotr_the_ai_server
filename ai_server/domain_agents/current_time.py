@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from aiohttp import ClientSession, ClientTimeout
 
 from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
-from ai_server.interfaces import Conversation
+from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.utils.text import normalize_text
 
 
@@ -162,7 +162,7 @@ class CurrentTimeDomainAgent:
 
     async def run_task(
         self,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         task: DomainTask,
         active_context: dict[str, Any],
     ) -> dict[str, Any]:
@@ -444,7 +444,7 @@ def _extract_location(query: str) -> str:
     return ""
 
 
-def _command_geo_location(command_location: str, conversation: Conversation) -> bool:
+def _command_geo_location(command_location: str, conversation: AgentExecutionContext) -> bool:
     if not command_location:
         return False
     if conversation.area and normalize_text(command_location) == normalize_text(conversation.area):

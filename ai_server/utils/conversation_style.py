@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ai_server.interfaces import ConversationMedium
+from ai_server.conversations.contexts import ConversationMedium
 
 
 def reply_style_instruction(medium: ConversationMedium) -> str:

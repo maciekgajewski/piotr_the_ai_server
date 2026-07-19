@@ -4,8 +4,9 @@ import datetime as dt
 import locale
 
 from ai_server.ai_tools.interfaces import BaseTool
-from ai_server.interfaces import Conversation, ConversationEndpoint
-from ai_server.messages import TextMessage
+from ai_server.conversations.agent_context import AgentExecutionContext
+from ai_server.conversations.agent_runtime import AgentChannel
+from ai_server.conversations.messages import UserMessage
 from ai_server.ollama_client import OllamaClient
 
 GENERATION_OPTIONS = {
@@ -27,7 +28,7 @@ class TimeTool(BaseTool):
         self._ollama_url = ollama_url
         self._ollama: OllamaClient | None = None
 
-    async def run(self, conversation: Conversation, endpoint: ConversationEndpoint, request: TextMessage) -> None:
+    async def run(self, conversation: AgentExecutionContext, channel: AgentChannel, request: UserMessage) -> None:
         current_locale = locale.setlocale(locale.LC_TIME)
 
         try:
@@ -65,7 +66,7 @@ class TimeTool(BaseTool):
             assert reply["role"] == "assistant"
             content = reply["content"]
 
-            await endpoint.send_message(TextMessage(text=content))
+            await channel.send_message(content)
         finally:
             locale.setlocale(locale.LC_TIME, current_locale)
 

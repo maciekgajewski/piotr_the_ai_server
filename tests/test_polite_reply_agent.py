@@ -9,9 +9,8 @@ from ai_server.agent.polite_reply import (
     POLITE_REPLY_PROMPT,
     PoliteReplyAgent,
 )
-from ai_server.interfaces import Conversation
-from ai_server.messages import TextMessage, text_message_to_events
-from conftest import FakeConversationEndpoint
+from conftest import TextMessage, text_message_to_events
+from conftest import FakeAgentChannel, agent_context, run_agent
 
 
 class FakeResponse:
@@ -61,11 +60,11 @@ def test_preload_posts_model_keep_alive() -> None:
 def test_polite_reply_sends_wrapped_prompt_and_returns_reply(caplog) -> None:
     session = FakeSession([FakeResponse({"response": "Dzień dobry!"})])
     agent = PoliteReplyAgent(model="qwen3:4b", session=session)
-    endpoint = FakeConversationEndpoint([TextMessage(text="siema")])
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
+    endpoint = FakeAgentChannel([TextMessage(text="siema")])
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
 
     with caplog.at_level(logging.DEBUG):
-        asyncio.run(agent.run_conversation(conversation, endpoint))
+        asyncio.run(run_agent(agent, conversation, endpoint))
 
     assert session.requests == [
         {
@@ -96,10 +95,10 @@ def test_polite_reply_sends_wrapped_prompt_and_returns_reply(caplog) -> None:
 def test_polite_reply_strips_thinking_block() -> None:
     session = FakeSession([FakeResponse({"response": "<think>sekret</think>\n\nDzień dobry!"})])
     agent = PoliteReplyAgent(model="qwen3:4b", session=session)
-    endpoint = FakeConversationEndpoint([TextMessage(text="siema")])
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
+    endpoint = FakeAgentChannel([TextMessage(text="siema")])
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
 
-    asyncio.run(agent.run_conversation(conversation, endpoint))
+    asyncio.run(run_agent(agent, conversation, endpoint))
 
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Dzień dobry!")))
 
@@ -107,11 +106,11 @@ def test_polite_reply_strips_thinking_block() -> None:
 def test_polite_reply_sends_generic_apology_on_ollama_error(caplog) -> None:
     session = FakeSession([FakeResponse({"error": "missing model"}, status=500)])
     agent = PoliteReplyAgent(model="qwen3:4b", session=session)
-    endpoint = FakeConversationEndpoint([TextMessage(text="tajna wiadomość")])
-    conversation = Conversation(conversation_id="conversation-2", attributes={"medium": "voice"})
+    endpoint = FakeAgentChannel([TextMessage(text="tajna wiadomość")])
+    conversation = agent_context(conversation_id="conversation-2", attributes={"medium": "voice"})
 
     with caplog.at_level(logging.DEBUG):
-        asyncio.run(agent.run_conversation(conversation, endpoint))
+        asyncio.run(run_agent(agent, conversation, endpoint))
 
     assert endpoint.sent == list(text_message_to_events(TextMessage(text=GENERATION_FAILURE_MESSAGE)))
     assert "generation failed request_len=15 duration_ms=" in caplog.text

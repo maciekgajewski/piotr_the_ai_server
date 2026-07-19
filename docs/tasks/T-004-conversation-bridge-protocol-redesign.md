@@ -3,17 +3,16 @@
 ## Status
 
 - **Authority:** Active design and implementation task
-- **Status:** Protocol suite approved; ready for implementation; implementation not started
+- **Status:** Atomic runtime cutover, independent closure review, and post-review behavioral suite complete; manual hardware verification pending
 - **Decision dates:** Initial architecture 2026-07-17; architecture review closed 2026-07-18; protocol suite approved 2026-07-19
 - **Audience:** Maintainers of agents, sessions, websocket inputs, microphone inputs, clients, and protocol tests
 - **Supersedes:** The conversation-core and websocket redesign scope in T-001
 - **Does not supersede:** T-002 or T-003; their microphone-driver fixes and verification remain valid
 
-This task records the approved architecture and the work required to make it
-normative and implemented. The Stage 1 core protocol, websocket binding,
-microphone mapping, and conformance catalogue are approved normative contracts.
-They define the implementation target but do not yet describe current runtime
-behavior. This task remains the active implementation plan.
+This task records the approved architecture, implemented atomic cutover, and
+remaining closure work. The core protocol, websocket binding, microphone
+mapping, and conformance catalogue are approved normative contracts and describe
+the current runtime. This task remains active until Gate D evidence is complete.
 
 The companion [illustrated design aid](T-004-agent-boundary-options.html) explains
 the approved architecture visually. It is informative, not normative.
@@ -1150,6 +1149,8 @@ requires a separate explicit design decision before changing the protocol.
 
 ### Stage 2: Add and test the new core without activating it
 
+**Completed as part of the single atomic implementation change on 2026-07-19.**
+
 This is an additive, runnable checkpoint. The current runtime remains entirely on
 the old protocol while the new core is built beside it. There is no adapter which
 translates or routes between the contracts.
@@ -1180,6 +1181,9 @@ Gate B reviews this additive core. Passing Gate B does not authorize a partial
 production migration.
 
 ### Stage 3: Atomic production cutover
+
+**Implemented on 2026-07-19; review findings and closure evidence remain in
+progress.**
 
 Agents, input bindings, clients, runtime construction, and legacy removal form
 one coherent cutover change. Work may be organized internally by the groups
@@ -1256,6 +1260,19 @@ between old and new contracts or require a compatibility facade.
    coherent runnable checkpoint.
 
 ### Stage 4: End-to-end verification and closure
+
+**In progress.** A test audit found one stale post-END unit-test assumption and
+material gaps between smoke coverage and the normative conformance catalogue.
+Two independent closure passes then found additional real boundary defects in
+Agent pre-accept failure, voice media commit ownership and timer origin,
+websocket registration/shutdown/task ownership, typed enums, and repository
+client arbitration. Those findings have been remediated with focused regression
+matrices. The current pre-closure-re-review tree passes 705 pytest cases,
+including real delayed repository websocket-client flow and
+graceful/deadline/second-signal subprocess checks. A clean independent closure
+re-review found no remaining issues. The post-review behavioral suite passed all
+45 scenarios with `qwen3:14b`, including both clarification-follow-up flows. The
+required one-device microphone/hardware checks remain before Gate D.
 
 1. Complete the conformance catalogue with test evidence for every requirement.
 2. Run focused core, agent, websocket, and microphone tests.

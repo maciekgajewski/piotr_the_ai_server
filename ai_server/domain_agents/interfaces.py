@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from ai_server.interfaces import Conversation
+from ai_server.conversations.agent_context import AgentExecutionContext
 
 
 DomainTask = dict[str, Any]
@@ -34,7 +34,7 @@ class DomainAgent(Protocol):
 
     async def run_task(
         self,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         task: DomainTask,
         active_context: dict[str, Any],
     ) -> dict[str, Any]:

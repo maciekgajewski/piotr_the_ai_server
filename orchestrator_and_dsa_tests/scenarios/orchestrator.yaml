@@ -174,23 +174,22 @@ cases:
     expected_replies:
       - contains_all: [klimatyz, Einstein, "1879"]
 
-  - id: ha_followup_context
+  - id: ha_clarification_followup
     messages:
-      - Włącz klimatyzację w salonie
-      - Super! I ustaw ją na 22 stopnie
+      - Ustaw klimatyzację w salonie
+      - Na 22 stopnie
     domain_results:
       home_assistant:
         t1:
-          status: ok
-          text: Włączono klimatyzację w salonie.
+          status: needs_clarification
+          text: Na jaką temperaturę mam ustawić klimatyzację w salonie?
+          needs_clarification: true
+          clarification_question: Na jaką temperaturę mam ustawić klimatyzację w salonie?
         t2:
           status: ok
           text: Ustawiono klimatyzację w salonie na 22 stopnie.
     expected_tasks:
       - domain: home_assistant
-        command:
-          operation:
-            intent: turn_on
       - domain: home_assistant
         command:
           operation:
@@ -204,9 +203,7 @@ cases:
                 area:
                   $any: [salon, living_room]
     expected_replies:
-      - contains_all: [klimatyz, salon]
+      - contains_all: [temperatur, salon]
       - contains_all: ["22"]
     expected_planning_context:
       - message_index: 1
-        salient_entities:
-          - climate.living_room

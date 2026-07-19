@@ -27,7 +27,7 @@ from ai_server.domain_agents.media_player.parser import (
     parse_media_command,
 )
 from ai_server.home_assistant import HomeAssistantConnection
-from ai_server.interfaces import Conversation
+from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient
 from ai_server.utils.conversation_style import reply_style_instruction
 from ai_server.utils.processing import ProcessingUpdateCallback, await_with_processing_updates
@@ -168,7 +168,7 @@ class MediaPlayerDomainAgent:
 
     async def run_task(
         self,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         task: DomainTask,
         active_context: dict[str, Any],
     ) -> dict[str, Any]:
@@ -223,7 +223,7 @@ class MediaPlayerDomainAgent:
         if self._owns_ollama:
             await self._ollama.close()
 
-    async def _start_last(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
+    async def _start_last(self, conversation: AgentExecutionContext, parsed: ParsedMediaCommand) -> dict[str, Any]:
         targets = await self._targets(conversation, parsed)
         if isinstance(targets, dict):
             return targets
@@ -334,7 +334,7 @@ class MediaPlayerDomainAgent:
             await self._shuffle_targets(playback_targets, conversation_id=conversation.conversation_id)
         return _ok_result(format_started(len(targets), media.name), targets)
 
-    async def _stop(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
+    async def _stop(self, conversation: AgentExecutionContext, parsed: ParsedMediaCommand) -> dict[str, Any]:
         targets = await self._targets(conversation, parsed)
         if isinstance(targets, dict):
             return targets
@@ -354,7 +354,7 @@ class MediaPlayerDomainAgent:
         )
         return _ok_result(format_stopped(len(targets)), targets)
 
-    async def _volume_delta(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
+    async def _volume_delta(self, conversation: AgentExecutionContext, parsed: ParsedMediaCommand) -> dict[str, Any]:
         targets = await self._targets(conversation, parsed, allow_playing_fallback=True)
         if isinstance(targets, dict):
             return targets
@@ -378,7 +378,7 @@ class MediaPlayerDomainAgent:
         )
         return _ok_result(f"Głośność: {format_volume_level(level)}.", targets)
 
-    async def _set_volume(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
+    async def _set_volume(self, conversation: AgentExecutionContext, parsed: ParsedMediaCommand) -> dict[str, Any]:
         if parsed.volume_level is None:
             return _clarification_result("Na jaką głośność mam ustawić muzykę?")
         targets = await self._targets(conversation, parsed, allow_playing_fallback=True)
@@ -402,7 +402,7 @@ class MediaPlayerDomainAgent:
         )
         return _ok_result(f"Ustawiłem głośność na {format_volume_level(parsed.volume_level)}.", targets)
 
-    async def _play_media(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
+    async def _play_media(self, conversation: AgentExecutionContext, parsed: ParsedMediaCommand) -> dict[str, Any]:
         if not parsed.query:
             return _clarification_result("Co mam włączyć?")
         targets = await self._targets(conversation, parsed)
@@ -465,7 +465,7 @@ class MediaPlayerDomainAgent:
             )
         return _failed_result("Nie udało się włączyć muzyki.")
 
-    async def _now_playing(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
+    async def _now_playing(self, conversation: AgentExecutionContext, parsed: ParsedMediaCommand) -> dict[str, Any]:
         targets = await self._targets(conversation, parsed, allow_playing_fallback=True)
         if isinstance(targets, dict):
             return targets
@@ -487,7 +487,7 @@ class MediaPlayerDomainAgent:
         )
         return _ok_result(format_now_playing(result), targets)
 
-    async def _transfer_playback(self, conversation: Conversation, parsed: ParsedMediaCommand) -> dict[str, Any]:
+    async def _transfer_playback(self, conversation: AgentExecutionContext, parsed: ParsedMediaCommand) -> dict[str, Any]:
         targets = await self._targets(conversation, parsed)
         if isinstance(targets, dict):
             return targets
@@ -505,7 +505,7 @@ class MediaPlayerDomainAgent:
 
     async def _playback_targets_for_start(
         self,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         targets: list[MediaTarget],
     ) -> list[MediaTarget] | dict[str, Any]:
         desired_targets = _dedupe_targets(targets)
@@ -552,7 +552,7 @@ class MediaPlayerDomainAgent:
 
     async def _targets(
         self,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         parsed: ParsedMediaCommand,
         *,
         allow_playing_fallback: bool = False,
@@ -595,7 +595,7 @@ class MediaPlayerDomainAgent:
             speakers_only=True,
         )
 
-    async def _search_media(self, conversation: Conversation, parsed: ParsedMediaCommand) -> list[MediaSearchItem]:
+    async def _search_media(self, conversation: AgentExecutionContext, parsed: ParsedMediaCommand) -> list[MediaSearchItem]:
         if parsed.query == "Liked Songs":
             self._logger.info(
                 "media_player search alias conversation_id=%s query=%r media=liked_songs",
@@ -663,7 +663,7 @@ class MediaPlayerDomainAgent:
 
     async def _resolve_media_query(
         self,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         parsed: ParsedMediaCommand,
         aliases: list[dict[str, str]],
     ) -> dict[str, Any]:
@@ -735,7 +735,7 @@ class MediaPlayerDomainAgent:
 
     async def _relocate_current_queue(
         self,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         targets: list[MediaTarget],
         *,
         replace_outputs: bool = False,
@@ -978,7 +978,7 @@ class MediaPlayerDomainAgent:
             _target_ids_text(targets),
         )
 
-    def _remember_recent_media(self, conversation: Conversation, media: MediaSearchItem) -> None:
+    def _remember_recent_media(self, conversation: AgentExecutionContext, media: MediaSearchItem) -> None:
         self._recent_media_by_user[_conversation_user_key(conversation)] = media
         self._logger.info(
             "media_player recent_media remembered conversation_id=%s user=%s media=%s",
@@ -987,14 +987,14 @@ class MediaPlayerDomainAgent:
             _media_text(media),
         )
 
-    def _recent_media(self, conversation: Conversation) -> MediaSearchItem | None:
+    def _recent_media(self, conversation: AgentExecutionContext) -> MediaSearchItem | None:
         return self._recent_media_by_user.get(_conversation_user_key(conversation))
 
     async def _complex_command(
         self,
         *,
         command: dict[str, Any],
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         active_context: dict[str, Any],
     ) -> ParsedMediaCommand:
         payload = {
@@ -1201,7 +1201,7 @@ def _prefer_direct_media_targets(targets: list[MediaTarget]) -> list[MediaTarget
     return _prefer_targets_by_area(targets, prefer_music_assistant=False)
 
 
-def _preferred_group_leader(conversation: Conversation, targets: list[MediaTarget]) -> MediaTarget:
+def _preferred_group_leader(conversation: AgentExecutionContext, targets: list[MediaTarget]) -> MediaTarget:
     if conversation.area:
         normalized_area = ascii_fold(conversation.area).lower()
         for target in targets:
@@ -1225,7 +1225,7 @@ def _prefer_targets_by_area(targets: list[MediaTarget], *, prefer_music_assistan
     return _dedupe_targets(preferred)
 
 
-def _conversation_media_setting(conversation: Conversation, key: str, default: str) -> str:
+def _conversation_media_setting(conversation: AgentExecutionContext, key: str, default: str) -> str:
     media_settings = conversation.user_settings.get("media")
     if not isinstance(media_settings, dict):
         return default
@@ -1233,7 +1233,7 @@ def _conversation_media_setting(conversation: Conversation, key: str, default: s
     return value if isinstance(value, str) and value else default
 
 
-def _conversation_media_aliases(conversation: Conversation) -> list[dict[str, str]]:
+def _conversation_media_aliases(conversation: AgentExecutionContext) -> list[dict[str, str]]:
     media_settings = conversation.user_settings.get("media")
     if not isinstance(media_settings, dict):
         return []
@@ -1251,7 +1251,7 @@ def _conversation_media_aliases(conversation: Conversation) -> list[dict[str, st
     return aliases
 
 
-def _media_configuration_result(conversation: Conversation, command: dict[str, Any]) -> dict[str, Any]:
+def _media_configuration_result(conversation: AgentExecutionContext, command: dict[str, Any]) -> dict[str, Any]:
     media_settings = conversation.user_settings.get("media")
     media_settings = media_settings if isinstance(media_settings, dict) else {}
     scope = _string_or_empty(command.get("configuration_scope"))
@@ -1321,7 +1321,7 @@ def _string_or_empty(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _conversation_user_key(conversation: Conversation) -> str:
+def _conversation_user_key(conversation: AgentExecutionContext) -> str:
     return conversation.user or "__default__"
 
 

@@ -2,13 +2,13 @@
 
 ## Status and scope
 
-- **Authority:** Normative mapping; approved for T-004 implementation
+- **Authority:** Normative mapping; implemented by T-004
 - **Audience:** Maintainers of MicrophoneManager, voice InputSession adaptation, STT/TTS integration, and microphone Conversation tests
 - **Read when:** Changing accepted-speech creation, assistant rendering, follow-up, cancellation, recovery, or re-arm behavior
 - **Approval state:** Approved by Captain on 2026-07-19
 
 This document maps the normative
-[Microphone Protocol](microphone-protocol.md) to the draft
+[Microphone Protocol](microphone-protocol.md) to the normative
 [AI Server Conversation Bridge Protocol](ai-server-conversation-protocol.md).
 It preserves the manager-to-driver event vocabulary and all T-002/T-003
 ordering, correlation, recovery, reason-string, and re-arm requirements.
@@ -379,16 +379,16 @@ accepted final STT emits one UserMessage
 
 ## Implementation and conformance references
 
-Planned implementation owners:
+Implementation owners:
 
-- replacement for `ai_server/microphones/agent_endpoint.py` implementing the
-  sealed voice InputSession/InputConversation;
+- `ai_server/microphones/conversation_adapter.py` implementing the sealed voice
+  InputSession/InputConversation and assistant sink;
 - `ai_server/microphones/manager.py` for acceptance, presentation, timing,
   rendering, cleanup, and recovery;
 - existing `ai_server/microphones/interfaces.py`, `messages.py`, `protocol.py`,
   `stt.py`, and `tts.py` behind their current abstract boundaries.
 
-Planned tests are indexed by the
+Conformance tests are indexed by the
 [Protocol Conformance Catalogue](protocol-conformance-catalogue.md), including
 accepted-STT creation, exact follow-up boundaries, bounded renderer pushback,
 sink commit races, cancellation, recovery, T-002/T-003 regressions, and one-device

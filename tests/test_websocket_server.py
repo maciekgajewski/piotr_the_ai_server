@@ -1,1229 +1,1292 @@
 import asyncio
+import logging
 import socket
-from dataclasses import dataclass
-from unittest.mock import ANY
+from types import SimpleNamespace
 
-from aiohttp import ClientError, ClientSession, WSCloseCode, WSMsgType
-from aiohttp import web
+from aiohttp import ClientConnectionResetError, ClientSession, WSServerHandshakeError, WSMsgType, web
 import pytest
 
-from ai_server import batch_ws_client
 from ai_server.agent.echo import EchoAgent
 from ai_server.agent.interrogator import InterrogatorAgent
-from ai_server import chat_client
-from ai_server.batch_ws_client import BatchWsClientOptions, run_batch_ws_client
-from ai_server.chat_client import ChatClientOptions
-from ai_server.config import AgentConfig, Config, WebsocketConfig
-from ai_server.interfaces import Conversation, ConversationEndpoint, ConversationMedium
-from ai_server.messages import ConversationEnded, MessageBegin, MessageEnd, MessageFragment, NewConversation, ProcessingUpdate, FollowUpRequested
-from ai_server.messages import SessionAttributes, SessionRejected, TextMessage, ReadyForConversation, endpoint_event_from_json, endpoint_event_to_json
-from ai_server.messages import session_event_from_json, session_event_to_json, text_message_to_events
+from ai_server.batch_ws_client import BatchWsClientOptions, _wait_for_server_or_follow_up_timeout
+from ai_server.batch_ws_client import parse_args as parse_batch_args, run_batch_ws_client
+from ai_server.chat_client import parse_args as parse_chat_args
+from ai_server.chat_client import _read_next_interactive_text
+from ai_server.config import AgentConfig, Config, ConversationConfig, ShutdownConfig, WebsocketConfig
+from ai_server.conversations.agent_runtime import AgentChannel, ConversationAgent
+from ai_server.conversations.contexts import ConversationContext, ConversationMedium
+from ai_server.conversations.contexts import InputConversationContext, InputSessionContext
+from ai_server.conversations.messages import AssistantAbortReason, FollowUpRequestCommitted, InputSessionClosed
+from ai_server.conversations.messages import UserMessage
+from ai_server.websocket_messages import AssistantMessageAborted, AssistantMessageCompleted, AssistantMessageStarted
+from ai_server.websocket_messages import AssistantTextChunk, CancelConversation, FollowUpMessage
+from ai_server.websocket_messages import ConversationEnded, ConversationReady, ConversationStarted, FollowUpRequested
+from ai_server.websocket_messages import FollowUpTimedOut as WsFollowUpTimedOut
+from ai_server.websocket_messages import ProtocolRejected, ProtocolRejectionCode, SessionAccepted, SessionStart
+from ai_server.websocket_messages import StartConversation, client_event_to_json, server_event_from_json
+from ai_server.websocket_messages import server_event_to_json
+from ai_server.websocket_server import WebsocketInputSession, WebsocketState, _WebsocketAssistantSink
+from ai_server.websocket_server import _WebsocketInputConversation
 from ai_server.websocket_server import create_app
-from ai_server.ws_client_common import WebsocketSessionRejected, handle_websocket_message
+from ai_server.ws_client_common import WaitState, validate_follow_up_timeout
 
 
-class FakeWebsocket:
-    def __init__(self) -> None:
-        self.close_calls = []
-
-    async def close(self, code, message) -> None:
-        self.close_calls.append((code, message))
+def _unused_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
-@dataclass(frozen=True)
-class FakeWebsocketMessage:
-    data: str
-    type: WSMsgType = WSMsgType.TEXT
+def _config(
+    port: int,
+    *,
+    max_connections: int = 4,
+    lease: float = 1.0,
+    handshake: float = 1.0,
+    max_frame_bytes: int = 4096,
+    ingress_queue_capacity: int = 4,
+    heartbeat: float = 1.0,
+) -> Config:
+    return Config(
+        agent=AgentConfig("echo", {}),
+        websocket=WebsocketConfig(
+            port=port,
+            max_connections=max_connections,
+            capacity_retry_after_seconds=7,
+            follow_up_idle_lease_seconds=lease,
+            max_frame_bytes=max_frame_bytes,
+            ingress_queue_capacity=ingress_queue_capacity,
+            heartbeat_seconds=heartbeat,
+            handshake_timeout_seconds=handshake,
+            host="127.0.0.1",
+        ),
+        conversation=ConversationConfig(1.0, 0.1),
+        shutdown=ShutdownConfig(2.0),
+    )
 
 
-class SingleReplyAgent:
-    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
-        async for message in endpoint.messages():
-            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
-
-    async def close(self) -> None:
-        pass
-
-
-class CapturingAgent:
-    def __init__(self) -> None:
-        self.conversations: list[Conversation] = []
-
-    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
-        self.conversations.append(conversation)
-        async for message in endpoint.messages():
-            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
-
-    async def close(self) -> None:
-        pass
+async def _start(config: Config, agent):
+    runner = web.AppRunner(create_app(config, agent))
+    await runner.setup()
+    site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
+    await site.start()
+    return runner
 
 
-class FollowUpAgent:
-    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
-        async for message in endpoint.messages():
-            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
-            await endpoint.request_follow_up()
-
-    async def close(self) -> None:
-        pass
+async def _receive(websocket):
+    message = await websocket.receive(timeout=2)
+    assert message.type is WSMsgType.TEXT, message
+    return server_event_from_json(message.data)
 
 
-class ProcessingUpdateAgent:
-    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
-        async for message in endpoint.messages():
-            await endpoint.send(ProcessingUpdate())
-            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
-
-    async def close(self) -> None:
-        pass
-
-
-class SlowReplyAgent:
-    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
-        async for message in endpoint.messages():
-            await asyncio.sleep(0.2)
-            await endpoint.send_message(TextMessage(text=f"reply:{message.text}"))
-
-    async def close(self) -> None:
-        pass
-
-
-class FakeUserSettingsProvider:
-    def __init__(self) -> None:
-        self.users = []
-
-    async def settings_for_user(self, user: str | None) -> dict:
-        self.users.append(user)
-        return {"media": {"playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"}}}
-
-    async def user_exists(self, user: str) -> bool:
-        return user.casefold() == "maciek"
-
-
-def test_websocket_shutdown_closes_active_websockets() -> None:
+def test_one_turn_websocket_sequence_uses_clean_break_vocabulary() -> None:
     async def run() -> None:
-        app = create_app(
-            Config(
-                agent=AgentConfig(type="echo", options={}),
-                websocket=WebsocketConfig(port=2137),
-            ),
-            EchoAgent(),
-        )
-        websocket = FakeWebsocket()
-        app["websockets"].add(websocket)
-
-        await app.on_shutdown[0](app)
-
-        assert websocket.close_calls == [(WSCloseCode.GOING_AWAY, b"server shutdown")]
-
-    asyncio.run(run())
-
-
-def test_websocket_applies_user_settings_from_provider_to_conversation() -> None:
-    async def run() -> None:
-        port = _unused_port()
-        agent = CapturingAgent()
-        provider = FakeUserSettingsProvider()
-        config = Config(
-            agent=AgentConfig(type="capturing", options={}),
-            websocket=WebsocketConfig(host="127.0.0.1", port=port),
-        )
-        app = create_app(config, agent, user_settings_provider=provider)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
+        config = _config(_unused_port())
+        runner = await _start(config, EchoAgent())
         try:
-            async with ClientSession() as session:
-                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text", "user": "Maciek"})))
-
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
-
-                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
-                    for event in text_message_to_events(TextMessage(text="hello")):
-                        await websocket.send_str(endpoint_event_to_json(event))
-
-                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
-                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
-                    assert await _receive_session_event(websocket) == ConversationEnded(reason="completed")
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
-        finally:
-            await runner.cleanup()
-
-        assert provider.users == ["Maciek"]
-        assert agent.conversations[0].medium is ConversationMedium.TEXT
-        assert agent.conversations[0].user_settings == {
-            "media": {"playlist_aliases": {"Muzyka do pracy": "Post Rock Focus"}}
-        }
-
-    asyncio.run(run())
-
-
-def test_websocket_forwards_processing_update() -> None:
-    async def run() -> None:
-        port = _unused_port()
-        config = Config(
-            agent=AgentConfig(type="processing", options={}),
-            websocket=WebsocketConfig(host="127.0.0.1", port=port),
-        )
-        app = create_app(config, ProcessingUpdateAgent())
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
-        try:
-            async with ClientSession() as session:
-                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
-
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
-
-                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
-                    for event in text_message_to_events(TextMessage(text="hello")):
-                        await websocket.send_str(endpoint_event_to_json(event))
-
-                    assert await _receive_session_event(websocket) == ProcessingUpdate()
-                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
-                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
+            async with ClientSession() as client:
+                async with client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat") as websocket:
+                    await websocket.send_str(client_event_to_json(SessionStart(area="office")))
+                    assert await _receive(websocket) == SessionAccepted()
+                    assert await _receive(websocket) == ConversationReady()
+                    await websocket.send_str(client_event_to_json(StartConversation("hello")))
+                    assert isinstance(await _receive(websocket), ConversationStarted)
+                    started = await _receive(websocket)
+                    assert isinstance(started, AssistantMessageStarted)
+                    assert await _receive(websocket) == AssistantTextChunk(started.message_id, "hello")
+                    assert await _receive(websocket) == AssistantMessageCompleted(started.message_id)
+                    assert await _receive(websocket) == ConversationEnded("completed")
+                    assert await _receive(websocket) == ConversationReady()
         finally:
             await runner.cleanup()
 
     asyncio.run(run())
 
 
-def test_websocket_stays_open_during_slow_agent_with_client_heartbeat() -> None:
+def test_one_input_session_runs_sequential_conversations_without_overlap() -> None:
+    async def consume_echo_turn(websocket, text: str) -> str:
+        await websocket.send_str(client_event_to_json(StartConversation(text)))
+        started = await _receive(websocket)
+        assert isinstance(started, ConversationStarted)
+        stream = await _receive(websocket)
+        assert isinstance(stream, AssistantMessageStarted)
+        assert await _receive(websocket) == AssistantTextChunk(stream.message_id, text)
+        assert await _receive(websocket) == AssistantMessageCompleted(stream.message_id)
+        assert await _receive(websocket) == ConversationEnded("completed")
+        assert await _receive(websocket) == ConversationReady()
+        return started.conversation_id
+
     async def run() -> None:
-        port = _unused_port()
-        config = Config(
-            agent=AgentConfig(type="slow_reply", options={}),
-            websocket=WebsocketConfig(host="127.0.0.1", port=port),
-        )
-        app = create_app(config, SlowReplyAgent())
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
+        config = _config(_unused_port())
+        runner = await _start(config, EchoAgent())
         try:
-            async with ClientSession() as session:
-                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat", heartbeat=0.05) as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
-
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
-
-                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
-                    for event in text_message_to_events(TextMessage(text="hello")):
-                        await websocket.send_str(endpoint_event_to_json(event))
-
-                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
-                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
-                    assert await _receive_session_event(websocket) == ConversationEnded(reason="completed")
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
+            async with ClientSession() as client:
+                async with client.ws_connect(
+                    f"ws://127.0.0.1:{config.websocket.port}/chat"
+                ) as websocket:
+                    await websocket.send_str(client_event_to_json(SessionStart()))
+                    assert await _receive(websocket) == SessionAccepted()
+                    assert await _receive(websocket) == ConversationReady()
+                    first = await consume_echo_turn(websocket, "first")
+                    second = await consume_echo_turn(websocket, "second")
+                    assert first != second
         finally:
             await runner.cleanup()
-
-    asyncio.run(run())
-
-
-def test_websocket_drops_empty_message_before_agent() -> None:
-    async def run() -> None:
-        port = _unused_port()
-        agent = CapturingAgent()
-        config = Config(
-            agent=AgentConfig(type="capturing", options={}),
-            websocket=WebsocketConfig(host="127.0.0.1", port=port),
-        )
-        app = create_app(config, agent)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
-        try:
-            async with ClientSession() as session:
-                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
-
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
-
-                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
-                    await websocket.send_str(endpoint_event_to_json(MessageBegin(message_id="user-empty")))
-                    await websocket.send_str(endpoint_event_to_json(MessageFragment(message_id="user-empty", text="  ")))
-                    await websocket.send_str(endpoint_event_to_json(MessageEnd(message_id="user-empty")))
-
-                    assert await _receive_session_event(websocket) == ConversationEnded(reason="completed")
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
-        finally:
-            await runner.cleanup()
-
-        assert len(agent.conversations) == 1
-
-    asyncio.run(run())
-
-
-def test_status_reports_user_settings_provider_without_private_settings() -> None:
-    class StatusProvider(FakeUserSettingsProvider):
-        def status(self) -> dict:
-            return {
-                "mode": "home_assistant",
-                "mapped_users": ["Maciek"],
-                "last_success_by_user": {"Maciek": "2026-06-18T00:00:00+00:00"},
-                "failed_users": [],
-                "unmapped_users": [],
-            }
-
-    async def run() -> dict:
-        port = _unused_port()
-        config = Config(
-            agent=AgentConfig(type="single_reply", options={}),
-            websocket=WebsocketConfig(host="127.0.0.1", port=port),
-        )
-        app = create_app(config, SingleReplyAgent(), user_settings_provider=StatusProvider())
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
-        try:
-            async with ClientSession() as session:
-                async with session.get(f"http://127.0.0.1:{port}/api/status") as response:
-                    assert response.status == 200
-                    return await response.json()
-        finally:
-            await runner.cleanup()
-
-    result = asyncio.run(run())
-
-    assert result["user_settings"] == {
-        "mode": "home_assistant",
-        "mapped_users": ["Maciek"],
-        "last_success_by_user": {"Maciek": "2026-06-18T00:00:00+00:00"},
-        "failed_users": [],
-        "unmapped_users": [],
-    }
-    assert "playlist_aliases" not in str(result)
-
-
-def test_batch_websocket_client_drives_interrogator_flow(capsys) -> None:
-    async def run() -> None:
-        port = _unused_port()
-        config = Config(
-            agent=AgentConfig(type="interrogator", options={}),
-            websocket=WebsocketConfig(host="127.0.0.1", port=port),
-            users={"Maciek": {}},
-        )
-        app = create_app(config, InterrogatorAgent())
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
-        try:
-            await asyncio.wait_for(
-                run_batch_ws_client(
-                    BatchWsClientOptions(
-                        url=f"ws://127.0.0.1:{port}/chat",
-                        user="Maciek",
-                        area="office",
-                        messages=("cześć", "koniec"),
-                    )
-                ),
-                timeout=2,
-            )
-        finally:
-            await runner.cleanup()
-
-    asyncio.run(run())
-
-    output = capsys.readouterr().out
-    assert "Twoja wiadomość numer 1 to: cześć\n" in output
-    assert "Koniec konwersacji, wysłałeś 2 wiadomości.\n" in output
-
-
-def test_websocket_returns_to_new_conversation_without_requested_follow_up() -> None:
-    async def run() -> None:
-        port = _unused_port()
-        config = Config(
-            agent=AgentConfig(type="single_reply", options={}),
-            websocket=WebsocketConfig(host="127.0.0.1", port=port),
-        )
-        app = create_app(config, SingleReplyAgent())
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
-        try:
-            async with ClientSession() as session:
-                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
-
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
-
-                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
-                    for event in text_message_to_events(TextMessage(text="hello")):
-                        await websocket.send_str(endpoint_event_to_json(event))
-
-                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
-                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
-                    assert await _receive_session_event(websocket) == ConversationEnded(reason="completed")
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
-        finally:
-            await runner.cleanup()
-
-    asyncio.run(run())
-
-
-def test_websocket_applies_explicit_user_and_user_settings_to_conversation() -> None:
-    async def run() -> None:
-        port = _unused_port()
-        agent = CapturingAgent()
-        config = Config(
-            agent=AgentConfig(type="capturing", options={}),
-            websocket=WebsocketConfig(host="127.0.0.1", port=port),
-            users={"Maciek": {"media": {"liked_songs_media_id": "library://playlist/7"}}},
-        )
-        app = create_app(config, agent)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
-        try:
-            async with ClientSession() as session:
-                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text", "user": "Maciek"})))
-
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
-
-                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
-                    for event in text_message_to_events(TextMessage(text="hello")):
-                        await websocket.send_str(endpoint_event_to_json(event))
-
-                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
-                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
-                    assert await _receive_session_event(websocket) == ConversationEnded(reason="completed")
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
-        finally:
-            await runner.cleanup()
-
-        assert len(agent.conversations) == 1
-        assert agent.conversations[0].user == "Maciek"
-        assert agent.conversations[0].user_settings == {
-            "media": {"liked_songs_media_id": "library://playlist/7"}
-        }
 
     asyncio.run(run())
 
 
 @pytest.mark.parametrize(
-    ("attributes", "reason"),
+    "payload",
     [
-        ({}, "conversation.medium must be one of: voice, text; got None"),
-        ({"medium": "phone"}, "conversation.medium must be one of: voice, text; got 'phone'"),
+        '{"type":"session_attributes","attributes":{"medium":"text"}}',
+        '{"type":"new_conversation","attributes":{}}',
+        '{"type":"message_begin","message_id":"m1"}',
     ],
 )
-def test_websocket_rejects_missing_or_invalid_medium(attributes, reason) -> None:
+def test_old_vocabulary_is_rejected(payload: str) -> None:
     async def run() -> None:
-        port = _unused_port()
-        agent = CapturingAgent()
-        config = Config(
-            agent=AgentConfig(type="capturing", options={}),
-            websocket=WebsocketConfig(host="127.0.0.1", port=port),
-        )
-        app = create_app(config, agent)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
+        config = _config(_unused_port())
+        runner = await _start(config, EchoAgent())
         try:
-            async with ClientSession() as session:
-                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes=attributes)))
-                    assert await _receive_session_event(websocket) == SessionRejected(reason=reason)
-                    message = await websocket.receive()
-
-                    assert message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING)
-                    assert websocket.close_code == WSCloseCode.PROTOCOL_ERROR
-        finally:
-            await runner.cleanup()
-
-        assert agent.conversations == []
-
-    asyncio.run(run())
-
-
-def test_websocket_rejects_unknown_session_user() -> None:
-    async def run() -> None:
-        port = _unused_port()
-        agent = CapturingAgent()
-        config = Config(
-            agent=AgentConfig(type="capturing", options={}),
-            websocket=WebsocketConfig(host="127.0.0.1", port=port),
-            users={"Maciek": {"media": {"liked_songs_media_id": "library://playlist/7"}}},
-        )
-        app = create_app(config, agent)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
-        try:
-            async with ClientSession() as session:
-                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text", "user": "Unknown"})))
-                    assert await _receive_session_event(websocket) == SessionRejected(reason="unknown user: Unknown")
-                    message = await websocket.receive()
-
-                    assert message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING)
-                    assert websocket.close_code == WSCloseCode.PROTOCOL_ERROR
-        finally:
-            await runner.cleanup()
-
-        assert agent.conversations == []
-
-    asyncio.run(run())
-
-
-def test_websocket_request_follow_up_times_out_to_new_conversation() -> None:
-    async def run() -> None:
-        port = _unused_port()
-        config = Config(
-            agent=AgentConfig(type="follow_up", options={}),
-            websocket=WebsocketConfig(
-                host="127.0.0.1",
-                port=port,
-                follow_up_timeout_seconds=0.05,
-            ),
-        )
-        app = create_app(config, FollowUpAgent())
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
-        try:
-            async with ClientSession() as session:
-                async with session.ws_connect(f"ws://127.0.0.1:{port}/chat") as websocket:
-                    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes={"medium": "text"})))
-
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
-
-                    await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
-                    for event in text_message_to_events(TextMessage(text="hello")):
-                        await websocket.send_str(endpoint_event_to_json(event))
-
-                    assert await _receive_session_event(websocket) == MessageBegin(message_id=ANY)
-                    assert await _receive_session_event(websocket) == MessageFragment(message_id=ANY, text="reply:hello")
-                    assert await _receive_session_event(websocket) == MessageEnd(message_id=ANY)
-                    assert await _receive_session_event(websocket) == FollowUpRequested(
-                        timeout_seconds=0.05,
-                    )
-                    assert await _receive_session_event(websocket) == ConversationEnded(reason="follow_up_timeout")
-                    assert await _receive_session_event(websocket) == ReadyForConversation()
+            async with ClientSession() as client:
+                async with client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat") as websocket:
+                    await websocket.send_str(payload)
+                    rejected = await _receive(websocket)
+                    assert rejected == ProtocolRejected(ProtocolRejectionCode.INVALID_EVENT, rejected.detail)
+                    close = await websocket.receive(timeout=2)
+                    assert close.type in (WSMsgType.CLOSE, WSMsgType.CLOSED)
+                    assert websocket.close_code == 1002
         finally:
             await runner.cleanup()
 
     asyncio.run(run())
 
 
-def test_batch_websocket_client_does_not_reconnect_after_drop(capsys) -> None:
-    async def run() -> int:
-        port = _unused_port()
-        connection_count = 0
-
-        async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
-            nonlocal connection_count
-            connection_count += 1
-            websocket = web.WebSocketResponse()
-            await websocket.prepare(request)
-            await websocket.receive()
-            await websocket.close()
-            return websocket
-
-        app = web.Application()
-        app.router.add_get("/chat", websocket_handler)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", port)
-        await site.start()
-
+def test_capacity_is_reserved_before_upgrade_and_returns_retry_after() -> None:
+    async def run() -> None:
+        config = _config(_unused_port(), max_connections=1)
+        runner = await _start(config, EchoAgent())
         try:
-            await asyncio.wait_for(
-                run_batch_ws_client(
-                    BatchWsClientOptions(
-                        url=f"ws://127.0.0.1:{port}/chat",
-                        user=None,
-                        area=None,
-                        messages=("hello",),
-                    )
-                ),
-                timeout=2,
+            async with ClientSession() as client:
+                first = await client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat")
+                try:
+                    with pytest.raises(WSServerHandshakeError) as exc_info:
+                        await client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat")
+                    assert exc_info.value.status == 503
+                    assert exc_info.value.headers["Retry-After"] == "7"
+                finally:
+                    await first.close()
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_capacity_is_released_when_websocket_preparation_fails() -> None:
+    async def run() -> None:
+        config = _config(_unused_port(), max_connections=1)
+        runner = await _start(config, EchoAgent())
+        try:
+            async with ClientSession() as client:
+                async with client.get(
+                    f"http://127.0.0.1:{config.websocket.port}/chat"
+                ) as response:
+                    assert response.status == 400
+                websocket = await client.ws_connect(
+                    f"ws://127.0.0.1:{config.websocket.port}/chat"
+                )
+                await websocket.close()
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_handshake_timeout_closes_with_policy_violation() -> None:
+    async def run() -> None:
+        config = _config(_unused_port(), handshake=0.01)
+        runner = await _start(config, EchoAgent())
+        try:
+            async with ClientSession() as client:
+                async with client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat") as websocket:
+                    await websocket.receive(timeout=1)
+                    assert websocket.close_code == 1008
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_handshaking_session_is_registered_before_readiness_exposure() -> None:
+    async def run() -> None:
+        config = _config(_unused_port(), handshake=1)
+        runner = await _start(config, EchoAgent())
+        try:
+            async with ClientSession() as client:
+                websocket = await client.ws_connect(
+                    f"ws://127.0.0.1:{config.websocket.port}/chat"
+                )
+                try:
+                    async with client.get(
+                        f"http://127.0.0.1:{config.websocket.port}/api/status"
+                    ) as response:
+                        status = await response.json()
+                    assert status["websocket"]["active_sessions"] == 1
+                    assert status["websocket"]["active_connections"] == 1
+                finally:
+                    await websocket.close()
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_follow_up_resource_lease_closes_without_forging_timeout() -> None:
+    async def run() -> None:
+        config = _config(_unused_port(), lease=0.03, heartbeat=0.005)
+        runner = await _start(config, InterrogatorAgent())
+        try:
+            async with ClientSession() as client:
+                async with client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat") as websocket:
+                    await websocket.send_str(client_event_to_json(SessionStart()))
+                    assert await _receive(websocket) == SessionAccepted()
+                    assert await _receive(websocket) == ConversationReady()
+                    await websocket.send_str(client_event_to_json(StartConversation("hello")))
+                    events = []
+                    follow_up_committed_at = None
+                    while True:
+                        message = await websocket.receive(timeout=2)
+                        if message.type is not WSMsgType.TEXT:
+                            assert websocket.close_code == 1013
+                            break
+                        event = server_event_from_json(message.data)
+                        events.append(event)
+                        if isinstance(event, FollowUpRequested):
+                            follow_up_committed_at = asyncio.get_running_loop().time()
+                    assert any(isinstance(event, FollowUpRequested) for event in events)
+                    assert follow_up_committed_at is not None
+                    elapsed = asyncio.get_running_loop().time() - follow_up_committed_at
+                    assert 0.02 <= elapsed < 0.5
+                    assert not any(isinstance(event, ConversationEnded) and event.reason == "follow_up_timeout" for event in events)
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+class SlowAgent(ConversationAgent):
+    async def run_agent_conversation(self, context: ConversationContext, channel: AgentChannel) -> None:
+        await channel.receive_user_message()
+        await asyncio.sleep(10)
+
+    async def close(self) -> None:
+        pass
+
+
+def test_background_reader_observes_disconnect_while_agent_is_busy() -> None:
+    async def run() -> None:
+        config = _config(_unused_port())
+        runner = await _start(config, SlowAgent())
+        try:
+            async with ClientSession() as client:
+                websocket = await client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat")
+                await websocket.send_str(client_event_to_json(SessionStart()))
+                assert await _receive(websocket) == SessionAccepted()
+                assert await _receive(websocket) == ConversationReady()
+                await websocket.send_str(client_event_to_json(StartConversation("hello")))
+                assert isinstance(await _receive(websocket), ConversationStarted)
+                await websocket.close()
+                for _ in range(50):
+                    async with client.get(
+                        f"http://127.0.0.1:{config.websocket.port}/api/status"
+                    ) as status:
+                        payload = await status.json()
+                    if payload["websocket"]["active_sessions"] == 0:
+                        break
+                    await asyncio.sleep(0.01)
+                assert payload["websocket"]["active_sessions"] == 0
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_back_to_back_start_events_cannot_create_a_future_conversation() -> None:
+    async def run() -> None:
+        config = _config(_unused_port())
+        runner = await _start(config, SlowAgent())
+        try:
+            async with ClientSession() as client:
+                async with client.ws_connect(
+                    f"ws://127.0.0.1:{config.websocket.port}/chat"
+                ) as websocket:
+                    await websocket.send_str(client_event_to_json(SessionStart()))
+                    assert await _receive(websocket) == SessionAccepted()
+                    assert await _receive(websocket) == ConversationReady()
+                    await websocket.send_str(client_event_to_json(StartConversation("first")))
+                    await websocket.send_str(client_event_to_json(StartConversation("second")))
+                    events = []
+                    while True:
+                        message = await websocket.receive(timeout=2)
+                        if message.type is not WSMsgType.TEXT:
+                            break
+                        events.append(server_event_from_json(message.data))
+                    rejection = next(event for event in events if isinstance(event, ProtocolRejected))
+                    assert rejection.code is ProtocolRejectionCode.INVALID_STATE
+                    assert websocket.close_code == 1002
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_back_to_back_session_start_events_reject_the_duplicate() -> None:
+    async def run() -> None:
+        config = _config(_unused_port())
+        runner = await _start(config, EchoAgent())
+        try:
+            async with ClientSession() as client:
+                async with client.ws_connect(
+                    f"ws://127.0.0.1:{config.websocket.port}/chat"
+                ) as websocket:
+                    await websocket.send_str(client_event_to_json(SessionStart()))
+                    await websocket.send_str(client_event_to_json(SessionStart()))
+                    events = []
+                    while True:
+                        message = await websocket.receive(timeout=2)
+                        if message.type is not WSMsgType.TEXT:
+                            break
+                        events.append(server_event_from_json(message.data))
+                    rejection = next(event for event in events if isinstance(event, ProtocolRejected))
+                    assert rejection.code is ProtocolRejectionCode.INVALID_STATE
+                    assert websocket.close_code == 1002
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+class _BlockedWebsocket:
+    def __init__(self) -> None:
+        self.closed = False
+        self.send_called = asyncio.Event()
+        self.release_send = asyncio.Event()
+
+    async def receive(self):
+        await asyncio.Event().wait()
+
+    async def send_str(self, payload: str) -> None:
+        del payload
+        self.send_called.set()
+        await self.release_send.wait()
+
+    async def close(self, code: int, message: bytes) -> None:
+        del code, message
+        self.closed = True
+
+
+class _DrainFailureWebsocket:
+    def __init__(self) -> None:
+        self.closed = False
+        self.close_code = None
+        self.close_reason = None
+        self.payloads: list[str] = []
+
+    async def receive(self):
+        await asyncio.Event().wait()
+
+    async def send_str(self, payload: str) -> None:
+        self.payloads.append(payload)
+        raise ClientConnectionResetError("writer drain failed")
+
+    async def close(self, code: int, message: bytes) -> None:
+        self.closed = True
+        self.close_code = code
+        self.close_reason = message.decode("utf-8")
+
+
+def test_follow_up_commit_occurs_in_writer_task_not_before_writer_entry() -> None:
+    async def run() -> None:
+        config = _config(2137)
+        websocket = _BlockedWebsocket()
+        session = WebsocketInputSession(websocket, "test-peer", config.websocket)
+        session._session_context = InputSessionContext(
+            "session-1",
+            ConversationMedium.TEXT,
+        )
+        context = InputConversationContext(
+            "conversation-1",
+            "session-1",
+            ConversationMedium.TEXT,
+        )
+        session._state = WebsocketState.ACTIVE
+        session._control = asyncio.Queue(maxsize=1)
+        conversation = _WebsocketInputConversation(
+            session,
+            context,
+            UserMessage("hello"),
+        )
+        await session._writer_lock.acquire()
+        request = asyncio.create_task(conversation.request_follow_up())
+        await asyncio.sleep(0)
+        assert session._state is WebsocketState.ACTIVE
+        session._writer_lock.release()
+        await websocket.send_called.wait()
+        assert session._state is WebsocketState.FOLLOW_UP_COMMITTING
+        websocket.release_send.set()
+        await request
+        session._cancel_lease()
+        session._reader_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await session._reader_task
+
+    asyncio.run(run())
+
+
+def test_follow_up_drain_failure_after_handoff_closes_typed_committed_interval() -> None:
+    async def run() -> None:
+        websocket = _DrainFailureWebsocket()
+        session = WebsocketInputSession(websocket, "test-peer", _config(2137, lease=10).websocket)
+        session._session_context = InputSessionContext("session-1", ConversationMedium.TEXT)
+        session._state = WebsocketState.ACTIVE
+        session._control = asyncio.Queue(maxsize=1)
+        conversation = _WebsocketInputConversation(
+            session,
+            InputConversationContext("conversation-1", "session-1", ConversationMedium.TEXT),
+            UserMessage("hello"),
+        )
+        with pytest.raises(InputSessionClosed, match="transport reset"):
+            await conversation.request_follow_up()
+        assert session._follow_up_token is not None
+        assert session._follow_up_deadline is None
+        assert session._state is WebsocketState.CLOSING
+        assert isinstance(await session._control.get(), InputSessionClosed)
+        await _dispose_private_session(session)
+
+    asyncio.run(run())
+
+
+def test_follow_up_lease_expiry_during_writer_drain_closes_and_joins_tasks() -> None:
+    async def run() -> None:
+        websocket = _BlockedWebsocket()
+        session = WebsocketInputSession(websocket, "test-peer", _config(2137, lease=0.01).websocket)
+        session._session_context = InputSessionContext("session-1", ConversationMedium.TEXT)
+        session._state = WebsocketState.ACTIVE
+        session._control = asyncio.Queue(maxsize=1)
+        conversation = _WebsocketInputConversation(
+            session,
+            InputConversationContext("conversation-1", "session-1", ConversationMedium.TEXT),
+            UserMessage("hello"),
+        )
+        request = asyncio.create_task(conversation.request_follow_up())
+        await websocket.send_called.wait()
+        await asyncio.wait_for(session._control.get(), timeout=1)
+        assert session._state is WebsocketState.CLOSING
+        assert websocket.closed
+        websocket.release_send.set()
+        assert isinstance(await request, FollowUpRequestCommitted)
+        await _dispose_private_session(session)
+
+    asyncio.run(run())
+
+
+def test_follow_up_outcome_at_lease_deadline_wins() -> None:
+    async def run() -> None:
+        config = _config(2137)
+        websocket = _BlockedWebsocket()
+        session = WebsocketInputSession(websocket, "test-peer", config.websocket)
+        session._state = WebsocketState.AWAITING_FOLLOW_UP
+        session._control = asyncio.Queue(maxsize=1)
+        session._follow_up_deadline = 42.0
+        assert await session._commit_client_event(WsFollowUpTimedOut(), 42.0)
+        outcome = await session._control.get()
+        assert type(outcome).__name__ == "FollowUpTimedOut"
+        assert session._state is WebsocketState.ACTIVE
+        session._reader_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await session._reader_task
+
+    asyncio.run(run())
+
+
+def test_batch_follow_up_timer_is_cancelled_by_terminal_server_event() -> None:
+    class ImmediateTerminalWebsocket:
+        def __init__(self) -> None:
+            self.sent = []
+
+        async def receive(self):
+            return SimpleNamespace(
+                type=WSMsgType.TEXT,
+                data=server_event_to_json(ConversationEnded("completed")),
             )
-        finally:
-            await runner.cleanup()
 
-        return connection_count
+        async def send_str(self, payload: str) -> None:
+            self.sent.append(payload)
 
-    connection_count = asyncio.run(run())
-
-    assert connection_count == 1
-    assert "Connection lost: websocket closed." in capsys.readouterr().out
-
-
-def test_batch_websocket_client_prints_session_rejection(capsys) -> None:
     async def run() -> None:
-        port = _unused_port()
-        config = Config(
-            agent=AgentConfig(type="capturing", options={}),
-            websocket=WebsocketConfig(host="127.0.0.1", port=port),
-            users={"Maciek": {}},
-        )
-        app = create_app(config, CapturingAgent())
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, config.websocket.host, config.websocket.port)
-        await site.start()
-
-        try:
-            await asyncio.wait_for(
-                run_batch_ws_client(
-                    BatchWsClientOptions(
-                        url=f"ws://127.0.0.1:{port}/chat",
-                        user="Unknown",
-                        area=None,
-                        messages=("hello",),
-                    )
-                ),
-                timeout=2,
-            )
-        finally:
-            await runner.cleanup()
-
-    asyncio.run(run())
-
-    output = capsys.readouterr().out
-    assert output == "Connection rejected: unknown user: Unknown.\n"
-
-
-def test_chat_client_help_command_prints_available_commands(capsys) -> None:
-    result = chat_client._handle_client_command("/help")
-
-    output = capsys.readouterr().out
-    assert result == chat_client._ClientCommandResult.HANDLED
-    assert "Commands:" in output
-    assert "/help  Show this help." in output
-    assert "/exit  Exit the chat client." in output
-    assert chat_client.CLIENT_TEXT_STYLE in output
-
-
-def test_chat_client_initial_prompt_is_connecting() -> None:
-    loop = asyncio.new_event_loop()
-    try:
-        input_session = chat_client._InteractiveInputSession(loop)
-
-        assert input_session._current_prompt() == chat_client.CONNECTING_PROMPT
-    finally:
-        loop.close()
-
-
-def test_ws_client_prints_processing_update(capsys) -> None:
-    result = handle_websocket_message(None, FakeWebsocketMessage('{"type":"processing_update"}'))
-
-    assert result is None
-    assert capsys.readouterr().out == "processing...\n"
-
-
-def test_ws_client_routes_processing_update_to_system_printer() -> None:
-    system_messages = []
-
-    result = handle_websocket_message(
-        None,
-        FakeWebsocketMessage('{"type":"processing_update"}'),
-        system_message_printer=system_messages.append,
-    )
-
-    assert result is None
-    assert system_messages == ["processing..."]
-
-
-def test_ws_client_raises_terminal_error_on_session_rejected() -> None:
-    with pytest.raises(WebsocketSessionRejected, match="unknown user: Unknown"):
-        handle_websocket_message(
-            None,
-            FakeWebsocketMessage(session_event_to_json(SessionRejected(reason="unknown user: Unknown"))),
-        )
-
-
-def test_chat_client_suppresses_initial_wait_for_new_conversation_notice(capsys) -> None:
-    async def run():
-        websocket = StrictReceiveWebsocket()
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(ReadyForConversation())))
-        return await chat_client._read_next_wait_state(
+        websocket = ImmediateTerminalWebsocket()
+        message = await _wait_for_server_or_follow_up_timeout(
             websocket,
             asyncio.Event(),
-            show_wait_for_new_conversation_message=False,
+            10.0,
         )
-
-    wait_state = asyncio.run(run())
-
-    assert wait_state.starts_new_conversation is True
-    assert capsys.readouterr().out == ""
-
-
-def test_chat_client_dims_visible_wait_for_new_conversation_notice(capsys) -> None:
-    result = handle_websocket_message(
-        None,
-        FakeWebsocketMessage(session_event_to_json(ConversationEnded(reason="completed"))),
-        system_message_printer=chat_client._print_client_message,
-    )
-
-    assert result is None
-    assert capsys.readouterr().out == chat_client._style_client_text(
-        "Conversation ended; waiting for a new conversation."
-    ) + "\n"
-
-
-def test_interactive_chat_suppresses_only_first_new_conversation_notice(capsys) -> None:
-    class FakeInteractiveInputSession:
-        def __init__(self) -> None:
-            self._lines: asyncio.Queue[str | None] = asyncio.Queue()
-            self.prompts: list[str] = []
-
-        def set_prompt(self, prompt: str) -> None:
-            self.prompts.append(prompt)
-
-        async def read_line(self) -> str | None:
-            return await self._lines.get()
-
-    class FakeInteractiveWebsocket(StrictReceiveWebsocket):
-        def __init__(self) -> None:
-            super().__init__()
-            self.sent: list[str] = []
-
-        async def send_str(self, data: str) -> None:
-            self.sent.append(data)
-
-    async def run() -> None:
-        websocket = FakeInteractiveWebsocket()
-        input_session = FakeInteractiveInputSession()
-        stop_event = asyncio.Event()
-
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(ReadyForConversation())))
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageBegin(message_id="assistant-1"))))
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageFragment(message_id="assistant-1", text="reply"))))
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(MessageEnd(message_id="assistant-1"))))
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(ConversationEnded(reason="completed"))))
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(ReadyForConversation())))
-        await input_session._lines.put("hello")
-        await input_session._lines.put(None)
-
-        await asyncio.wait_for(
-            chat_client._run_interactive_connection(
-                websocket,
-                input_session,
-                stop_event,
-            ),
-            timeout=1,
-        )
+        assert message.type is WSMsgType.TEXT
+        assert websocket.sent == []
 
     asyncio.run(run())
 
-    assert capsys.readouterr().out == "reply\n" + chat_client._style_client_text(
-        "Conversation ended; waiting for a new conversation."
-    ) + "\n"
 
-
-def test_interactive_chat_uses_connecting_prompt_before_first_connect(monkeypatch) -> None:
-    class FakeClientSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-    class FakeInputSession:
-        def __init__(self) -> None:
-            self.prompts: list[str] = []
-
-        def set_prompt(self, prompt: str) -> None:
-            self.prompts.append(prompt)
-
-    async def fake_connect_interactive(
-        session,
-        options,
-        input_session,
-        stop_event,
-    ):
-        raise chat_client.ChatExited()
-
-    async def run() -> list[str]:
-        input_session = FakeInputSession()
-        monkeypatch.setattr(chat_client, "ClientSession", FakeClientSession)
-        monkeypatch.setattr(chat_client, "_connect_interactive", fake_connect_interactive)
-
-        await chat_client._run_interactive_chat(
-            ChatClientOptions(url="ws://127.0.0.1:2137/chat", user=None, area=None),
-            input_session,
-            asyncio.Event(),
-        )
-        return input_session.prompts
-
-    assert asyncio.run(run()) == [chat_client.CONNECTING_PROMPT]
-
-
-def test_interactive_chat_connects_with_websocket_heartbeat() -> None:
-    class FakeClientSession:
-        def __init__(self) -> None:
-            self.heartbeat = None
-
-        async def ws_connect(self, url: str, *, heartbeat: float | None = None):
-            self.heartbeat = heartbeat
-            return object()
-
-    class FakeInputSession:
-        def set_prompt(self, prompt: str) -> None:
-            pass
-
-        async def read_line(self) -> str | None:
-            await asyncio.Future()
-
-    async def run() -> float | None:
-        session = FakeClientSession()
-        result = await chat_client._connect_interactive(
-            session,
-            ChatClientOptions(url="ws://127.0.0.1:2137/chat", user=None, area=None),
-            FakeInputSession(),
-            asyncio.Event(),
-        )
-
-        assert result is not None
-        return session.heartbeat
-
-    assert asyncio.run(run()) == chat_client.WEBSOCKET_HEARTBEAT_SECONDS
-
-
-def test_interactive_chat_prints_connect_failure_and_does_not_retry(monkeypatch, capsys) -> None:
-    class FakeClientSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-        async def ws_connect(self, url: str, *, heartbeat: float | None = None):
-            raise ClientError("server unavailable")
-
-    class FakeInputSession:
-        def __init__(self) -> None:
-            self.prompts: list[str] = []
-
-        def set_prompt(self, prompt: str) -> None:
-            self.prompts.append(prompt)
-
-        async def read_line(self) -> str | None:
-            await asyncio.Future()
-
-    async def run() -> FakeInputSession:
-        input_session = FakeInputSession()
-        monkeypatch.setattr(chat_client, "ClientSession", FakeClientSession)
-
-        with pytest.raises(chat_client.ChatConnectionFailed):
-            await chat_client._run_interactive_chat(
-                ChatClientOptions(url="ws://127.0.0.1:2137/chat", user=None, area=None),
-                input_session,
-                asyncio.Event(),
+@pytest.mark.parametrize(
+    ("receive_delay", "line_delay", "expected_text", "terminal_won"),
+    [
+        (0.01, 0.0, "before terminal", False),
+        (0.0, 0.01, None, True),
+    ],
+)
+def test_interactive_follow_up_submission_vs_terminal_boundary(
+    receive_delay: float,
+    line_delay: float,
+    expected_text: str | None,
+    terminal_won: bool,
+) -> None:
+    class TerminalWebsocket:
+        async def receive(self):
+            await asyncio.sleep(receive_delay)
+            return SimpleNamespace(
+                type=WSMsgType.TEXT,
+                data=server_event_to_json(ConversationEnded("completed")),
             )
-        return input_session
 
-    input_session = asyncio.run(run())
-    output = capsys.readouterr().out
-
-    assert input_session.prompts == [chat_client.CONNECTING_PROMPT]
-    assert output == (
-        chat_client._style_client_text("Connecting to ws://127.0.0.1:2137/chat ...")
-        + "\n"
-        + chat_client._style_client_text("Connection failed: server unavailable.")
-        + "\n"
-    )
-
-
-def test_interactive_chat_prints_rejection_and_does_not_reconnect(monkeypatch, capsys) -> None:
-    class FakeClientSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-    class FakeInputSession:
-        def __init__(self) -> None:
-            self.prompts: list[str] = []
+    class InteractiveInput:
+        async def read_line(self):
+            await asyncio.sleep(line_delay)
+            return "before terminal"
 
         def set_prompt(self, prompt: str) -> None:
-            self.prompts.append(prompt)
+            del prompt
 
-    class RejectedWebsocket(StrictReceiveWebsocket):
+    async def run() -> None:
+        text, state, interval_closed = await _read_next_interactive_text(
+            TerminalWebsocket(),
+            asyncio.Event(),
+            InteractiveInput(),
+            WaitState(False, follow_up_requested=True, timeout_seconds=10),
+            10,
+        )
+        assert text == expected_text
+        assert state.follow_up_requested
+        assert interval_closed is terminal_won
+
+    asyncio.run(run())
+
+
+def test_interactive_terminal_wins_when_terminal_and_line_are_both_committed(monkeypatch) -> None:
+    class TerminalWebsocket:
         def __init__(self) -> None:
-            super().__init__()
             self.sent: list[str] = []
-            self.closed = False
 
-        async def send_str(self, data: str) -> None:
-            self.sent.append(data)
+        async def receive(self):
+            return SimpleNamespace(
+                type=WSMsgType.TEXT,
+                data=server_event_to_json(ConversationEnded("completed")),
+            )
 
-        async def close(self) -> None:
-            self.closed = True
+        async def send_str(self, payload: str) -> None:
+            self.sent.append(payload)
 
-    connect_calls = 0
-    rejected_websocket = RejectedWebsocket()
-
-    async def fake_connect_interactive(
-        session,
-        options,
-        input_session,
-        stop_event,
-    ):
-        nonlocal connect_calls
-        connect_calls += 1
-        await rejected_websocket.messages.put(
-            FakeWebsocketMessage(session_event_to_json(SessionRejected(reason="unknown user: Unknown")))
-        )
-        return rejected_websocket
-
-    async def run() -> FakeInputSession:
-        input_session = FakeInputSession()
-        monkeypatch.setattr(chat_client, "ClientSession", FakeClientSession)
-        monkeypatch.setattr(chat_client, "_connect_interactive", fake_connect_interactive)
-
-        await chat_client._run_interactive_chat(
-            ChatClientOptions(url="ws://127.0.0.1:2137/chat", user="Unknown", area=None),
-            input_session,
-            asyncio.Event(),
-        )
-        return input_session
-
-    input_session = asyncio.run(run())
-    output = capsys.readouterr().out
-
-    assert connect_calls == 1
-    assert rejected_websocket.closed
-    assert endpoint_event_from_json(rejected_websocket.sent[0]) == SessionAttributes(attributes={"medium": "text", "user": "Unknown"})
-    assert output == chat_client._style_client_text("Connection rejected: unknown user: Unknown.") + "\n"
-
-
-def test_interactive_chat_exits_on_connection_drop_after_connect(monkeypatch, capsys) -> None:
-    class FakeClientSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-    class FakeInputSession:
-        def __init__(self) -> None:
-            self.prompts: list[str] = []
+    class InteractiveInput:
+        async def read_line(self):
+            return "stale follow-up"
 
         def set_prompt(self, prompt: str) -> None:
-            self.prompts.append(prompt)
+            del prompt
 
-    class DroppedWebsocket(StrictReceiveWebsocket):
-        def __init__(self) -> None:
-            super().__init__()
-            self.sent: list[str] = []
-            self.closed = False
+    real_wait = asyncio.wait
+    controlling_outer_race = False
 
-        async def send_str(self, data: str) -> None:
-            self.sent.append(data)
-
-        async def close(self) -> None:
-            self.closed = True
-
-    connect_calls = 0
-    dropped_websocket = DroppedWebsocket()
-
-    async def fake_connect_interactive(
-        session,
-        options,
-        input_session,
-        stop_event,
-    ):
-        nonlocal connect_calls
-        connect_calls += 1
-        await dropped_websocket.messages.put(FakeWebsocketMessage(data="", type=WSMsgType.CLOSED))
-        return dropped_websocket
-
-    async def run() -> FakeInputSession:
-        input_session = FakeInputSession()
-        monkeypatch.setattr(chat_client, "ClientSession", FakeClientSession)
-        monkeypatch.setattr(chat_client, "_connect_interactive", fake_connect_interactive)
-
-        with pytest.raises(chat_client.ChatConnectionLost):
-            await chat_client._run_interactive_chat(
-                ChatClientOptions(url="ws://127.0.0.1:2137/chat", user=None, area=None),
-                input_session,
-                asyncio.Event(),
-            )
-        return input_session
-
-    input_session = asyncio.run(run())
-    output = capsys.readouterr().out
-
-    assert connect_calls == 1
-    assert dropped_websocket.closed
-    assert endpoint_event_from_json(dropped_websocket.sent[0]) == SessionAttributes(attributes={"medium": "text"})
-    assert output == chat_client._style_client_text("Connection lost: websocket closed.") + "\n"
-
-
-def test_interactive_chat_exits_when_server_closes_established_connection(monkeypatch, capsys) -> None:
-    class FakeInputSession:
-        def __init__(self) -> None:
-            self.prompts: list[str] = []
-
-        def set_prompt(self, prompt: str) -> None:
-            self.prompts.append(prompt)
-
-        async def read_line(self) -> str | None:
-            await asyncio.Future()
-
-    async def run() -> tuple[FakeInputSession, int]:
-        monkeypatch.setattr(chat_client, "WEBSOCKET_LIVENESS_CHECK_SECONDS", 0.05)
-        monkeypatch.setattr(chat_client, "WEBSOCKET_LISTENER_PROBE_TIMEOUT_SECONDS", 0.05)
-        monkeypatch.setattr(chat_client, "WEBSOCKET_LISTENER_CLOSE_TIMEOUT_SECONDS", 0.01)
-        port = _unused_port()
-        accepted = asyncio.Event()
-        close_connection = asyncio.Event()
-        connection_count = 0
-        websockets = set()
-
-        async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
-            nonlocal connection_count
-            connection_count += 1
-            websocket = web.WebSocketResponse()
-            await websocket.prepare(request)
-            websockets.add(websocket)
-            await websocket.receive()
-            await websocket.send_str(session_event_to_json(ReadyForConversation()))
-            accepted.set()
-            try:
-                await close_connection.wait()
-                await websocket.close(drain=False)
-                return websocket
-            finally:
-                websockets.discard(websocket)
-
-        app = web.Application()
-        app.router.add_get("/chat", websocket_handler)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", port)
-        await site.start()
-
-        input_session = FakeInputSession()
-        client_task = asyncio.create_task(
-            chat_client._run_interactive_chat(
-                ChatClientOptions(url=f"ws://127.0.0.1:{port}/chat", user=None, area=None),
-                input_session,
-                asyncio.Event(),
-            )
-        )
+    async def wait_until_all_candidates_commit(tasks, **kwargs):
+        nonlocal controlling_outer_race
+        if controlling_outer_race:
+            return await real_wait(tasks, **kwargs)
+        candidates = tuple(tasks)
+        controlling_outer_race = True
         try:
-            await asyncio.wait_for(accepted.wait(), timeout=1)
-            await site.stop()
-            close_connection.set()
-            for websocket in set(websockets):
-                await websocket.close(drain=False)
-            with pytest.raises(chat_client.ChatConnectionLost):
-                await asyncio.wait_for(client_task, timeout=5)
+            await asyncio.gather(*candidates)
+            return set(candidates), set()
         finally:
-            if not client_task.done():
-                client_task.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await client_task
+            controlling_outer_race = False
+
+    async def run() -> None:
+        monkeypatch.setattr(asyncio, "wait", wait_until_all_candidates_commit)
+        websocket = TerminalWebsocket()
+        try:
+            text, state, interval_closed = await _read_next_interactive_text(
+                websocket,
+                asyncio.Event(),
+                InteractiveInput(),
+                WaitState(False, follow_up_requested=True, timeout_seconds=0),
+                10,
+            )
+        finally:
+            monkeypatch.setattr(asyncio, "wait", real_wait)
+        assert text is None
+        assert state.follow_up_requested
+        assert interval_closed
+        assert websocket.sent == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("line_delay", "timeout_seconds", "expected_text", "timed_out"),
+    [
+        (0.0, 0.01, "follow-up", False),
+        (0.01, 0.0, None, True),
+    ],
+)
+def test_interactive_submission_before_and_after_expiry_boundary(
+    line_delay: float,
+    timeout_seconds: float,
+    expected_text: str | None,
+    timed_out: bool,
+) -> None:
+    class WaitingWebsocket:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def receive(self):
+            await asyncio.Event().wait()
+
+        async def send_str(self, payload: str) -> None:
+            self.sent.append(payload)
+
+    class InteractiveInput:
+        async def read_line(self):
+            await asyncio.sleep(line_delay)
+            return "follow-up"
+
+        def set_prompt(self, prompt: str) -> None:
+            del prompt
+
+    async def run() -> None:
+        websocket = WaitingWebsocket()
+        text, _state, interval_closed = await _read_next_interactive_text(
+            websocket,
+            asyncio.Event(),
+            InteractiveInput(),
+            WaitState(False, follow_up_requested=True, timeout_seconds=timeout_seconds),
+            10,
+        )
+        assert text == expected_text
+        assert interval_closed is timed_out
+        assert len(websocket.sent) == int(timed_out)
+
+    asyncio.run(run())
+
+
+def test_interactive_submission_wins_at_exact_expiry_boundary(monkeypatch) -> None:
+    class WaitingWebsocket:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def receive(self):
+            await asyncio.Event().wait()
+
+        async def send_str(self, payload: str) -> None:
+            self.sent.append(payload)
+
+    class InteractiveInput:
+        async def read_line(self):
+            return "at boundary"
+
+        def set_prompt(self, prompt: str) -> None:
+            del prompt
+
+    real_wait = asyncio.wait
+    outer_race_selected = False
+
+    async def commit_line_and_timeout_together(tasks, **kwargs):
+        nonlocal outer_race_selected
+        if outer_race_selected:
+            return await real_wait(tasks, **kwargs)
+        outer_race_selected = True
+        candidates = tuple(tasks)
+        selected = tuple(
+            task
+            for task in candidates
+            if "read_line" in task.get_coro().__qualname__
+            or task.get_coro().__qualname__ == "sleep"
+        )
+        await asyncio.gather(*selected)
+        return set(selected), set(candidates) - set(selected)
+
+    async def run() -> None:
+        websocket = WaitingWebsocket()
+        monkeypatch.setattr(asyncio, "wait", commit_line_and_timeout_together)
+        try:
+            text, _state, interval_closed = await _read_next_interactive_text(
+                websocket,
+                asyncio.Event(),
+                InteractiveInput(),
+                WaitState(False, follow_up_requested=True, timeout_seconds=0),
+                10,
+            )
+        finally:
+            monkeypatch.setattr(asyncio, "wait", real_wait)
+        assert text == "at boundary"
+        assert not interval_closed
+        assert websocket.sent == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("payload", "rejection_code", "close_code"),
+    [
+        ("{", ProtocolRejectionCode.INVALID_JSON, 1002),
+        ("[]", ProtocolRejectionCode.INVALID_EVENT, 1002),
+        ('{"type":"session_start","user":null}', ProtocolRejectionCode.INVALID_EVENT, 1002),
+        ('{"type":"start_conversation","message":"early"}', ProtocolRejectionCode.INVALID_STATE, 1002),
+    ],
+)
+def test_external_violation_sends_typed_rejection_then_closes(
+    payload: str,
+    rejection_code: ProtocolRejectionCode,
+    close_code: int,
+) -> None:
+    async def run() -> None:
+        config = _config(_unused_port())
+        runner = await _start(config, EchoAgent())
+        try:
+            async with ClientSession() as client:
+                async with client.ws_connect(
+                    f"ws://127.0.0.1:{config.websocket.port}/chat"
+                ) as websocket:
+                    await websocket.send_str(payload)
+                    rejection = await _receive(websocket)
+                    assert isinstance(rejection, ProtocolRejected)
+                    assert rejection.code is rejection_code
+                    close = await websocket.receive(timeout=2)
+                    assert close.type in (WSMsgType.CLOSE, WSMsgType.CLOSED)
+                    assert websocket.close_code == close_code
+        finally:
             await runner.cleanup()
 
-        return input_session, connection_count
-
-    input_session, connection_count = asyncio.run(run())
-    output = capsys.readouterr().out
-
-    assert connection_count == 1
-    assert input_session.prompts == [
-        chat_client.CONNECTING_PROMPT,
-        chat_client.WAITING_FOR_SERVER_PROMPT,
-        chat_client.WAITING_FOR_NEW_CONVERSATION_PROMPT,
-    ]
-    assert "Connection lost:" in output
-
-
-def test_interactive_chat_does_not_cancel_websocket_receive_while_waiting_for_input() -> None:
-    class SlowReplyWebsocket(StrictReceiveWebsocket):
-        def __init__(self) -> None:
-            super().__init__()
-            self.closed = False
-
-    async def run() -> None:
-        websocket = SlowReplyWebsocket()
-        wait_state_task = asyncio.create_task(
-            chat_client._read_next_wait_state(
-                websocket,
-                asyncio.Event(),
-                "ws:///chat",
-                show_wait_for_new_conversation_message=False,
-            )
-        )
-
-        await asyncio.sleep(0.03)
-        await websocket.messages.put(FakeWebsocketMessage(session_event_to_json(ReadyForConversation())))
-
-        wait_state = await asyncio.wait_for(wait_state_task, timeout=1)
-
-        assert wait_state.starts_new_conversation is True
-        assert websocket.max_active_receives == 1
-
     asyncio.run(run())
 
 
-def test_chat_client_accepts_area_option() -> None:
-    args = chat_client.parse_args(["--area", "office", "ws://127.0.0.1:2137/chat"])
-
-    assert args.area == "office"
-
-
-def test_chat_client_accepts_user_option() -> None:
-    args = chat_client.parse_args(["--user", "Maciek", "ws://127.0.0.1:2137/chat"])
-
-    assert args.user == "Maciek"
-
-
-def test_batch_ws_client_accepts_area_option() -> None:
-    args = batch_ws_client.parse_args(["--area", "office", "--message", "cześć"])
-
-    assert args.area == "office"
-
-
-def test_batch_ws_client_accepts_user_option() -> None:
-    args = batch_ws_client.parse_args(["--user", "Maciek", "--message", "cześć"])
-
-    assert args.user == "Maciek"
-
-
-def test_ws_clients_reject_location_option() -> None:
-    with pytest.raises(SystemExit):
-        chat_client.parse_args(["--location", "office"])
-
-    with pytest.raises(SystemExit):
-        batch_ws_client.parse_args(["--location", "office"])
-
-
-def test_chat_client_main_returns_130_on_interrupt(monkeypatch) -> None:
-    async def fake_run_chat(options: ChatClientOptions) -> None:
-        raise chat_client.ChatInterrupted()
-
-    monkeypatch.setattr(chat_client, "run_chat", fake_run_chat)
-
-    assert chat_client.main(["ws://127.0.0.1:2137/chat"]) == 130
-
-
-def test_chat_client_main_returns_1_on_connection_lost(monkeypatch) -> None:
-    async def fake_run_chat(options: ChatClientOptions) -> None:
-        raise chat_client.ChatConnectionLost()
-
-    monkeypatch.setattr(chat_client, "run_chat", fake_run_chat)
-
-    assert chat_client.main(["ws://127.0.0.1:2137/chat"]) == 1
-
-
-def test_chat_client_main_returns_1_on_connection_failed(monkeypatch) -> None:
-    async def fake_run_chat(options: ChatClientOptions) -> None:
-        raise chat_client.ChatConnectionFailed()
-
-    monkeypatch.setattr(chat_client, "run_chat", fake_run_chat)
-
-    assert chat_client.main(["ws://127.0.0.1:2137/chat"]) == 1
-
-
-def test_batch_ws_client_main_returns_130_on_interrupt(monkeypatch) -> None:
-    async def fake_run_batch_ws_client(options: BatchWsClientOptions) -> None:
-        raise batch_ws_client.WsClientInterrupted()
-
-    monkeypatch.setattr(batch_ws_client, "run_batch_ws_client", fake_run_batch_ws_client)
-
-    assert batch_ws_client.main(["ws://127.0.0.1:2137/chat"]) == 130
-
-
-def test_interactive_text_keeps_single_websocket_receive_during_liveness_probes(monkeypatch) -> None:
-    class SlowReplyWebsocket(StrictReceiveWebsocket):
-        def __init__(self) -> None:
-            super().__init__()
-            self.closed = False
-
-    class FakeInputSession:
-        async def read_line(self) -> str | None:
-            await asyncio.Future()
-
-    async def run() -> None:
-        monkeypatch.setattr(chat_client, "WEBSOCKET_LIVENESS_CHECK_SECONDS", 0.01)
-        websocket = SlowReplyWebsocket()
-        read_task = asyncio.create_task(
-            chat_client._read_next_interactive_text(
-                websocket,
-                asyncio.Event(),
-                FakeInputSession(),
-                chat_client.WaitState(starts_new_conversation=True),
-                "ws:///chat",
-            )
-        )
-
-        await asyncio.sleep(0.03)
-        await websocket.messages.put(FakeWebsocketMessage(data="", type=WSMsgType.CLOSED))
-
-        with pytest.raises(chat_client.WebsocketDisconnected, match="websocket closed"):
-            await asyncio.wait_for(read_task, timeout=1)
-
-        assert websocket.max_active_receives == 1
-
-    asyncio.run(run())
-
-
-def test_chat_client_drops_offline_messages(capsys) -> None:
-    assert chat_client._handle_offline_line("hello") is False
-
-    assert "Disconnected; message not sent." in capsys.readouterr().out
-
-
-def _unused_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-async def _receive_session_event(websocket):
-    message = await asyncio.wait_for(websocket.receive(), timeout=1)
-    return session_event_from_json(message.data)
-
-
-class StrictReceiveWebsocket:
-    def __init__(self) -> None:
-        self.messages: asyncio.Queue[FakeWebsocketMessage] = asyncio.Queue()
-        self._active_receives = 0
-        self.max_active_receives = 0
-
-    async def receive(self) -> FakeWebsocketMessage:
-        self._active_receives += 1
-        self.max_active_receives = max(self.max_active_receives, self._active_receives)
-        if self._active_receives > 1:
-            raise RuntimeError("Concurrent call to receive() is not allowed")
+def test_oversized_and_binary_frames_use_documented_rejections() -> None:
+    async def rejected(send_frame, expected_code, expected_close) -> None:
+        config = _config(_unused_port(), max_frame_bytes=32)
+        runner = await _start(config, EchoAgent())
         try:
-            return await self.messages.get()
+            async with ClientSession() as client:
+                async with client.ws_connect(
+                    f"ws://127.0.0.1:{config.websocket.port}/chat"
+                ) as websocket:
+                    await send_frame(websocket)
+                    event = await _receive(websocket)
+                    assert isinstance(event, ProtocolRejected)
+                    assert event.code is expected_code
+                    await websocket.receive(timeout=2)
+                    assert websocket.close_code == expected_close
         finally:
-            self._active_receives -= 1
+            await runner.cleanup()
+
+    async def run() -> None:
+        await rejected(
+            lambda websocket: websocket.send_str(
+                client_event_to_json(SessionStart(user="x" * 100))
+            ),
+            ProtocolRejectionCode.MESSAGE_TOO_LARGE,
+            1009,
+        )
+        await rejected(
+            lambda websocket: websocket.send_bytes(b"binary"),
+            ProtocolRejectionCode.INVALID_EVENT,
+            1002,
+        )
+
+    asyncio.run(run())
+
+
+def test_capacity_is_exact_and_released_after_ordinary_close() -> None:
+    async def run() -> None:
+        config = _config(_unused_port(), max_connections=2)
+        runner = await _start(config, EchoAgent())
+        try:
+            async with ClientSession() as client:
+                first = await client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat")
+                second = await client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat")
+                try:
+                    with pytest.raises(WSServerHandshakeError) as exc_info:
+                        await client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat")
+                    assert exc_info.value.status == 503
+                    await first.close()
+                    for _ in range(100):
+                        try:
+                            replacement = await client.ws_connect(
+                                f"ws://127.0.0.1:{config.websocket.port}/chat"
+                            )
+                            break
+                        except WSServerHandshakeError as exc:
+                            assert exc.status == 503
+                            await asyncio.sleep(0.01)
+                    else:
+                        raise AssertionError("capacity slot was not released")
+                    await replacement.close()
+                finally:
+                    await first.close()
+                    await second.close()
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_capacity_is_released_after_invalid_handshake_and_timeout() -> None:
+    async def replacement_is_accepted(client, config) -> None:
+        for _ in range(100):
+            try:
+                websocket = await client.ws_connect(
+                    f"ws://127.0.0.1:{config.websocket.port}/chat"
+                )
+                break
+            except WSServerHandshakeError as exc:
+                assert exc.status == 503
+                await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("capacity slot was not released")
+        async with websocket:
+            await websocket.send_str(client_event_to_json(SessionStart()))
+            assert await _receive(websocket) == SessionAccepted()
+
+    async def invalid_handshake() -> None:
+        config = _config(_unused_port(), max_connections=1)
+        runner = await _start(config, EchoAgent())
+        try:
+            async with ClientSession() as client:
+                websocket = await client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat")
+                await websocket.send_str("[]")
+                await _receive(websocket)
+                await websocket.receive(timeout=2)
+                await replacement_is_accepted(client, config)
+        finally:
+            await runner.cleanup()
+
+    async def handshake_timeout() -> None:
+        config = _config(_unused_port(), max_connections=1, handshake=0.01)
+        runner = await _start(config, EchoAgent())
+        try:
+            async with ClientSession() as client:
+                websocket = await client.ws_connect(f"ws://127.0.0.1:{config.websocket.port}/chat")
+                close = await websocket.receive(timeout=2)
+                assert close.type in (WSMsgType.CLOSE, WSMsgType.CLOSED)
+                assert websocket.close_code == 1008
+                assert close.extra == "session start timed out"
+                await replacement_is_accepted(client, config)
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(invalid_handshake())
+    asyncio.run(handshake_timeout())
+
+
+class _RecordingWebsocket:
+    def __init__(self) -> None:
+        self.closed = False
+        self.close_code = None
+        self.close_reason = None
+        self.payloads: list[str] = []
+
+    async def receive(self):
+        await asyncio.Event().wait()
+
+    async def send_str(self, payload: str) -> None:
+        self.payloads.append(payload)
+
+    async def close(self, code: int, message: bytes) -> None:
+        self.closed = True
+        self.close_code = code
+        self.close_reason = message.decode("utf-8")
+
+
+async def _dispose_private_session(session: WebsocketInputSession) -> None:
+    await session.close("test cleanup")
+    assert session._reader_task.done()
+    assert session._follow_up_lease is None
+    assert not session._retired_tasks
+
+
+@pytest.mark.parametrize(
+    "state",
+    [WebsocketState.HANDSHAKE, WebsocketState.IDLE, WebsocketState.ACCEPTING],
+)
+def test_websocket_close_matrix_quiesces_non_active_session_states(state: WebsocketState) -> None:
+    async def run() -> None:
+        websocket = _RecordingWebsocket()
+        session = WebsocketInputSession(websocket, "peer", _config(2137).websocket)
+        session._state = state
+        if state is not WebsocketState.HANDSHAKE:
+            session._session_context = InputSessionContext("session-1", ConversationMedium.TEXT)
+        await asyncio.gather(session.close("shutdown"), session.close("shutdown"))
+        assert session.closed
+        assert session._reader_task.done()
+        assert websocket.closed
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        WebsocketState.ACCEPTING,
+        WebsocketState.ACTIVE,
+        WebsocketState.CLOSING,
+        WebsocketState.CLOSED,
+    ],
+)
+def test_websocket_input_session_accept_operation_matrix_rejects_every_non_idle_state(
+    state: WebsocketState,
+) -> None:
+    async def run() -> None:
+        websocket = _RecordingWebsocket()
+        session = WebsocketInputSession(websocket, "peer", _config(2137).websocket)
+        session._session_context = InputSessionContext("session-1", ConversationMedium.TEXT)
+        session._state = state
+        with pytest.raises(AssertionError, match="only in IDLE"):
+            await session.accept_conversation().__aenter__()
+        if state is not WebsocketState.CLOSED:
+            session._state = WebsocketState.IDLE
+        await session.close("test cleanup")
+
+    asyncio.run(run())
+
+
+def test_websocket_session_rejects_overlapping_acceptance_and_close_wins() -> None:
+    async def run() -> None:
+        websocket = _RecordingWebsocket()
+        session = WebsocketInputSession(websocket, "peer", _config(2137).websocket)
+        session._session_context = InputSessionContext("session-1", ConversationMedium.TEXT)
+        session._state = WebsocketState.IDLE
+        first_scope = session.accept_conversation()
+        first_accept = asyncio.create_task(first_scope.__aenter__())
+        while session._state is not WebsocketState.ACCEPTING:
+            await asyncio.sleep(0)
+        with pytest.raises(AssertionError, match="only in IDLE"):
+            await session.accept_conversation().__aenter__()
+        await asyncio.gather(session.close("shutdown"), session.close("shutdown"))
+        with pytest.raises(InputSessionClosed):
+            await first_accept
+        assert session.closed
+        assert session._reader_task.done()
+
+    asyncio.run(run())
+
+
+def test_websocket_active_close_waits_for_conversation_scope_cleanup() -> None:
+    async def run() -> None:
+        websocket = _RecordingWebsocket()
+        session = WebsocketInputSession(websocket, "peer", _config(2137).websocket)
+        session._session_context = InputSessionContext("session-1", ConversationMedium.TEXT)
+        session._state = WebsocketState.ACTIVE
+        session._control = asyncio.Queue(maxsize=1)
+        session._active_conversation = object()
+        session._active_scope_exited.clear()
+
+        closing = asyncio.create_task(session.close("server shutting down"))
+        assert isinstance(await session._control.get(), InputSessionClosed)
+        await asyncio.sleep(0)
+        assert session._state is WebsocketState.CLOSING
+        assert not closing.done()
+        assert not websocket.closed
+
+        session._active_conversation = None
+        session._active_scope_exited.set()
+        await closing
+        assert session.closed
+        assert websocket.close_code == 1001
+        assert session._reader_task.done()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("closure_path", ["protocol_rejection", "lease_expiry"])
+def test_websocket_protocol_closure_remains_closing_until_active_scope_exits(
+    closure_path: str,
+) -> None:
+    async def run() -> None:
+        websocket = _RecordingWebsocket()
+        session = WebsocketInputSession(websocket, "peer", _config(2137).websocket)
+        session._session_context = InputSessionContext("session-1", ConversationMedium.TEXT)
+        session._state = WebsocketState.ACTIVE
+        session._control = asyncio.Queue(maxsize=1)
+        session._active_conversation = object()
+        session._active_scope_exited.clear()
+        if closure_path == "protocol_rejection":
+            await session._reject(ProtocolRejectionCode.INVALID_STATE, "rejected", 1002)
+        else:
+            session._state = WebsocketState.AWAITING_FOLLOW_UP
+            await session._expire_follow_up_lease()
+        assert session._state is WebsocketState.CLOSING
+        assert not session.closed
+        assert isinstance(await session._control.get(), InputSessionClosed)
+
+        closing = asyncio.create_task(session.close("cleanup"))
+        await asyncio.sleep(0)
+        assert not closing.done()
+        session._active_conversation = None
+        session._active_scope_exited.set()
+        await closing
+        assert session.closed
+
+    asyncio.run(run())
+
+
+def test_websocket_reader_failure_remains_closing_until_active_scope_exits() -> None:
+    class FailingWebsocket(_RecordingWebsocket):
+        async def receive(self):
+            raise RuntimeError("reader failed")
+
+    async def run() -> None:
+        websocket = FailingWebsocket()
+        session = WebsocketInputSession(websocket, "peer", _config(2137).websocket)
+        session._session_context = InputSessionContext("session-1", ConversationMedium.TEXT)
+        session._state = WebsocketState.ACTIVE
+        session._control = asyncio.Queue(maxsize=1)
+        session._active_conversation = object()
+        session._active_scope_exited.clear()
+        await session._reader_task
+        assert session._state is WebsocketState.CLOSING
+        assert not session.closed
+        assert isinstance(await session._control.get(), InputSessionClosed)
+
+        closing = asyncio.create_task(session.close("cleanup"))
+        await asyncio.sleep(0)
+        assert not closing.done()
+        session._active_conversation = None
+        session._active_scope_exited.set()
+        await closing
+        assert session.closed
+
+    asyncio.run(run())
+
+
+def test_websocket_sink_uses_fresh_ids_and_ordered_terminal_events() -> None:
+    async def run() -> None:
+        websocket = _RecordingWebsocket()
+        session = WebsocketInputSession(websocket, "peer", _config(2137).websocket)
+        first = _WebsocketAssistantSink(session)
+        await first.start()
+        await first.send_text("one")
+        await first.send_text("two")
+        assert await first.complete() is not None
+
+        second = _WebsocketAssistantSink(session)
+        await second.start()
+        await second.abort(AssistantAbortReason.AGENT_FAILED, "failed")
+
+        events = [server_event_from_json(payload) for payload in websocket.payloads]
+        assert [type(event) for event in events] == [
+            AssistantMessageStarted,
+            AssistantTextChunk,
+            AssistantTextChunk,
+            AssistantMessageCompleted,
+            AssistantMessageStarted,
+            AssistantMessageAborted,
+        ]
+        first_id = events[0].message_id
+        second_id = events[4].message_id
+        assert first_id != second_id
+        assert all(event.message_id == first_id for event in events[:4])
+        assert events[-1] == AssistantMessageAborted(
+            second_id,
+            AssistantAbortReason.AGENT_FAILED.value,
+            "failed",
+        )
+        await _dispose_private_session(session)
+
+    asyncio.run(run())
+
+
+def test_writer_cancellation_before_handoff_creates_no_follow_up_interval() -> None:
+    async def run() -> None:
+        websocket = _RecordingWebsocket()
+        session = WebsocketInputSession(websocket, "peer", _config(2137).websocket)
+        session._session_context = InputSessionContext("session-1", ConversationMedium.TEXT)
+        session._state = WebsocketState.ACTIVE
+        conversation = _WebsocketInputConversation(
+            session,
+            InputConversationContext("conversation-1", "session-1", ConversationMedium.TEXT),
+            UserMessage("initial"),
+        )
+        await session._writer_lock.acquire()
+        request = asyncio.create_task(conversation.request_follow_up())
+        await asyncio.sleep(0)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert session._state is WebsocketState.ACTIVE
+        assert session._follow_up_token is None
+        assert session._follow_up_deadline is None
+        session._writer_lock.release()
+        await _dispose_private_session(session)
+
+    asyncio.run(run())
+
+
+def test_follow_up_gate_retains_one_early_value_until_matching_ack() -> None:
+    async def run() -> None:
+        websocket = _RecordingWebsocket()
+        session = WebsocketInputSession(websocket, "peer", _config(2137, lease=10).websocket)
+        session._session_context = InputSessionContext("session-1", ConversationMedium.TEXT)
+        session._state = WebsocketState.ACTIVE
+        session._control = asyncio.Queue(maxsize=1)
+        conversation = _WebsocketInputConversation(
+            session,
+            InputConversationContext("conversation-1", "session-1", ConversationMedium.TEXT),
+            UserMessage("initial"),
+        )
+        token = await conversation.request_follow_up()
+        assert session._state is WebsocketState.FOLLOW_UP_COMMITTING
+        assert await session._commit_client_event(
+            FollowUpMessage("early"),
+            session._follow_up_deadline,
+        )
+        assert session._control.empty()
+        with pytest.raises(AssertionError, match="token mismatch"):
+            conversation.acknowledge_follow_up_ready(FollowUpRequestCommitted("wrong"))
+        conversation.acknowledge_follow_up_ready(token)
+        assert await session._control.get() == UserMessage("early")
+        assert session._state is WebsocketState.ACTIVE
+
+        assert not await session._commit_client_event(
+            WsFollowUpTimedOut(),
+            asyncio.get_running_loop().time(),
+        )
+        assert websocket.close_code == 1002
+        rejection = server_event_from_json(websocket.payloads[-1])
+        assert rejection == ProtocolRejected(
+            ProtocolRejectionCode.DUPLICATE_FOLLOW_UP_OUTCOME,
+            "duplicate follow-up outcome",
+        )
+        await _dispose_private_session(session)
+
+    asyncio.run(run())
+
+
+def test_terminal_cancel_bypasses_follow_up_gate_and_clears_lease() -> None:
+    async def run() -> None:
+        websocket = _RecordingWebsocket()
+        session = WebsocketInputSession(websocket, "peer", _config(2137, lease=10).websocket)
+        session._session_context = InputSessionContext("session-1", ConversationMedium.TEXT)
+        session._state = WebsocketState.FOLLOW_UP_COMMITTING
+        session._control = asyncio.Queue(maxsize=1)
+        session._retained_follow_up = UserMessage("retained")
+        session._follow_up_outcome_committed = True
+        session._follow_up_deadline = asyncio.get_running_loop().time() + 10
+        session._follow_up_lease = asyncio.create_task(asyncio.sleep(10))
+        assert await session._commit_client_event(
+            CancelConversation(),
+            asyncio.get_running_loop().time(),
+        )
+        assert type(await session._control.get()).__name__ == "ConversationCancelled"
+        assert session._retained_follow_up is None
+        assert session._follow_up_deadline is None
+        await _dispose_private_session(session)
+
+    asyncio.run(run())
+
+
+def test_follow_up_outcome_after_lease_deadline_closes_without_semantic_timeout() -> None:
+    async def run() -> None:
+        websocket = _RecordingWebsocket()
+        session = WebsocketInputSession(websocket, "peer", _config(2137).websocket)
+        session._state = WebsocketState.AWAITING_FOLLOW_UP
+        session._control = asyncio.Queue(maxsize=1)
+        session._follow_up_deadline = 42.0
+        assert not await session._commit_client_event(WsFollowUpTimedOut(), 42.0001)
+        assert websocket.close_code == 1013
+        assert websocket.close_reason == "follow-up resource lease expired"
+        assert isinstance(await session._control.get(), InputSessionClosed)
+        await _dispose_private_session(session)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("value", [False, 0, -1, float("nan"), float("inf")])
+def test_repository_clients_reject_invalid_follow_up_timeout(value) -> None:
+    with pytest.raises(ValueError, match="positive finite"):
+        validate_follow_up_timeout(value)
+
+
+def test_repository_client_clis_require_explicit_follow_up_timeout() -> None:
+    with pytest.raises(SystemExit):
+        parse_batch_args([])
+    with pytest.raises(SystemExit):
+        parse_chat_args([])
+
+
+class _DelayedReplyAgent(ConversationAgent):
+    async def run_agent_conversation(
+        self,
+        context: ConversationContext,
+        channel: AgentChannel,
+    ) -> None:
+        del context
+        await channel.receive_user_message()
+        await asyncio.sleep(2.1)
+        await channel.send_message("delayed reply")
+        await channel.end_conversation()
+
+    async def close(self) -> None:
+        return None
+
+
+def test_real_server_and_repository_batch_client_survive_delayed_agent(capsys) -> None:
+    async def run() -> None:
+        config = _config(_unused_port())
+        runner = await _start(config, _DelayedReplyAgent())
+        try:
+            await run_batch_ws_client(
+                BatchWsClientOptions(
+                    url=f"ws://127.0.0.1:{config.websocket.port}/chat",
+                    user=None,
+                    area="office",
+                    messages=("hello",),
+                    follow_up_timeout_seconds=5,
+                )
+            )
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+    assert "delayed reply" in capsys.readouterr().out
+
+
+def test_websocket_observability_has_stable_session_and_admission_context(caplog) -> None:
+    async def run() -> None:
+        config = _config(_unused_port())
+        with caplog.at_level(logging.DEBUG, logger="ai_server.websocket_server"):
+            runner = await _start(config, EchoAgent())
+            try:
+                async with ClientSession() as client:
+                    async with client.ws_connect(
+                        f"ws://127.0.0.1:{config.websocket.port}/chat"
+                    ) as websocket:
+                        await websocket.send_str(client_event_to_json(SessionStart(area="office")))
+                        assert await _receive(websocket) == SessionAccepted()
+                        assert await _receive(websocket) == ConversationReady()
+            finally:
+                await runner.cleanup()
+
+        assert "WebsocketAdmission" in caplog.text
+        assert "slot reserved peer=127.0.0.1:" in caplog.text
+        assert "slot released peer=127.0.0.1:" in caplog.text
+        assert "WebsocketInputSession[127.0.0.1:" in caplog.text
+        assert "state transition old=handshake cause=handshake_accepted new=idle" in caplog.text
+        assert "write handoff event=SessionAccepted" in caplog.text
+        assert "write drain completed event=ConversationReady" in caplog.text
+
+    asyncio.run(run())

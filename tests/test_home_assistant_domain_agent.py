@@ -3,8 +3,8 @@ import json
 
 import pytest
 
+from conftest import agent_context
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent, HomeAssistantDomainToolSet, _parse_domain_reply
-from ai_server.interfaces import Conversation
 
 
 def test_home_assistant_domain_agent_runs_one_agent_loop_task() -> None:
@@ -24,7 +24,7 @@ def test_home_assistant_domain_agent_runs_one_agent_loop_task() -> None:
         connection=FakeHomeAssistantConnection(),
         loop_factory=fake_loop.factory,
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office", "user": "maciek"})
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office", "user": "maciek"})
     task = {
         "id": "t1",
         "domain": "home_assistant",
@@ -78,7 +78,7 @@ def test_home_assistant_domain_agent_normalizes_hvac_mode_alias_before_availabil
         connection=FakeHomeAssistantConnection(),
         loop_factory=fake_loop.factory,
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office"})
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office"})
     task = {
         "id": "t1",
         "domain": "home_assistant",
@@ -118,7 +118,7 @@ def test_home_assistant_domain_agent_answers_global_device_count_query_without_m
         connection=FakeHomeAssistantConnection(),
         loop_factory=fake_loop.factory,
     )
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office"})
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office"})
     task = {
         "id": "t1",
         "domain": "home_assistant",

@@ -9,7 +9,7 @@ from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, A
 from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.home_assistant.toolset import HomeAssistantToolSet
-from ai_server.interfaces import Conversation
+from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 
 
@@ -166,7 +166,7 @@ class HomeAssistantDomainAgent:
 
     async def run_task(
         self,
-        conversation: Conversation,
+        conversation: AgentExecutionContext,
         task: DomainTask,
         active_context: dict[str, Any],
     ) -> dict[str, Any]:

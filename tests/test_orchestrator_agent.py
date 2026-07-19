@@ -5,15 +5,15 @@ from pathlib import Path
 
 import pytest
 
+from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.orchestrator import GENERATION_FAILURE_MESSAGE, OrchestratorAgent, _parse_plan
 from ai_server.config import ServerConfig
 from ai_server.domain_agents import QueryCapability
 from ai_server.domain_agents.weather import WeatherDomainAgent
 from ai_server.home_assistant.interfaces import HomeAssistantArea, HomeAssistantInventory
-from ai_server.interfaces import Conversation
-from ai_server.messages import TextMessage, text_message_to_events
+from conftest import TextMessage, text_message_to_events
 from ai_server.ollama_client import OllamaError
-from conftest import FakeConversationEndpoint
+from conftest import FakeAgentChannel, agent_context, run_agent
 
 
 def test_parse_plan_validates_home_assistant_command_envelope() -> None:
@@ -226,16 +226,16 @@ def test_orchestrator_does_not_read_followup_without_explicit_request(caplog) ->
         owns_ollama_client=False,
         server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="włącz klimę w salonie"), TextMessage(text="ustaw ją na 26")])
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office"})
+    endpoint = FakeAgentChannel([TextMessage(text="włącz klimę w salonie"), TextMessage(text="ustaw ją na 26")])
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office"})
 
     with caplog.at_level(logging.INFO, logger="ai_server.orchestrator"):
-        asyncio.run(agent.run_conversation(conversation, endpoint))
+        asyncio.run(run_agent(agent, conversation, endpoint))
 
     assert endpoint.sent == list(
         text_message_to_events(TextMessage(text="Włączyłem klimatyzację w salonie."))
     )
-    assert endpoint.control_events == []
+    assert endpoint.control_events == ["end_conversation"]
     assert [task["id"] for task in domain_agent.tasks] == ["t1"]
     planning_payload = json.loads(ollama.requests[0]["messages"][-1]["content"])
     assert planning_payload["conversation"]["area"] == "office"
@@ -245,7 +245,7 @@ def test_orchestrator_does_not_read_followup_without_explicit_request(caplog) ->
     assert "user_settings" not in planning_payload["conversation"]
     assert "location" not in planning_payload["conversation"]
     assert "room" not in planning_payload["conversation"]
-    assert conversation.state["orchestrator"]["active_domain"] == "home_assistant"
+    assert conversation.agent_state["orchestrator"]["active_domain"] == "home_assistant"
     assert "received message text='włącz klimę w salonie'" in caplog.text
     assert "planning output model=qwen3:4b-instruct kind=single_task confidence=0.9" in caplog.text
     assert "dispatching task task=" in caplog.text
@@ -265,10 +265,10 @@ def test_orchestrator_reports_unsupported_domain_to_final_synthesis() -> None:
     }
     ollama = FakeOllamaClient([json.dumps(plan), "Wikipedia nie jest jeszcze podłączona."])
     agent = OrchestratorAgent(orchestrator_model="qwen3:4b-instruct", ollama_client=ollama, owns_ollama_client=False)
-    endpoint = FakeConversationEndpoint([TextMessage(text="sprawdź Einsteina na Wikipedii")])
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "text"})
+    endpoint = FakeAgentChannel([TextMessage(text="sprawdź Einsteina na Wikipedii")])
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "text"})
 
-    asyncio.run(agent.run_conversation(conversation, endpoint))
+    asyncio.run(run_agent(agent, conversation, endpoint))
 
     final_payload = json.loads(ollama.requests[1]["messages"][-1]["content"])
     final_system_prompt = ollama.requests[1]["messages"][0]["content"]
@@ -314,9 +314,9 @@ def test_orchestrator_planning_prompt_uses_only_loaded_domain_prompts() -> None:
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="co u ciebie?")])
+    endpoint = FakeAgentChannel([TextMessage(text="co u ciebie?")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
 
     system_prompt = ollama.requests[0]["messages"][0]["content"]
     assert "Available task domains: time" in system_prompt
@@ -355,10 +355,10 @@ def test_orchestrator_planning_output_logs_token_counts(caplog) -> None:
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="hej")])
+    endpoint = FakeAgentChannel([TextMessage(text="hej")])
 
     with caplog.at_level(logging.INFO, logger="ai_server.orchestrator"):
-        asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
+        asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
 
     assert "planning output model=qwen3:4b-instruct kind=chat confidence=0.95" in caplog.text
     assert "prompt_tokens=123 completion_tokens=12 total_tokens=135" in caplog.text
@@ -383,10 +383,10 @@ def test_orchestrator_returns_single_verbatim_task_result_without_final_synthesi
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="sprawdź Einsteina na Wikipedii")])
-    conversation = Conversation(conversation_id="conversation-1", attributes={"medium": "voice"})
+    endpoint = FakeAgentChannel([TextMessage(text="sprawdź Einsteina na Wikipedii")])
+    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
 
-    asyncio.run(agent.run_conversation(conversation, endpoint))
+    asyncio.run(run_agent(agent, conversation, endpoint))
 
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Tekst kontrolowany przez DSA.")))
     assert len(ollama.requests) == 1
@@ -413,9 +413,9 @@ def test_orchestrator_short_path_dispatches_known_time_utterance_without_ollama(
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="Która godzina?")])
+    endpoint = FakeAgentChannel([TextMessage(text="Która godzina?")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
 
     assert ollama.requests == []
     assert domain_agent.tasks == [
@@ -452,9 +452,9 @@ def test_orchestrator_short_path_dispatches_system_status_check_in_without_ollam
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="Jak się masz?")])
+    endpoint = FakeAgentChannel([TextMessage(text="Jak się masz?")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice", "user": "Krzysztof"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "user": "Krzysztof"}), endpoint))
 
     assert ollama.requests == []
     assert domain_agent.tasks == [
@@ -496,9 +496,9 @@ def test_orchestrator_short_path_dispatches_weather_utterance_without_ollama() -
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="Jaka pogoda na weekend?")])
+    endpoint = FakeAgentChannel([TextMessage(text="Jaka pogoda na weekend?")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
 
     assert ollama.requests == []
     assert domain_agent.tasks == [
@@ -540,7 +540,7 @@ def test_orchestrator_weather_planning_prompt_routes_minimal_commands(tmp_path: 
     assert '"location"' not in prompt
 
 
-def test_orchestrator_plans_pronoun_temperature_followup_instead_of_weather_short_path() -> None:
+def test_orchestrator_does_not_carry_pronoun_context_between_agent_conversations() -> None:
     initial_plan = {
         "kind": "single_task",
         "confidence": 0.95,
@@ -606,25 +606,65 @@ def test_orchestrator_plans_pronoun_temperature_followup_instead_of_weather_shor
         owns_ollama_client=False,
         home_assistant_inventory_provider=FakeAreaInventoryProvider(),
     )
-    conversation = Conversation(conversation_id="c1", attributes={"medium": "voice", "area": "office"})
-    first_endpoint = FakeConversationEndpoint([TextMessage(text="Włącz klimatyzację w salonie")])
-    second_endpoint = FakeConversationEndpoint([TextMessage(text="Super! I ustaw ją na 22 stopnie")])
+    first_conversation = agent_context(
+        conversation_id="c1",
+        attributes={"medium": "voice", "area": "office"},
+    )
+    second_conversation = agent_context(
+        conversation_id="c2",
+        attributes={"medium": "voice", "area": "office"},
+    )
+    first_endpoint = FakeAgentChannel([TextMessage(text="Włącz klimatyzację w salonie")])
+    second_endpoint = FakeAgentChannel([TextMessage(text="Super! I ustaw ją na 22 stopnie")])
 
-    asyncio.run(agent.run_conversation(conversation, first_endpoint))
-    asyncio.run(agent.run_conversation(conversation, second_endpoint))
+    asyncio.run(run_agent(agent, first_conversation, first_endpoint))
+    asyncio.run(run_agent(agent, second_conversation, second_endpoint))
 
     assert len(ollama.requests) == 2
     followup_payload = json.loads(ollama.requests[1]["messages"][1]["content"])
-    assert followup_payload["active_context"]["salient_entities"] == ["climate.living_room"]
+    assert followup_payload["active_context"]["salient_entities"] == []
     assert [task["domain"] for task in domain_agent.tasks] == ["home_assistant", "home_assistant"]
     assert domain_agent.tasks[1]["command"]["operation"]["intent"] == "set_temperature"
-    assert domain_agent.tasks[1]["command"]["selection"]["include"] == [
-        {"domain": "climate", "scope": "single", "area": "living_room"}
-    ]
+    assert domain_agent.tasks[1]["command"]["selection"]["include"] == []
     assert first_endpoint.sent == list(text_message_to_events(TextMessage(text="Włączono klimatyzację w salonie.")))
     assert second_endpoint.sent == list(
         text_message_to_events(TextMessage(text="Ustawiono klimatyzację w salonie na 22 stopnie."))
     )
+
+
+def test_concurrent_public_agent_conversations_have_isolated_mutable_state(monkeypatch) -> None:
+    async def run() -> None:
+        agent = object.__new__(OrchestratorAgent)
+        agent._processing_update_interval_seconds = 1.0
+        entered: list[AgentExecutionContext] = []
+        both_entered = asyncio.Event()
+
+        async def capture_execution(
+            self,
+            conversation,
+            channel,
+            processing_update_throttle=None,
+        ) -> None:
+            del self, channel, processing_update_throttle
+            conversation.agent_state["owner"] = conversation.conversation_id
+            entered.append(conversation)
+            if len(entered) == 2:
+                both_entered.set()
+            await both_entered.wait()
+            assert conversation.agent_state == {"owner": conversation.conversation_id}
+
+        monkeypatch.setattr(OrchestratorAgent, "_run_execution_context", capture_execution)
+        first = agent_context("concurrent-1", {"medium": "text"}).conversation
+        second = agent_context("concurrent-2", {"medium": "text"}).conversation
+        await asyncio.gather(
+            agent.run_agent_conversation(first, FakeAgentChannel()),
+            agent.run_agent_conversation(second, FakeAgentChannel()),
+        )
+        assert len(entered) == 2
+        assert entered[0] is not entered[1]
+        assert entered[0].agent_state is not entered[1].agent_state
+
+    asyncio.run(run())
 
 
 def test_orchestrator_plans_media_stop_with_extra_tail() -> None:
@@ -655,9 +695,9 @@ def test_orchestrator_plans_media_stop_with_extra_tail() -> None:
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="Zatrzymaj muzykę. Ok, na pół.")])
+    endpoint = FakeAgentChannel([TextMessage(text="Zatrzymaj muzykę. Ok, na pół.")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
 
     assert len(ollama.requests) == 1
     assert domain_agent.tasks[0]["domain"] == "media_player"
@@ -724,9 +764,9 @@ def test_orchestrator_plans_composite_after_known_media_phrase_prefix() -> None:
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="Wyłącz muzykę i wyłącz klimatyzator.")])
+    endpoint = FakeAgentChannel([TextMessage(text="Wyłącz muzykę i wyłącz klimatyzator.")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
 
     assert len(ollama.requests) == 2
     assert media_agent.tasks[0]["domain"] == "media_player"
@@ -763,9 +803,9 @@ def test_orchestrator_uses_area_inventory_for_named_media_room_instead_of_short_
         owns_ollama_client=False,
         home_assistant_inventory_provider=FakeAreaInventoryProvider(),
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="zatrzymaj muzykę w pracowni")])
+    endpoint = FakeAgentChannel([TextMessage(text="zatrzymaj muzykę w pracowni")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
 
     planning_payload = json.loads(ollama.requests[0]["messages"][1]["content"])
     assert planning_payload["conversation"]["home_assistant_areas"] == [
@@ -821,9 +861,9 @@ def test_orchestrator_merges_split_media_room_tasks_before_dispatch() -> None:
         owns_ollama_client=False,
         home_assistant_inventory_provider=FakeAreaInventoryProvider(),
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="graj muzykę do pracy w salonie i pracowni")])
+    endpoint = FakeAgentChannel([TextMessage(text="graj muzykę do pracy w salonie i pracowni")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
 
     assert len(domain_agent.tasks) == 1
     assert domain_agent.tasks[0]["id"] == "t1"
@@ -877,9 +917,9 @@ def test_orchestrator_canonicalizes_home_assistant_room_alias_from_inventory() -
         owns_ollama_client=False,
         home_assistant_inventory_provider=FakeAreaInventoryProvider(),
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="wyłącz klimatyzację w pracowni")])
+    endpoint = FakeAgentChannel([TextMessage(text="wyłącz klimatyzację w pracowni")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
 
     planning_payload = json.loads(ollama.requests[0]["messages"][1]["content"])
     assert planning_payload["conversation"]["home_assistant_areas"] == [
@@ -917,9 +957,9 @@ def test_orchestrator_blocks_unknown_planned_area_before_dispatch() -> None:
         owns_ollama_client=False,
         home_assistant_inventory_provider=FakeAreaInventoryProvider(),
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="zatrzymaj muzykę w pracowni")])
+    endpoint = FakeAgentChannel([TextMessage(text="zatrzymaj muzykę w pracowni")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
 
     assert domain_agent.tasks == []
     assert "Nie znam pokoju" in json.loads(ollama.requests[1]["messages"][1]["content"])["task_results"][0]["clarification_question"]
@@ -953,9 +993,9 @@ def test_orchestrator_short_path_dispatches_tok_fm_without_ollama() -> None:
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="Włącz TOK FM w całym domu")])
+    endpoint = FakeAgentChannel([TextMessage(text="Włącz TOK FM w całym domu")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
 
     assert ollama.requests == []
     assert domain_agent.tasks[0]["domain"] == "media_player"
@@ -990,9 +1030,9 @@ def test_orchestrator_short_path_dispatches_media_volume_up_without_ollama() -> 
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="Przygłośnij Muzykę")])
+    endpoint = FakeAgentChannel([TextMessage(text="Przygłośnij Muzykę")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
 
     assert ollama.requests == []
     assert domain_agent.tasks[0]["domain"] == "media_player"
@@ -1026,9 +1066,9 @@ def test_orchestrator_retries_low_confidence_plan_with_clarification_model() -> 
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="opowiedz o Marii Curie")])
+    endpoint = FakeAgentChannel([TextMessage(text="opowiedz o Marii Curie")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
 
     assert [request["model"] for request in ollama.requests] == ["small", "big", "small"]
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Jest odpowiedź.")))
@@ -1050,9 +1090,9 @@ def test_orchestrator_retries_invalid_plan_with_clarification_model() -> None:
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="pogadajmy")])
+    endpoint = FakeAgentChannel([TextMessage(text="pogadajmy")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
 
     assert [request["model"] for request in ollama.requests] == ["small", "big", "small"]
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Dobrze.")))
@@ -1074,9 +1114,9 @@ def test_orchestrator_returns_error_phrase_when_clarification_model_fails() -> N
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="coś trudnego")])
+    endpoint = FakeAgentChannel([TextMessage(text="coś trudnego")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
 
     assert endpoint.sent == list(text_message_to_events(TextMessage(text=GENERATION_FAILURE_MESSAGE)))
 
@@ -1097,9 +1137,9 @@ def test_orchestrator_retries_empty_final_reply_with_clarification_model() -> No
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="odpowiedz")])
+    endpoint = FakeAgentChannel([TextMessage(text="odpowiedz")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
 
     assert [request["model"] for request in ollama.requests] == ["small", "small", "big"]
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Duża odpowiedź.")))
@@ -1177,9 +1217,9 @@ def test_orchestrator_clarification_answer_can_correct_home_assistant_selection_
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="sprawdź klimatyzator"), TextMessage(text="Włącz klimatyzator")])
+    endpoint = FakeAgentChannel([TextMessage(text="sprawdź klimatyzator"), TextMessage(text="Włącz klimatyzator")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
 
     assert [request["model"] for request in ollama.requests] == ["small", "small", "big", "small"]
     assert [task["command"]["selection"]["include"][0]["domain"] for task in domain_agent.tasks] == ["light", "climate"]
@@ -1245,9 +1285,9 @@ def test_orchestrator_retries_empty_clarification_response_with_orchestrator_mod
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="włącz światło"), TextMessage(text="w salonie")])
+    endpoint = FakeAgentChannel([TextMessage(text="włącz światło"), TextMessage(text="w salonie")])
 
-    asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
+    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
 
     assert [request["model"] for request in ollama.requests] == ["small", "small", "big", "small", "small"]
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Które światło mam włączyć?"))) + list(
@@ -1275,10 +1315,10 @@ def test_orchestrator_logs_blocked_task_clarification_utterance(caplog) -> None:
     }
     ollama = FakeOllamaClient([json.dumps(plan), "Które światło mam włączyć?"])
     agent = OrchestratorAgent(orchestrator_model="small", ollama_client=ollama, owns_ollama_client=False)
-    endpoint = FakeConversationEndpoint([TextMessage(text="włącz światło")])
+    endpoint = FakeAgentChannel([TextMessage(text="włącz światło")])
 
     with caplog.at_level(logging.WARNING, logger="ai_server.orchestrator"):
-        asyncio.run(agent.run_conversation(Conversation(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
+        asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
 
     assert "utterance caused clarification source=orchestrator conversation_id=c1 utterance='włącz światło'" in caplog.text
 
@@ -1335,18 +1375,18 @@ def test_orchestrator_stores_dsa_clarification_and_resumes_same_domain(caplog) -
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    endpoint = FakeConversationEndpoint([TextMessage(text="włącz światło"), TextMessage(text="w salonie")])
-    conversation = Conversation(conversation_id="c1", attributes={"medium": "voice"})
+    endpoint = FakeAgentChannel([TextMessage(text="włącz światło"), TextMessage(text="w salonie")])
+    conversation = agent_context(conversation_id="c1", attributes={"medium": "voice"})
 
     with caplog.at_level(logging.WARNING, logger="ai_server.orchestrator"):
-        asyncio.run(agent.run_conversation(conversation, endpoint))
+        asyncio.run(run_agent(agent, conversation, endpoint))
 
     assert endpoint.sent == list(text_message_to_events(TextMessage(text="Które światło mam włączyć?"))) + list(
         text_message_to_events(TextMessage(text="Włączyłem światło w salonie."))
     )
     assert [task["id"] for task in domain_agent.tasks] == ["t1", "t1"]
     assert [request["model"] for request in ollama.requests] == ["small", "small", "big", "small"]
-    assert conversation.state["orchestrator"]["pending_clarification"] is None
+    assert conversation.agent_state["orchestrator"]["pending_clarification"] is None
     assert "utterance caused clarification source=dsa conversation_id=c1 utterance='włącz światło'" in caplog.text
 
 
@@ -1371,8 +1411,8 @@ def test_orchestrator_pending_clarification_takes_priority_over_short_path() -> 
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    conversation = Conversation(conversation_id="c1", attributes={"medium": "voice"})
-    conversation.state["orchestrator"] = {
+    conversation = agent_context(conversation_id="c1", attributes={"medium": "voice"})
+    conversation.agent_state["orchestrator"] = {
         "last_turns": [],
         "salient_entities": [],
         "active_domain": "home_assistant",
@@ -1398,9 +1438,9 @@ def test_orchestrator_pending_clarification_takes_priority_over_short_path() -> 
             "clarification_question": "Które światło mam włączyć?",
         },
     }
-    endpoint = FakeConversationEndpoint([TextMessage(text="Która godzina?")])
+    endpoint = FakeAgentChannel([TextMessage(text="Która godzina?")])
 
-    asyncio.run(agent.run_conversation(conversation, endpoint))
+    asyncio.run(run_agent(agent, conversation, endpoint))
 
     assert [request["model"] for request in ollama.requests] == ["big", "small"]
     assert [task["domain"] for task in domain_agent.tasks] == ["home_assistant"]
@@ -1417,8 +1457,8 @@ def test_orchestrator_clears_pending_clarification_on_thanks() -> None:
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    conversation = Conversation(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"})
-    conversation.state["orchestrator"] = {
+    conversation = agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"})
+    conversation.agent_state["orchestrator"] = {
         "last_turns": [{"user": "Przygłośnij muzykę.", "assistant": "W którym pokoju mam użyć głośnika?"}],
         "salient_entities": [],
         "active_domain": "media_player",
@@ -1444,15 +1484,15 @@ def test_orchestrator_clears_pending_clarification_on_thanks() -> None:
             "clarification_question": "W którym pokoju mam użyć głośnika?",
         },
     }
-    endpoint = FakeConversationEndpoint([TextMessage(text="Dziękuję.")])
+    endpoint = FakeAgentChannel([TextMessage(text="Dziękuję.")])
 
-    asyncio.run(agent.run_conversation(conversation, endpoint))
+    asyncio.run(run_agent(agent, conversation, endpoint))
 
     assert ollama.requests == []
     assert domain_agent.tasks == []
-    assert conversation.state["orchestrator"]["pending_clarification"] is None
-    assert endpoint.control_events == []
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="")))
+    assert conversation.agent_state["orchestrator"]["pending_clarification"] is None
+    assert endpoint.control_events == ["end_conversation"]
+    assert endpoint.sent == list(text_message_to_events(""))
 
 
 def test_orchestrator_drops_unanswered_clarification_when_conversation_ends() -> None:
@@ -1503,13 +1543,14 @@ def test_orchestrator_drops_unanswered_clarification_when_conversation_ends() ->
         ollama_client=ollama,
         owns_ollama_client=False,
     )
-    conversation = Conversation(conversation_id="c1", attributes={"medium": "voice"})
+    conversation = agent_context(conversation_id="c1", attributes={"medium": "voice"})
 
-    asyncio.run(agent.run_conversation(conversation, FakeConversationEndpoint([TextMessage(text="włącz światło")])))
+    asyncio.run(run_agent(agent, conversation, FakeAgentChannel([TextMessage(text="włącz światło")])))
 
-    assert conversation.state["orchestrator"]["pending_clarification"] is None
+    assert conversation.agent_state["orchestrator"]["pending_clarification"] is None
 
-    asyncio.run(agent.run_conversation(conversation, FakeConversationEndpoint([TextMessage(text="w salonie")])))
+    next_conversation = agent_context(conversation_id="c2", attributes={"medium": "voice"})
+    asyncio.run(run_agent(agent, next_conversation, FakeAgentChannel([TextMessage(text="w salonie")])))
 
     system_prompts = [request["messages"][0]["content"] for request in ollama.requests]
     assert len(system_prompts) == 4

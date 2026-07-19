@@ -15,7 +15,20 @@ websocket:
   host: 0.0.0.0
   port: 2137
   path: /chat
-  follow_up_timeout_seconds: 60
+  max_connections: 8
+  capacity_retry_after_seconds: 1
+  follow_up_idle_lease_seconds: 30
+  max_frame_bytes: 65536
+  ingress_queue_capacity: 16
+  heartbeat_seconds: 10
+  handshake_timeout_seconds: 5
+
+conversation:
+  agent_cancellation_deadline_seconds: 5
+  fatal_notification_seconds: 1
+
+shutdown:
+  grace_period_seconds: 10
 
 stt:
   model: base
@@ -36,6 +49,7 @@ microphones:
   speech_peak_threshold: 500
   post_speech_ignore_seconds: 1
   follow_up_timeout_seconds: 15
+  assistant_text_buffer_characters: 4096
   devices:
     # - type: box3_esphome
     #   name: box3-office

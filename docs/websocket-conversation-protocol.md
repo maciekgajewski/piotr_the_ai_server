@@ -2,13 +2,13 @@
 
 ## Status and scope
 
-- **Authority:** Normative external binding; approved for T-004 implementation
+- **Authority:** Normative external binding; implemented by T-004
 - **Audience:** Maintainers of the websocket server, repository websocket clients, configuration, and transport conformance tests
 - **Read when:** Changing websocket admission, JSON events, client behavior, heartbeat, follow-up handling, or websocket shutdown
 - **Approval state:** Approved by Captain on 2026-07-19
 
 This document binds one websocket connection to one persistent text
-`InputSession` from the draft
+`InputSession` from the normative
 [AI Server Conversation Bridge Protocol](ai-server-conversation-protocol.md).
 It defines external JSON only. Core Conversation ordering and Agent behavior are
 not duplicated here.
@@ -365,7 +365,7 @@ no websocket upgrade and no InputSession occurs
 
 ## Implementation and conformance references
 
-Planned implementation owners:
+Implementation owners:
 
 - `ai_server/websocket_server.py`;
 - `ai_server/ws_client_common.py`;
@@ -373,7 +373,7 @@ Planned implementation owners:
 - `ai_server/batch_ws_client.py`;
 - websocket and shutdown fields in `ai_server/config.py` and examples.
 
-Planned tests are listed in the
+Conformance tests are listed in the
 [Protocol Conformance Catalogue](protocol-conformance-catalogue.md), especially
 websocket schema/state, capacity, follow-up gate/lease, client timer, transport
 commit, and live client/server coverage.
@@ -386,5 +386,5 @@ Unknown and old events are external protocol violations.
 
 ## Explicitly unresolved decisions
 
-None. Captain approved this binding on 2026-07-19. Implementation and
-conformance evidence remain tracked by T-004.
+None. Captain approved this binding on 2026-07-19. Verification and conformance
+evidence remain tracked by T-004.

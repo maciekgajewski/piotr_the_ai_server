@@ -16,11 +16,12 @@ from urllib.parse import urlparse
 from aiohttp import ClientError, ClientSession
 
 from ai_server.ws_client_common import DEFAULT_WEBSOCKET_URL, INTERRUPTED_EXIT_CODE, WebsocketDisconnected
+from ai_server.ws_client_common import ConversationTerminated
 from ai_server.ws_client_common import WEBSOCKET_HEARTBEAT_SECONDS
 from ai_server.ws_client_common import WebsocketSessionRejected
 from ai_server.ws_client_common import WaitState, WsClientInterrupted
-from ai_server.ws_client_common import handle_websocket_message, receive_websocket_message, send_session_attributes
-from ai_server.ws_client_common import send_user_text
+from ai_server.ws_client_common import handle_websocket_message, receive_websocket_message, send_session_start
+from ai_server.ws_client_common import send_follow_up_timed_out, send_user_text, validate_follow_up_timeout
 
 WAITING_FOR_NEW_CONVERSATION_PROMPT = "waiting for new conversation> "
 WAITING_FOR_NEXT_MESSAGE_PROMPT = "waiting for next message> "
@@ -65,12 +66,14 @@ class ChatClientOptions:
     url: str
     user: str | None
     area: str | None
+    follow_up_timeout_seconds: float
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Chat with the AI server over websocket.")
     parser.add_argument("--user", help="Optional session user attribute sent in the websocket handshake.")
     parser.add_argument("--area", help="Optional Home Assistant area attribute sent in the websocket handshake.")
+    parser.add_argument("--follow-up-timeout-seconds", required=True, type=float)
     parser.add_argument(
         "url",
         nargs="?",
@@ -110,8 +113,14 @@ async def _run_interactive_chat(
 
         try:
             input_session.set_prompt(WAITING_FOR_SERVER_PROMPT)
-            await send_session_attributes(websocket, options.user, options.area)
-            await _run_interactive_connection(websocket, input_session, stop_event, options.url)
+            await send_session_start(websocket, options.user, options.area)
+            await _run_interactive_connection(
+                websocket,
+                input_session,
+                stop_event,
+                options.follow_up_timeout_seconds,
+                options.url,
+            )
             return
         except WebsocketSessionRejected as exc:
             _print_client_message(f"Connection rejected: {exc}.")
@@ -169,6 +178,7 @@ async def _run_interactive_connection(
     websocket,
     input_session: "_InteractiveInputSession",
     stop_event: asyncio.Event,
+    follow_up_timeout_seconds: float,
     websocket_url: str = DEFAULT_WEBSOCKET_URL,
 ) -> None:
     show_wait_for_new_conversation_message = False
@@ -176,19 +186,24 @@ async def _run_interactive_connection(
         wait_state = await _read_next_wait_state(
             websocket,
             stop_event,
+            follow_up_timeout_seconds,
             websocket_url,
             show_wait_for_new_conversation_message=show_wait_for_new_conversation_message,
         )
         show_wait_for_new_conversation_message = True
         input_session.set_prompt(_prompt_for_wait_state(wait_state))
         while True:
-            text, wait_state = await _read_next_interactive_text(
+            text, wait_state, follow_up_timed_out = await _read_next_interactive_text(
                 websocket,
                 stop_event,
                 input_session,
                 wait_state,
+                follow_up_timeout_seconds,
                 websocket_url,
             )
+            if follow_up_timed_out:
+                input_session.set_prompt(WAITING_FOR_SERVER_PROMPT)
+                break
             if text is None:
                 return
             command_result = _handle_client_command(text)
@@ -206,6 +221,7 @@ async def _run_interactive_connection(
 async def _read_next_wait_state(
     websocket,
     stop_event: asyncio.Event,
+    follow_up_timeout_seconds: float,
     websocket_url: str = DEFAULT_WEBSOCKET_URL,
     *,
     show_wait_for_new_conversation_message: bool = True,
@@ -217,8 +233,9 @@ async def _read_next_wait_state(
             message,
             system_message_printer=_print_client_message,
             show_wait_for_new_conversation_message=show_wait_for_new_conversation_message,
+            follow_up_timeout_seconds=follow_up_timeout_seconds,
         )
-        if wait_state is not None:
+        if isinstance(wait_state, WaitState):
             return wait_state
 
 
@@ -227,14 +244,21 @@ async def _read_next_interactive_text(
     stop_event: asyncio.Event,
     input_session: "_InteractiveInputSession",
     wait_state: WaitState,
+    follow_up_timeout_seconds: float,
     websocket_url: str = DEFAULT_WEBSOCKET_URL,
-) -> tuple[str | None, WaitState]:
+) -> tuple[str | None, WaitState, bool]:
     receive_task = asyncio.create_task(receive_websocket_message(websocket, stop_event))
     line_task = asyncio.create_task(input_session.read_line())
+    timeout_task = (
+        asyncio.create_task(asyncio.sleep(wait_state.timeout_seconds))
+        if wait_state.follow_up_requested and wait_state.timeout_seconds is not None
+        else None
+    )
     try:
         while True:
+            tasks = (receive_task, line_task) + ((timeout_task,) if timeout_task is not None else ())
             done, pending = await asyncio.wait(
-                (receive_task, line_task),
+                tasks,
                 timeout=WEBSOCKET_LIVENESS_CHECK_SECONDS,
                 return_when=asyncio.FIRST_COMPLETED,
             )
@@ -247,19 +271,36 @@ async def _read_next_interactive_text(
                     websocket,
                     _receive_task_result(receive_task),
                     system_message_printer=_print_client_message,
+                    follow_up_timeout_seconds=follow_up_timeout_seconds,
                 )
-                if next_wait_state is not None:
+                if isinstance(next_wait_state, ConversationTerminated):
+                    return None, wait_state, True
+                if isinstance(next_wait_state, WaitState):
                     wait_state = next_wait_state
                     input_session.set_prompt(_prompt_for_wait_state(wait_state))
+                    if timeout_task is not None:
+                        timeout_task.cancel()
+                    timeout_task = (
+                        asyncio.create_task(asyncio.sleep(wait_state.timeout_seconds))
+                        if wait_state.follow_up_requested and wait_state.timeout_seconds is not None
+                        else None
+                    )
                 if line_task in done:
-                    return line_task.result(), wait_state
+                    return line_task.result(), wait_state, False
+                if timeout_task is not None and timeout_task in done:
+                    await send_follow_up_timed_out(websocket)
+                    return None, wait_state, True
                 receive_task = asyncio.create_task(receive_websocket_message(websocket, stop_event))
                 continue
 
+            if timeout_task is not None and timeout_task in done and line_task not in done:
+                await send_follow_up_timed_out(websocket)
+                return None, wait_state, True
+
             assert line_task in done
-            return line_task.result(), wait_state
+            return line_task.result(), wait_state, False
     finally:
-        await _cancel_tasks(tuple(task for task in (receive_task, line_task) if not task.done()))
+        await _cancel_tasks(tuple(task for task in (receive_task, line_task, timeout_task) if task is not None and not task.done()))
 
 
 async def _receive_with_liveness(websocket, stop_event: asyncio.Event, websocket_url: str):
@@ -520,6 +561,7 @@ def main(argv: list[str] | None = None) -> int:
         url=args.url,
         user=args.user,
         area=args.area,
+        follow_up_timeout_seconds=validate_follow_up_timeout(args.follow_up_timeout_seconds),
     )
     try:
         asyncio.run(run_chat(options))

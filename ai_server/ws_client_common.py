@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 
 from aiohttp import WSMsgType
 
-from ai_server.messages import ConversationEnded, FollowUpRequested, MessageBegin, MessageEnd, MessageFragment
-from ai_server.messages import NewConversation, ProcessingUpdate, ReadyForConversation, SessionAttributes
-from ai_server.messages import SessionRejected, TextMessage
-from ai_server.messages import endpoint_event_to_json, session_event_from_json, text_message_to_events
+from ai_server.websocket_messages import AssistantMessageAborted, AssistantMessageCompleted, AssistantMessageStarted
+from ai_server.websocket_messages import AssistantTextChunk, ConversationEnded, ConversationReady, ConversationStarted
+from ai_server.websocket_messages import FollowUpMessage, FollowUpRequested, FollowUpTimedOut, ProcessingUpdate
+from ai_server.websocket_messages import ProtocolRejected, SessionAccepted, SessionStart, StartConversation
+from ai_server.websocket_messages import client_event_to_json, server_event_from_json
+
 
 DEFAULT_WEBSOCKET_URL = "ws://127.0.0.1:2137/chat"
 WEBSOCKET_HEARTBEAT_SECONDS = 2.0
@@ -19,15 +22,15 @@ SystemMessagePrinter = Callable[[str], None]
 
 
 class WsClientInterrupted(Exception):
-    """Raised when the websocket client is interrupted by SIGINT or SIGTERM."""
+    pass
 
 
 class WebsocketDisconnected(Exception):
-    """Raised when the websocket connection is closed unexpectedly."""
+    pass
 
 
 class WebsocketSessionRejected(Exception):
-    """Raised when the server rejects the websocket session."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -37,64 +40,79 @@ class WaitState:
     timeout_seconds: float | None = None
 
 
-async def send_session_attributes(websocket, user: str | None, area: str | None) -> None:
-    attributes = {"medium": "text"}
-    if user:
-        attributes["user"] = user
-    if area:
-        attributes["area"] = area
-    await websocket.send_str(endpoint_event_to_json(SessionAttributes(attributes=attributes)))
+@dataclass(frozen=True)
+class ConversationTerminated:
+    reason: str
+
+
+def validate_follow_up_timeout(value: float) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0 or not math.isfinite(value):
+        raise ValueError("follow_up_timeout_seconds must be a positive finite number")
+    return float(value)
+
+
+async def send_session_start(websocket, user: str | None, area: str | None) -> None:
+    await websocket.send_str(client_event_to_json(SessionStart(user=user, area=area)))
 
 
 async def send_user_text(websocket, text: str, starts_new_conversation: bool) -> None:
-    if starts_new_conversation:
-        await websocket.send_str(endpoint_event_to_json(NewConversation(attributes={})))
-    for event in text_message_to_events(TextMessage(text=text)):
-        await websocket.send_str(endpoint_event_to_json(event))
+    event = StartConversation(text) if starts_new_conversation else FollowUpMessage(text)
+    await websocket.send_str(client_event_to_json(event))
+
+
+async def send_follow_up_timed_out(websocket) -> None:
+    await websocket.send_str(client_event_to_json(FollowUpTimedOut()))
 
 
 def handle_websocket_message(
     websocket,
     message,
     *,
+    follow_up_timeout_seconds: float,
     system_message_printer: SystemMessagePrinter | None = None,
     show_wait_for_new_conversation_message: bool = True,
-) -> WaitState | None:
+) -> WaitState | ConversationTerminated | None:
+    del websocket
+    timeout_seconds = validate_follow_up_timeout(follow_up_timeout_seconds)
     print_system_message = system_message_printer or _print_system_message
     if message.type == WSMsgType.TEXT:
-        event = session_event_from_json(message.data)
-        if isinstance(event, MessageBegin):
+        event = server_event_from_json(message.data)
+        if isinstance(event, (SessionAccepted, ConversationStarted, AssistantMessageStarted)):
             return None
-        if isinstance(event, MessageFragment):
+        if isinstance(event, AssistantTextChunk):
             print(event.text, end="", flush=True)
             return None
-        if isinstance(event, MessageEnd):
+        if isinstance(event, AssistantMessageCompleted):
             print(flush=True)
+            return None
+        if isinstance(event, AssistantMessageAborted):
+            print(flush=True)
+            print_system_message(f"Assistant message aborted: {event.reason}.")
             return None
         if isinstance(event, ProcessingUpdate):
             print_system_message("processing...")
             return None
-        if isinstance(event, SessionRejected):
-            raise WebsocketSessionRejected(event.reason)
+        if isinstance(event, ProtocolRejected):
+            raise WebsocketSessionRejected(event.code.value)
         if isinstance(event, ConversationEnded):
             if show_wait_for_new_conversation_message:
                 print_system_message("Conversation ended; waiting for a new conversation.")
-            return None
-        if isinstance(event, ReadyForConversation):
+            return ConversationTerminated(event.reason)
+        if isinstance(event, ConversationReady):
             return WaitState(starts_new_conversation=True)
         if isinstance(event, FollowUpRequested):
-            print_system_message(f"Follow-up requested; timeout is {event.timeout_seconds:g}s.")
+            print_system_message(f"Follow-up requested; timeout is {timeout_seconds:g}s.")
             return WaitState(
                 starts_new_conversation=False,
                 follow_up_requested=True,
-                timeout_seconds=event.timeout_seconds,
+                timeout_seconds=timeout_seconds,
             )
         raise RuntimeError(f"unsupported server event: {type(event).__name__}")
 
     if message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
         raise WebsocketDisconnected("websocket closed")
     if message.type == WSMsgType.ERROR:
-        raise WebsocketDisconnected("websocket connection failed") from websocket.exception()
+        raise WebsocketDisconnected("websocket connection failed") from message.data
     raise RuntimeError(f"unsupported websocket message type: {message.type}")
 
 
@@ -110,16 +128,13 @@ async def receive_websocket_message(websocket, stop_event: asyncio.Event):
             (receive_task, stop_task),
             return_when=asyncio.FIRST_COMPLETED,
         )
-
         for task in pending:
             task.cancel()
         for task in pending:
             with suppress(asyncio.CancelledError):
                 await task
-
         if stop_task in done:
             raise WsClientInterrupted()
-
         return receive_task.result()
     finally:
         for task in (receive_task, stop_task):

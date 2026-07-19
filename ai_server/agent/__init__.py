@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Protocol
-
 from ai_server.ai_tools import create_tools
 from ai_server.agent.assistant import AssistantAgent
 from ai_server.agent.echo import EchoAgent
@@ -12,19 +10,11 @@ from ai_server.agent.polite_reply import PoliteReplyAgent
 from ai_server.orchestrator import OrchestratorAgent
 
 from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, DEFAULT_DATA_DIR, ProcessingUpdatesConfig, ServerConfig
+from ai_server.conversations.interfaces import Agent
 from ai_server.domain_agents import create_domain_agents
 from ai_server.home_assistant import HomeAssistantConnection
-from ai_server.interfaces import Conversation, ConversationEndpoint
 from ai_server.ollama_client import OllamaClient
 from ai_server.utils import JsonFileStore
-
-
-class Agent(Protocol):
-    async def run_conversation(self, conversation: Conversation, endpoint: ConversationEndpoint) -> None:
-        raise NotImplementedError
-
-    async def close(self) -> None:
-        raise NotImplementedError
 
 
 async def create_agent(
