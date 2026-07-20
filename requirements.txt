@@ -5,6 +5,7 @@ nvidia-cublas-cu12
 nvidia-cudnn-cu12
 onnxruntime-gpu
 piper-tts
+prompt-toolkit
 PyYAML
 wyoming
 wyoming-piper

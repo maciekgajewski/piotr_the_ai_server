@@ -9,8 +9,10 @@
   `ai_server.batch_ws_client`, shared websocket-client state, terminal input,
   client-side follow-up timing, or repository-client exit behavior
 - **Created:** 2026-07-19
-- **Status:** Ready for implementation
-- **Implementation:** Not started
+- **Status:** In progress
+- **Implementation:** Shared-engine cutover started on 2026-07-20. The legacy
+  raw-terminal client and duplicated websocket loops have been removed; focused
+  terminal/PTy and complete WSC conformance evidence remains outstanding.
 - **Contract review:** The 2026-07-19 independent review was closed, then the
   contract was materially amended on 2026-07-20 with Captain-requested explicit
   terminal-reset behavior; the fresh independent review completed with no
