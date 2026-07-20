@@ -2,15 +2,24 @@
 
 ## Status and scope
 
-- **Authority:** Normative conformance plan for T-004 and the Microphone Protocol
-- **Audience:** Implementers and reviewers of the Conversation bridge, websocket binding, microphone mapping, and driver protocol
-- **Read when:** Implementing T-004, adding protocol tests, reviewing coverage, or closing the migration
-- **Approval state:** T-004 sections approved by Captain on 2026-07-19
+- **Authority:** Normative conformance plan for T-004 and the Microphone
+  Protocol; draft conformance plan for T-005 repository clients
+- **Audience:** Implementers and reviewers of the Conversation bridge,
+  websocket binding, repository websocket clients, microphone mapping, and
+  driver protocol
+- **Read when:** Implementing T-004 or T-005, adding protocol tests, reviewing
+  coverage, or closing a protocol migration
+- **Approval state:** T-004 sections approved by Captain on 2026-07-19; T-005
+  `WSC-` section and proposed `WS-FOLLOWUP-003/004` retirement await Captain
+  approval
 
 This catalogue maps stable requirements to implementation owners and required
 evidence. T-004 implementation is present; a row becomes a conformance claim
 only when its referenced test or recorded manual check exists and passes.
 Existing `MP-` entries continue to describe the normative Microphone Protocol.
+Draft `WSC-` entries describe the proposed normative behavior of the repository
+websocket clients and are not conformance claims until their governing document
+is approved and the cited evidence exists and passes.
 
 Equivalent focused filenames are permitted only when this catalogue is updated
 in the same change.
@@ -105,9 +114,17 @@ Additional exhaustive core coverage:
 | `WS-CONFIG-001` | Required bounds have no hidden defaults | config parser | missing/Boolean/zero/negative/non-integer/non-finite matrix |
 | `WS-FOLLOWUP-001` | Gate retains at most one outcome; terminal input bypasses | websocket InputConversation | early/duplicate/cancel/close cases |
 | `WS-FOLLOWUP-002` | Outcome exposure follows bridge state acknowledgement | adapter and bridge | before handoff, during drain, before ack, after ack cases |
-| `WS-FOLLOWUP-003` | Repository clients default semantic timeout to 15 seconds and allow an explicit override | client configuration/CLI | default, override, and invalid policy tests |
-| `WS-FOLLOWUP-004` | Client submission at/before expiry wins and sends one event | shared client state | controllable-clock before/equal/after tests |
 | `WS-LEASE-001` | Server lease closes `1013` without forging timeout | websocket adapter | start/cancel/heartbeat/equal-boundary/expiry cases |
+
+Pending T-005 requirement retirement, not effective until Captain approval:
+
+- On approval, `WS-FOLLOWUP-003` will be replaced by the strengthened
+  `WSC-FOLLOWUP-001` and the old identifier MUST NOT be reused.
+- On approval, `WS-FOLLOWUP-004` will be replaced by the strengthened
+  `WSC-FOLLOWUP-002` and the old identifier MUST NOT be reused.
+
+Until that approval, `WS-FOLLOWUP-003` and `WS-FOLLOWUP-004` retain their
+approved T-004 meaning.
 
 Additional websocket coverage:
 
@@ -119,10 +136,54 @@ Additional websocket coverage:
 - Follow-up send failure before handoff and drain failure after handoff.
 - Lease expiry during drain; retained input at the exact lease deadline;
   suppression of input after committed expiry.
-- Interactive and batch client normal, follow-up, timeout, cancellation,
-  disconnect, and terminal flows.
-- Real server/client delayed-response liveness check using the repository
-  websocket test workflow.
+- Real delayed-response transport liveness independent of any particular
+  client presentation policy.
+
+## Websocket Client Behavior
+
+These draft requirements govern only the interactive and batch websocket
+clients shipped in this repository. They do not constrain external clients
+which conform to the Websocket Conversation Protocol.
+
+| Requirement | Summary | Implementation owner | Required automated evidence |
+|---|---|---|---|
+| `WSC-OWNER-001` | Interactive and batch modes apply one behavioral policy | repository client behavior | cross-presenter state/race/exit parameterization |
+| `WSC-STATE-001` | Client lifecycle and active Conversation identity follow the closed state model | client state machine | every legal transition plus ID lifetime tests |
+| `WSC-STATE-002` | Every unlisted or duplicate server event fails closed | client state machine | complete server-event and client-operation matrices plus representative illegal cells |
+| `WSC-STREAM-001` | Each turn has zero or one fresh, correlated assistant stream | client state machine | start/chunk/complete/abort and mismatch/order matrix |
+| `WSC-INPUT-001` | Input exists only after a legal presentation commit | client behavior and presentations | presentation barriers plus no busy-state queue tests |
+| `WSC-INPUT-002` | Empty local input never crosses the websocket | client behavior and presentations | interactive silent-ignore tests plus batch pre-connection argparse failures |
+| `WSC-PRESENTATION-001` | Offer presentation is an explicit cancellable commit | client behavior and presentations | terminal/disconnect/interruption before, at, and after commit |
+| `WSC-FOLLOWUP-001` | Both clients share the 15-second default and positive finite override | client CLI/options | default, valid override, and argparse-error matrix |
+| `WSC-FOLLOWUP-002` | One fixed post-presentation deadline arbitrates submission and timeout | client behavior and clock | injected-clock before/equal/after tests plus redraw/command invariance |
+| `WSC-RACE-001` | Complete ready sets use the documented client priority | client state machine | pairwise and multi-ready barriers covering every modeled result and committed-send consequence |
+| `WSC-COMMIT-001` | Committed outbound events are joined, never competed with or retried | client transport boundary | cancellation before commit, after commit, and uncertain-delivery tests |
+| `WSC-UX-001` | Interactive status, prompt, redraw, and semantic styling preserve editable input | interactive presentation | processing-status and style-role units plus real PTY partial-buffer/redraw tests |
+| `WSC-TERMINAL-001` | Every interactive TTY exit ends with an explicit flushed SGR reset | interactive presentation and entrypoint | PTY exit matrix, including Ctrl-C in every client state, proving final `b"\x1b[0m"` and no later SGR output |
+| `WSC-HISTORY-001` | Interactive history is bounded, private, and path-configurable | interactive presentation | environment-path, mode, bound, persistence, and blank-exclusion tests |
+| `WSC-COMMAND-001` | Local commands and interruption never become websocket messages | repository entrypoints and interactive presentation | help/exit/EOF/unknown-command tests plus both profiles under SIGINT/SIGTERM |
+| `WSC-TTY-001` | Interactive mode requires TTY stdin and stdout | interactive entrypoint | redirected-stdin and redirected-stdout subprocess tests |
+| `WSC-BATCH-001` | Batch messages are offered only in legal states | batch presentation | no-pre-send and exact offer/submission timestamp tests |
+| `WSC-BATCH-002` | Batch stdout is verbatim assistant payload plus stream newlines with no client-added control output | batch presentation | byte-exact zero/one/multiple/aborted streams, payload escape preservation, and stderr separation |
+| `WSC-LIFETIME-001` | Every client terminal path joins owned work and closes once | client behavior and transport | task/transport/terminal cleanup matrix |
+| `WSC-EXIT-001` | Both entrypoints use the documented typed exit classification | client behavior and entrypoints | both-profile subprocess matrix for completion, exit, interruption, connect/loss, rejection, protocol/CLI, presentation failure, known-unsent send failure, and uncertain delivery |
+| `WSC-COMPAT-001` | Repository clients accept only the current websocket vocabulary | parser and client state machine | legacy/unknown/malformed server-event rejection tests |
+
+Additional repository-client coverage:
+
+- Every legal server-event/client-state row and representative illegal events
+  in every client state and assistant-output state.
+- Complete ready-set priority during both prompt presentation states and the
+  active follow-up interval.
+- Submission timestamps captured at commit; one deadline unchanged by blank
+  input, commands, diagnostics, or redraw.
+- Exact cancellation and joining of receive, presentation, input, timeout,
+  send, transport-close, and terminal-cleanup operations.
+- Real PTY editing, history, redraw, semantic styles, EOF, interruption,
+  restoration, final explicit SGR reset on every exit, and non-TTY rejection.
+- Real deterministic delayed-server flows for both repository clients,
+  including busy-state prompt suppression, stdout/stderr, rejection,
+  disconnect, follow-up timeout, and exit status.
 
 ## Microphone Protocol
 
@@ -267,7 +328,8 @@ Current automated evidence is organized as follows:
 |---|---|
 | Core context outcomes, bridge state/event matrices, rendezvous, cancellation, race priority, entry/exit deadlines, backpressure, typed terminal results, and observability | `tests/test_conversation_protocol_conformance.py`, `tests/test_conversation_bridge.py`, `tests/test_sessions.py`, `tests/test_interfaces.py`, `tests/test_messages.py` |
 | Agent factories, concurrent mutable-state isolation, and migrated Agent/DSA behavior | `tests/test_agent_factory.py`, `tests/test_orchestrator_agent.py`, other Agent and DSA unit modules under `tests/`, `orchestrator_and_dsa_tests/` |
-| Websocket schema, state, stream correlation, transport handoff, admission/release, follow-up gate/lease, client policy, observability, and real delayed server/client transport | `tests/test_websocket_server.py`, `tests/test_messages.py`, `tests/test_config.py` |
+| Websocket schema, binding state, transport handoff, admission/release, follow-up gate/lease, observability, and delayed transport liveness | `tests/test_websocket_server.py`, `tests/test_messages.py`, `tests/test_config.py` |
+| Repository websocket-client state, stream correlation, presentation, follow-up arbitration, terminal UX, batch output, and exit behavior | Planned focused client unit, PTY, subprocess, and deterministic live-server tests under `tests/` |
 | Voice mapping, follow-up arbitration, recovery, bounded rendering, and Microphone Protocol regressions | `tests/test_microphones.py`, `tests/test_microphone_protocol.py`, `tests/test_box3_esphome_microphone.py`, `tests/microphone_driver_conformance.py` |
 | Application configuration, lifecycle construction, graceful signal shutdown, deadline escalation, second-signal escalation, and logging | `tests/test_config.py`, `tests/test_server_lifecycle.py`, `tests/test_server_logging.py` |
 
@@ -282,7 +344,7 @@ Current automated checkpoint before the final closure re-review:
 |---|---|
 | InputSession acceptance/close matrix | `test_voice_input_session_accept_operation_matrix_rejects_every_non_idle_state`, `test_voice_session_close_wins_uncommitted_acceptance_and_is_idempotent`, `test_voice_session_close_after_accept_commit_releases_active_control_and_never_rearms`, `test_websocket_input_session_accept_operation_matrix_rejects_every_non_idle_state`, `test_websocket_close_matrix_quiesces_non_active_session_states`, `test_websocket_active_close_waits_for_conversation_scope_cleanup`, `test_websocket_protocol_closure_remains_closing_until_active_scope_exits`, `test_websocket_reader_failure_remains_closing_until_active_scope_exits` |
 | Bridge ready-set and sink races | `test_race_operation_pairwise_and_multi_ready_precedence`, `test_race_operation_deadline_is_selected_only_when_neither_candidate_commits`, `test_terminal_input_preempts_each_inflight_sink_operation`, `test_terminal_input_is_observable_in_every_nonterminal_bridge_stage` |
-| Repository client follow-up arbitration and presentation | `test_interactive_submission_before_and_after_expiry_boundary`, `test_interactive_submission_wins_at_exact_expiry_boundary`, `test_interactive_terminal_wins_when_terminal_and_line_are_both_committed`, `test_batch_follow_up_timer_is_cancelled_by_terminal_server_event`, `test_interactive_assistant_response_resets_dim_client_style` |
+| Pre-T-005 repository-client baseline only | `test_interactive_submission_before_and_after_expiry_boundary`, `test_interactive_submission_wins_at_exact_expiry_boundary`, `test_interactive_terminal_wins_when_terminal_and_line_are_both_committed`, `test_batch_follow_up_timer_is_cancelled_by_terminal_server_event`, `test_interactive_assistant_response_resets_dim_client_style`; these do not yet prove the draft `WSC-` contract |
 | Voice committed-media cancellation and timer origin | `test_voice_sink_cancellation_before_playback_commit_cancels_renderer`, `test_voice_sink_cancellation_at_playback_commit_drains_committed_renderer`, `test_processing_update_cancellation_drains_committed_playback`, `test_follow_up_cancellation_drains_committed_cue_without_starting_listening`, `test_follow_up_cancellation_stops_committed_listening_generation`, `test_voice_cleanup_immediately_after_follow_up_commit_stops_listening_generation`, `test_voice_cleanup_during_follow_up_capture_stops_capturing_generation`, `test_follow_up_deadline_is_fixed_at_listening_started_before_collector_scheduling`, `test_voice_follow_up_monotonic_before_equal_after_arbiter` |
 | Websocket drain, lease, heartbeat, and capacity | `test_follow_up_drain_failure_after_handoff_closes_typed_committed_interval`, `test_follow_up_lease_expiry_during_writer_drain_closes_and_joins_tasks`, `test_follow_up_resource_lease_closes_without_forging_timeout`, `test_capacity_is_released_when_websocket_preparation_fails`, `test_capacity_is_released_after_invalid_handshake_and_timeout` |
 | Full automated checkpoint | 707 passing pytest cases; `git diff --check` clean |
@@ -308,3 +370,8 @@ automated evidence or an explicitly recorded manual hardware result, all legacy
 surfaces are absent, and the complete verification order succeeds. Renaming or
 deleting a requirement requires updating its governing protocol and this
 catalogue in the same change.
+
+T-005 cannot be ready for runtime implementation until the Captain approves
+the draft Websocket Client Behavior contract. It cannot be complete until every
+approved `WSC-` requirement points to current passing evidence and the required
+unit, PTY, subprocess, deterministic live-server, and full-suite checks pass.

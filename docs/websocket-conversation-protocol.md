@@ -2,16 +2,24 @@
 
 ## Status and scope
 
-- **Authority:** Normative external binding; implemented by T-004
-- **Audience:** Maintainers of the websocket server, repository websocket clients, configuration, and transport conformance tests
-- **Read when:** Changing websocket admission, JSON events, client behavior, heartbeat, follow-up handling, or websocket shutdown
-- **Approval state:** Approved by Captain on 2026-07-19
+- **Authority:** Normative external binding implemented by T-004; T-005
+  repository-client ownership reconciliation is draft
+- **Audience:** Maintainers of the websocket server, any websocket client,
+  configuration, and transport conformance tests
+- **Read when:** Changing websocket admission, JSON events, client wire
+  behavior, heartbeat, follow-up binding, or websocket shutdown
+- **Approval state:** T-004 external binding approved by Captain on 2026-07-19;
+  T-005 removal of repository-specific client policy and retired-ID mapping
+  await approval with `docs/websocket-client-behavior.md`
 
 This document binds one websocket connection to one persistent text
 `InputSession` from the normative
 [AI Server Conversation Bridge Protocol](ai-server-conversation-protocol.md).
 It defines external JSON only. Core Conversation ordering and Agent behavior are
-not duplicated here.
+not duplicated here. The repository's interactive and batch client behavior is
+defined separately by
+[Websocket Client Behavior](websocket-client-behavior.md); external clients are
+not bound by that repository-client contract.
 
 The binding is versionless and is a clean break from the old
 `session_attributes`, `new_conversation`, `message_begin`, `message_fragment`,
@@ -24,8 +32,9 @@ Requirement identifiers use the `WS-` prefix.
 - The websocket adapter owns HTTP admission, websocket framing, schema
   validation, background reading, transport writes, close codes, connection
   capacity, the follow-up resource lease, and the early-outcome gate.
-- The external client owns presentation of `follow_up_requested`, its semantic
-  follow-up timeout, and local arbitration between timeout and user submission.
+- The external client owns any presentation of `follow_up_requested`, its choice
+  of whether and when to produce a semantic timeout, and local arbitration
+  between timeout and user submission.
 - The core bridge owns Conversation state and MUST NOT inspect websocket frames,
   peer objects, queue sizes, heartbeats, or close codes.
 - A websocket connection maps to one `InputSession` and has at most one active
@@ -141,8 +150,10 @@ are insignificant and omitted optional fields are not serialized as `null`.
 | `CLOSING` | Rejection, shutdown, lease expiry, or transport failure committed |
 | `CLOSED` | Slot released and no further operation is legal |
 
-Client UI states are not server protocol states. A conforming client nevertheless
-tracks whether it may send a start event, follow-up outcome, or cancellation.
+Client UI states are not server protocol states. Every client remains
+responsible for sending events only in the legal binding states. The repository
+clients use the separate state model in
+[Websocket Client Behavior](websocket-client-behavior.md).
 
 ## Complete transition tables
 
@@ -234,18 +245,18 @@ code `1009`. If the validated ingress queue is full, the adapter sends
 `protocol_rejected(code="ingress_overflow")` when safe and closes with `1008`.
 It MUST NOT drop or overwrite events.
 
-## Follow-up timing and resource lease
+## Follow-up outcomes and resource lease
 
-The server sends no semantic timeout. Repository clients MUST use a shared
-15-second `follow_up_timeout_seconds` default when the command-line option is
-absent. An explicitly supplied override MUST be a positive finite number.
-(`WS-FOLLOWUP-003`)
+The server sends no semantic timeout and imposes no client presentation or
+local timer policy. After receiving `follow_up_requested`, a client may send at
+most one ordinary outcome: either `follow_up_message` or
+`follow_up_timed_out`. It may instead cancel the Conversation or close the
+connection. The binding does not require a client to implement interactive
+input, a local timeout, or any particular arbitration policy.
 
-After rendering `follow_up_requested`, the client atomically opens one local
-interval and starts its monotonic timer. User submission at or before the expiry
-boundary wins, cancels the timer, and sends exactly one `follow_up_message`.
-Expiry committed first sends exactly one `follow_up_timed_out`. Cancellation,
-Conversation end, or disconnect cancels the timer. (`WS-FOLLOWUP-004`)
+The repository clients' 15-second default and deterministic local arbitration
+are defined by `WSC-FOLLOWUP-001` and `WSC-FOLLOWUP-002` in
+[Websocket Client Behavior](websocket-client-behavior.md).
 
 On the server, the resource lease starts at follow-up transport handoff. One
 validated outcome committed after handoff may be retained while flow-control
@@ -317,7 +328,7 @@ S -> C  conversation_ready
 
 ```text
 Server hands follow_up_requested to transport, atomically opening token/gate/lease
-Client renders it and sends follow_up_message
+Client accepts it and sends follow_up_message
 Background reader validates and retains that one value
 Server writer drain completes
 Bridge enters WAITING_FOR_FOLLOW_UP and synchronously acknowledges token
@@ -369,15 +380,16 @@ no websocket upgrade and no InputSession occurs
 Implementation owners:
 
 - `ai_server/websocket_server.py`;
-- `ai_server/ws_client_common.py`;
-- `ai_server/chat_client.py`;
-- `ai_server/batch_ws_client.py`;
+- `ai_server/websocket_messages.py`;
 - websocket and shutdown fields in `ai_server/config.py` and examples.
+
+Repository client implementation and conformance references are listed in
+[Websocket Client Behavior](websocket-client-behavior.md).
 
 Conformance tests are listed in the
 [Protocol Conformance Catalogue](protocol-conformance-catalogue.md), especially
-websocket schema/state, capacity, follow-up gate/lease, client timer, transport
-commit, and live client/server coverage.
+websocket schema/state, capacity, follow-up gate/lease, transport commit, and
+live transport coverage.
 
 ## Compatibility policy
 
@@ -387,5 +399,19 @@ Unknown and old events are external protocol violations.
 
 ## Explicitly unresolved decisions
 
-None. Captain approved this binding on 2026-07-19. Verification and conformance
-evidence remain tracked by T-004.
+None. Captain approved the T-004 binding on 2026-07-19. The draft T-005
+ownership reconciliation and retired-ID mapping do not become normative until
+approved with the separate client contract. Verification and conformance
+evidence remain tracked by T-004 and T-005 respectively.
+
+## Proposed retired requirement identifiers
+
+- On approval of the T-005 ownership reconciliation, `WS-FOLLOWUP-003`, which
+  requires the repository-client 15-second default and positive finite
+  override, will be replaced by strengthened `WSC-FOLLOWUP-001`; the old
+  identifier MUST NOT be reused.
+- On that approval, `WS-FOLLOWUP-004`, which requires repository-client
+  submission-versus-timeout arbitration, will be replaced by strengthened
+  `WSC-FOLLOWUP-002`; the old identifier MUST NOT be reused.
+
+Until that approval, both identifiers retain their approved T-004 meaning.

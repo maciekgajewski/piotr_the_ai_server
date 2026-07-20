@@ -17,6 +17,18 @@ the current runtime. This task remains active until Gate D evidence is complete.
 The companion [illustrated design aid](T-004-agent-boundary-options.html) explains
 the approved architecture visually. It is informative, not normative.
 
+### Subsequent repository-client ownership clarification
+
+T-005 separates the external websocket binding from the behavior of the
+interactive and batch clients shipped in this repository. References below to
+repository-client presentation, the shared 15-second timeout, CLI policy, or
+client arbitration record the original T-004 cutover scope; their current
+proposed normative home, pending Captain approval, is the draft
+[Websocket Client Behavior](../websocket-client-behavior.md). The
+[Websocket Conversation Protocol](../websocket-conversation-protocol.md) now
+governs wire conformance for any client and does not require external clients to
+copy repository-specific behavior.
+
 ## Objective
 
 Replace the current loosely coupled `Session`/`Agent`/endpoint protocol with a

@@ -10,10 +10,13 @@
   client-side follow-up timing, or repository-client exit behavior
 - **Created:** 2026-07-19
 - **Implementation:** Not started
+- **Contract review:** The 2026-07-19 independent review was closed, then the
+  contract was materially amended on 2026-07-20 with Captain-requested explicit
+  terminal-reset behavior; fresh independent review is required
 - **Approval:** The architecture decisions in this task were selected by Captain
-  on 2026-07-19. The normative client-contract amendments described below still
-  require Captain approval before implementation, which then requires explicit
-  authorization.
+  on 2026-07-19. The separate draft normative
+  `docs/websocket-client-behavior.md` still requires Captain approval before
+  implementation, which then requires explicit authorization.
 
 ## Objective
 
@@ -34,14 +37,18 @@ protocol engine, while keeping their presentation modes separate:
   instead of being tolerated or guessed around.
 
 The server binding, JSON vocabulary, and conversation core remain unchanged.
-T-005 does add normative repository-client behavior within that binding. Draft
-those amendments and obtain Captain approval before implementation. If later
-implementation discovers that any other normative websocket requirement must
-change, stop and obtain separate Captain approval before continuing.
+Any websocket client is valid when it conforms to the external binding; it need
+not reproduce repository-specific UX, timing, or exit policy. T-005 therefore
+defines the interactive and batch client requirements in the separate normative
+`docs/websocket-client-behavior.md`, not inside the external websocket protocol.
+Obtain Captain approval of that client contract before implementation. If later
+implementation discovers that either normative contract must change, stop and
+obtain separate Captain approval before continuing.
 
 ## Approved design decisions
 
-Captain selected these decisions one at a time on 2026-07-19:
+Captain selected decisions 1-6 one at a time on 2026-07-19 and requested
+decision 7 on 2026-07-20:
 
 1. Use `prompt_toolkit` as the interactive terminal foundation.
 2. While the server owns the turn, display status but expose no input prompt.
@@ -55,6 +62,9 @@ Captain selected these decisions one at a time on 2026-07-19:
    directs automation to `tools/batch-ws-client.sh`.
 6. User input and assistant output use the terminal's normal foreground. Only
    system/client text and prompts use dim gray styling.
+7. Every interactive TTY exit, especially `Ctrl-C` from any client state, tears
+   down the terminal UI and then writes and flushes an explicit final SGR reset
+   `ESC [ 0 m` (`b"\x1b[0m"`) as the last style-affecting output.
 
 ## Normative inputs
 
@@ -64,31 +74,40 @@ Read before implementation:
 2. `docs/README.md`;
 3. `docs/ai-server-conversation-protocol.md`;
 4. `docs/websocket-conversation-protocol.md`;
-5. `docs/protocol-conformance-catalogue.md`;
-6. this task.
+5. `docs/websocket-client-behavior.md`;
+6. `docs/protocol-conformance-catalogue.md`;
+7. this task.
 
-Applicable websocket requirements include:
+Applicable external websocket requirements include:
 
 - `WS-SCHEMA-001`: strict typed JSON without permissive legacy parsing;
 - `WS-CREATION-001`: a start event carries one complete non-whitespace
   message;
 - `WS-STREAM-001`: assistant stream IDs are fresh, matching, and ordered;
 - `WS-TERMINAL-001`: terminal reason and context-rejection fields remain typed;
-- `WS-FOLLOWUP-003`: repository clients default to the shared 15-second
-  follow-up timeout and accept only positive finite overrides;
-- `WS-FOLLOWUP-004`: user submission at or before timeout expiry wins and
-  exactly one follow-up outcome is sent;
 - `WS-COMPAT-001`: old vocabulary is rejected rather than translated.
+
+Applicable repository-client requirements include:
+
+- `WSC-FOLLOWUP-001`: repository clients default to the shared 15-second
+  follow-up timeout and accept only positive finite overrides;
+- `WSC-FOLLOWUP-002`: user submission at or before timeout expiry wins and
+  exactly one follow-up outcome is sent;
+- `WSC-TERMINAL-001`: every interactive TTY exit ends with an explicit flushed
+  SGR reset after terminal UI teardown;
+- the complete `WSC-` state, presentation, race, UX, batch, lifetime, exit, and
+  compatibility requirements catalogued for this task.
 
 This task strengthens client-side enforcement and presentation of the approved
 binding. It does not transfer the server's admission, gate, lease, or transport
 commit responsibilities into the client.
 
 Before code changes, promote the applicable target behavior from this plan into
-an explicit client section of `docs/websocket-conversation-protocol.md`, add its
-stable requirement IDs to `docs/protocol-conformance-catalogue.md`, and obtain
-Captain approval. Until that approval, this task remains a plan and the current
-normative websocket document remains authoritative.
+the separate `docs/websocket-client-behavior.md`, add its stable `WSC-`
+requirement IDs to `docs/protocol-conformance-catalogue.md`, and obtain Captain
+approval. Until that approval, this task remains a plan, the client document
+remains draft normative, and current runtime behavior is not measured against
+the draft client contract.
 
 ## Current baseline
 
@@ -204,14 +223,15 @@ The terminal presenter owns:
 - input editing, history, paste, and terminal redraw;
 - dim-gray system/client output;
 - normal-foreground user echo and assistant output;
-- TTY validation and terminal cleanup;
+- TTY validation, terminal cleanup, and the explicit final ANSI style reset;
 - `/help` and `/exit` presentation, after the engine classifies them as local
   commands.
 
 The batch presenter owns:
 
 - the finite ordered list of scripted messages;
-- plain, non-ANSI output suitable for automation;
+- plain output with no client-added styling or ANSI control while preserving
+  assistant payload verbatim;
 - the choice to exit once all requested messages have completed;
 - no terminal input, history, prompt, or redraw behavior.
 
@@ -319,8 +339,13 @@ Use semantic style roles rather than scattering ANSI escapes:
 | `assistant` | streamed assistant text | terminal default foreground |
 
 Prompt styling must end before editable user input begins. Assistant styling
-must be normal before the first text chunk. Every exit path must restore the
-terminal even after cancellation, rejection, disconnect, or an exception.
+must be normal before the first text chunk. Every exit path after interactive
+TTY validation must restore the terminal even after cancellation, rejection,
+disconnect, or an exception. After stdout patching and the terminal UI have been
+torn down, cleanup writes and flushes an explicit SGR reset `ESC [ 0 m`
+(`b"\x1b[0m"`) directly to real terminal stdout. It must be the last
+style-affecting output; no dim-gray or other SGR sequence may follow it. Cleanup
+is idempotent and does not rely only on `prompt_toolkit` to restore color.
 
 Do not force bright-white ANSI because that can be wrong for light terminal
 themes. “Bright” in this task means the terminal's normal foreground, visibly
@@ -358,7 +383,8 @@ input.
   prompt.
 - `/exit` closes the client cleanly with exit code `0`.
 - `Ctrl-D` at an active prompt is equivalent to `/exit`.
-- `Ctrl-C` in any state cancels the client and exits with code `130`.
+- `Ctrl-C` in any state cancels the client, runs the idempotent final terminal
+  reset, and exits with code `130`.
 - Unknown slash commands do not cross the websocket boundary; print one
   dim-gray diagnostic and reopen the prompt.
 - Commands are available only while a prompt is active. There is no hidden
@@ -380,11 +406,15 @@ commit boundary:
 6. inspect the complete ready set;
 7. require the presenter to return typed
    `InputSubmitted(text, submitted_at)`, with `submitted_at` captured atomically
-   where the edited line commits; if a non-whitespace submission committed at or
-   before the absolute deadline, user input wins, the timer is cancelled and
-   joined, and one `follow_up_message` is sent;
-8. if expiry committed first, cancel and join the prompt and send one
-   `follow_up_timed_out`;
+   where the edited line commits; if a non-whitespace submission committed
+   before interval closure with `submitted_at` at or before the absolute
+   deadline, user input wins, the timer is cancelled and joined, and one
+   `follow_up_message` is sent, including when deadline notification is also
+   ready;
+8. if deadline notification is ready and no eligible submission is committed,
+   close the interval, cancel and join the prompt, and send one
+   `follow_up_timed_out`; a later submission loses even if the injected clock
+   still reads exactly the deadline;
 9. if a terminal server event, disconnect, or local interruption commits, it
    cancels both ordinary outcomes and sends neither;
 10. never revive a cancelled prompt or timer after leaving the interval.
@@ -398,23 +428,31 @@ not acceptable evidence for before, equal-boundary, and after-boundary cases.
 
 ## Concurrent-event priority and outbound commits
 
-At every race boundary, the engine must inspect the complete ready set. Priority
-selects among outcomes which have not already crossed a commit point:
+At every race boundary, the engine must inspect the complete ready set. First
+settle any send which already crossed outbound commit: join success, while an
+uncertain-delivery failure selects its non-zero terminal result and cannot be
+reclassified as local success or interruption. Among outcomes which have not
+already crossed a commit point, priority is:
 
 1. local session termination: `Ctrl-C`, `SIGTERM`, `/exit`, or active-prompt
    EOF;
 2. terminal transport or server input, including `protocol_rejected`, legal
-   `conversation_ended`, disconnect, and a detected client protocol error;
-3. a valid `InputSubmitted` whose commit timestamp is legal for the active
+   `conversation_ended`, disconnect, connection failure, and a detected client
+   protocol error;
+3. uncommitted local operational failure, including presentation failure or a
+   send which failed before commit;
+4. a valid `InputSubmitted` whose commit timestamp is legal for the active
    offer and, for follow-up, is at or before the absolute deadline;
-4. follow-up deadline expiry;
-5. non-terminal local outcomes such as blank input, `/help`, or an unknown
-   command, which redraw without changing protocol state or deadline.
+5. follow-up deadline expiry;
+6. non-terminal local outcomes such as blank input, `/help`, or an unknown
+   command, which redraw without changing protocol state or deadline;
+7. batch requested-work completion.
 
 Thus terminal server input beats an equal-ready ordinary line, while a valid
-line committed exactly at the follow-up deadline beats timeout. A line committed
-after the deadline is ineligible even if its task is ready when the engine
-inspects the set.
+line committed exactly at the follow-up deadline before interval closure beats
+timeout. A line committed after the deadline is ineligible even if its task is
+ready when the engine inspects the set. Once timeout closes the interval, a
+later line cannot reopen it even if its timestamp equals the deadline.
 
 Priority never undoes a committed outbound event. The transport interface must
 define a synchronous client-side send commit before its first suspension. Once
@@ -432,13 +470,19 @@ Use a typed internal exit result and map it consistently in both entrypoints:
 |---|---:|---|
 | Requested work completed | `0` | Normal output |
 | `/exit` or active-prompt EOF | `0` | No error |
-| `Ctrl-C`/`SIGTERM` interruption | `130` | Terminal restored |
-| Connection attempt failed | `1` | Dim-gray connection diagnostic |
-| Established connection lost | `1` | Dim-gray disconnect diagnostic |
-| Server `protocol_rejected` | `1` | Dim-gray typed rejection code/detail |
-| Invalid server event/order/correlation | `1` | Dim-gray client protocol-error diagnostic |
+| `Ctrl-C`/`SIGTERM` interruption | `130` | Terminal UI restored; final flushed SGR reset is the last style-affecting output |
+| Connection attempt failed | `1` | Profile-appropriate connection diagnostic |
+| Established connection lost | `1` | Profile-appropriate disconnect diagnostic |
+| Server `protocol_rejected` | `1` | Profile-appropriate typed rejection code/detail |
+| Invalid server event/order/correlation | `1` | Profile-appropriate client protocol-error diagnostic |
+| Local presentation failure | `1` | Profile-appropriate client failure diagnostic |
+| Failure before outbound commit | `1` | Profile-appropriate known-unsent diagnostic; no retry |
+| Failure after outbound commit | `1` | Profile-appropriate uncertain-delivery diagnostic; no retry |
 | Non-TTY interactive invocation | `2` | Plain diagnostic directing use of batch client |
-| Invalid CLI value | argparse usage code | argparse diagnostic without traceback |
+| Invalid timeout or empty/whitespace batch message | argparse usage code `2` | argparse diagnostic without traceback; no connection |
+
+Interactive diagnostics after terminal setup are dim gray. Batch diagnostics
+are plain stderr.
 
 The engine makes one connection attempt and never reconnects or retries. This
 preserves the current approved single-shot lifecycle.
@@ -460,7 +504,10 @@ The batch client must use the same engine and therefore the same:
 - rejection/disconnect exit classification.
 
 Its presenter supplies scripted messages only when the engine requests legal
-input. It must not pre-send future messages. When no scripted message remains:
+input. It must not pre-send future messages. Every scripted message must be
+validated before the connection attempt; an empty or whitespace-only
+`--message` value is an argparse usage error and no connection is made. When no
+scripted message remains:
 
 - after ordinary requested work completes, exit `0`;
 - during a follow-up interval, wait for the configured semantic timeout and send
@@ -474,12 +521,14 @@ injected monotonic clock. A scripted message, if present, returns a separately
 timestamped `InputSubmitted`; if none remains during follow-up, the one deadline
 is calculated from that offer commit.
 
-Keep stdout machine-readable and free of terminal control sequences. Stdout
-contains assistant text chunks in protocol order and exactly one terminating
-newline for each completed or aborted assistant stream; it contains no submitted
-message echo, prompt, status, or diagnostic. Submitted-message echoes, if
-retained, and all system/client diagnostics go to stderr. Tests must lock this
-byte-level contract for zero, one, and multiple assistant streams.
+Keep stdout machine-readable. It contains assistant text payloads verbatim in
+protocol order and exactly one client-added terminating newline for each
+completed or aborted assistant stream. The client adds no submitted-message
+echo, prompt, status, diagnostic, styling, or ANSI control sequence. A control
+sequence present in assistant payload remains verbatim payload rather than
+client-added terminal control. Submitted-message echoes, if retained, and all
+system/client diagnostics go to stderr. Tests lock this byte-level contract for
+zero, one, multiple, aborted, and payload-control-sequence streams.
 
 ## Dependency policy
 
@@ -496,8 +545,8 @@ missing. Do not add a silent fallback to the old `os.read()` path.
 ### Stage 1: Ratify the client contract and lock the current defects
 
 1. Draft the T-005 client states, presentation commits, follow-up arbitration,
-   exit classification, and TTY/batch behavior as normative amendments to
-   `docs/websocket-conversation-protocol.md`.
+   exit classification, and TTY/batch behavior in the separate normative
+   `docs/websocket-client-behavior.md`.
 2. Add stable requirement IDs and planned evidence to
    `docs/protocol-conformance-catalogue.md`.
 3. Obtain explicit Captain approval for those normative amendments before any
@@ -526,7 +575,10 @@ missing. Do not add a silent fallback to the old `os.read()` path.
 3. Apply semantic styles and safe redraw around asynchronous output.
 4. Expose prompts only for legal input states.
 5. Implement blank-line, command, EOF, interrupt, and non-TTY behavior.
-6. Delete the raw `os.read()` reader, ineffective GNU Readline setup, manual
+6. Implement one idempotent interactive cleanup path which leaves stdout
+   patching, tears down `prompt_toolkit`, restores terminal modes, then writes
+   and flushes the final explicit `b"\x1b[0m"` reset to real TTY stdout.
+7. Delete the raw `os.read()` reader, ineffective GNU Readline setup, manual
    ANSI state ownership, and unused prompt bookkeeping.
 
 ### Stage 4: Migrate the batch presenter and entrypoints
@@ -539,8 +591,8 @@ missing. Do not add a silent fallback to the old `os.read()` path.
 
 ### Stage 5: Documentation reconciliation and verification
 
-1. Reconcile the already-approved normative client requirements with the final
-   implementation without changing their meaning. Any newly discovered contract
+1. Reconcile the approved normative client contract with the final
+   implementation without changing its meaning. Any newly discovered contract
    change requires another Captain approval before the affected code proceeds.
 2. Replace planned evidence in `docs/protocol-conformance-catalogue.md` with the
    exact current passing tests.
@@ -561,8 +613,9 @@ At minimum:
   completion or abort in the same turn;
 - terminal server input, disconnect, and interruption during both prompt
   presentation commits, with the presentation task cancelled and joined;
-- complete ready-set priority for local exit, terminal server/transport input,
-  ordinary submission, timeout, and prompt-redraw outcomes;
+- complete ready-set priority covering every modeled terminal failure, local
+  exit, ordinary submission, timeout, prompt-redraw outcome, batch completion,
+  and already-committed send consequence;
 - no prompt and no queued input in every server-owned state;
 - new-Conversation and follow-up prompts appear only after the matching server
   event;
@@ -570,11 +623,17 @@ At minimum:
 - prompt and every system/client message use dim gray;
 - asynchronous output preserves a partially edited prompt and buffer;
 - `/help`, unknown command, blank input, and unchanged-label prompt redisplay;
-- `/exit`, `Ctrl-D`, `Ctrl-C`, `SIGTERM`, rejection, disconnect, malformed
-  server event, and terminal restoration;
+- `/exit`, `Ctrl-D`, interactive and batch `Ctrl-C`/`SIGINT`, interactive and
+  batch `SIGTERM`, rejection, disconnect, malformed server event, and terminal
+  restoration;
+- real PTY proof that every interactive exit after TTY validation, including
+  `Ctrl-C` from each client state, ends with a flushed `b"\x1b[0m"` as the last
+  style-affecting bytes and emits no later SGR sequence;
 - persistent bounded history and configured history-path overrides;
 - TTY rejection for redirected stdin or stdout;
 - CLI default timeout, valid override, and invalid-value argparse errors;
+- empty or whitespace-only batch messages rejected as argparse usage errors
+  before connection;
 - follow-up before/equal/after boundary arbitration with an injected clock;
 - submission timestamps captured at input commit and compared with the one
   absolute deadline;
@@ -583,12 +642,15 @@ At minimum:
 - terminal server event and disconnect winning over an uncommitted line or
   timeout;
 - exact cancellation and joining of prompt, receive, timer, and send tasks;
-- cancellation before outbound commit, shielding after commit, failure after
-  commit, and no retry or competing semantic outcome;
+- cancellation and known-unsent failure before outbound commit, shielding and
+  uncertain-delivery failure after commit, and no retry or competing semantic
+  outcome;
+- both-profile exit code and diagnostic evidence for presentation failure,
+  known-unsent send failure, and uncertain-delivery send failure;
 - batch messages offered only in legal states and never pre-sent;
 - identical protocol and exit classification for both presenters;
-- exact batch offer-commit timing, stdout/stderr separation, and absence of ANSI
-  output in batch mode.
+- exact batch offer-commit timing, stdout/stderr separation, verbatim assistant
+  payload including escape sequences, and absence of client-added ANSI output.
 
 ## Required verification order
 
@@ -596,7 +658,8 @@ At minimum:
 2. `.venv/bin/python -m pytest tests/test_websocket_server.py -q`.
 3. The entire pytest suite.
 4. PTY tests using `tools/ai-server-chat.sh`, including editable partial input,
-   history, redraw, styles, interrupt, and non-TTY rejection.
+   history, redraw, styles, Ctrl-C in every client state, final SGR reset, and
+   non-TTY rejection.
 5. A real local server with a deterministic delayed fake Agent, proving that the
    client stays connected while busy, exposes no input prompt during the delay,
    renders streamed assistant output normally, and enables the next prompt only
@@ -612,6 +675,7 @@ T-005 acceptance.
 
 Likely additions:
 
+- `docs/websocket-client-behavior.md`;
 - `ai_server/websocket_client/__init__.py`;
 - `ai_server/websocket_client/interfaces.py`;
 - `ai_server/websocket_client/messages.py`;
@@ -627,7 +691,8 @@ Likely modifications:
 - `ai_server/batch_ws_client.py`;
 - `requirements.txt`;
 - `tests/test_websocket_server.py` or smaller focused client test modules;
-- `docs/websocket-conversation-protocol.md`;
+- `docs/websocket-conversation-protocol.md` only to preserve the external-wire
+  versus repository-client ownership boundary and retired-ID traceability;
 - `docs/protocol-conformance-catalogue.md`;
 - `docs/README.md`;
 - this task.
@@ -661,31 +726,37 @@ T-005 is complete only when:
    raw terminal reader.
 3. User input and assistant output use normal terminal foreground, while only
    system/client text and prompts use dim gray.
-4. The prompt is absent whenever user input is invalid in the protocol state,
+4. Every interactive TTY exit, including `Ctrl-C` in every client state, tears
+   down the terminal UI and ends with a flushed explicit `b"\x1b[0m"` reset as
+   the last style-affecting output.
+5. The prompt is absent whenever user input is invalid in the protocol state,
    and no busy-state text can be queued for later transmission.
-5. Empty or whitespace-only submissions are silently ignored locally.
-6. Prompt redraw, editing, history, and asynchronous output work in a real PTY.
-7. Follow-up timing begins only after prompt presentation and passes
+6. Empty or whitespace-only interactive submissions are silently ignored
+   locally; empty or whitespace-only batch messages fail as argparse usage
+   errors before connection.
+7. Prompt redraw, editing, history, and asynchronous output work in a real PTY.
+8. Follow-up timing begins only after prompt presentation and passes
    deterministic before/equal/after race tests using commit-point submission
    timestamps and one absolute deadline which redraws and commands cannot reset.
-8. Client-side state, stream correlation, and server-event ordering are enforced
+9. Client-side state, stream correlation, and server-event ordering are enforced
    explicitly across Conversation-start, pre-stream, open-stream, and
    finished-stream phases and fail closed.
-9. Every concurrent ready set follows the documented priority, and outbound
+10. Every concurrent ready set follows the documented priority, and outbound
    commit shielding prevents duplicate, competing, or retried uncertain events.
-10. Interactive and batch rejection, disconnect, interruption, completion, and
+11. Interactive and batch rejection, disconnect, interruption, completion, and
    CLI failures have documented consistent exit results.
-11. Interactive non-TTY use fails clearly and points to the batch wrapper.
-12. The old duplicated loops, ineffective Readline setup, raw `os.read()` input,
+12. Interactive non-TTY use fails clearly and points to the batch wrapper.
+13. The old duplicated loops, ineffective Readline setup, raw `os.read()` input,
     and `ws_client_common.py` compatibility surface are removed.
-13. Normative client requirements and the conformance catalogue match the
+14. The separate normative client contract and conformance catalogue match the
     implementation and passing evidence, and their approval predates runtime
-    implementation.
-14. All focused, complete, PTY, and live deterministic server/client checks pass.
-15. No temporary process, history fixture, socket, or terminal state remains
+    implementation; the external websocket protocol remains client-agnostic.
+15. All focused, complete, PTY, and live deterministic server/client checks pass.
+16. No temporary process, history fixture, socket, or terminal state remains
     after testing.
 
 ## Next action
 
-Present this task for Captain review. Do not begin implementation until Captain
-says `proceed` or `make it so`.
+Present the independently reviewed client contract and ownership reconciliation
+for Captain approval. Do not begin runtime implementation until that approval
+and a later explicit `proceed` or `make it so` authorization.
