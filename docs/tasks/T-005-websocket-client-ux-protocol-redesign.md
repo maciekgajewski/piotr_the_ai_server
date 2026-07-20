@@ -9,19 +9,18 @@
   `ai_server.batch_ws_client`, shared websocket-client state, terminal input,
   client-side follow-up timing, or repository-client exit behavior
 - **Created:** 2026-07-19
-- **Status:** In progress
-- **Implementation:** Shared-engine cutover started on 2026-07-20. The legacy
-  raw-terminal client and duplicated websocket loops have been removed; focused
-  terminal/PTy and complete WSC conformance evidence remains outstanding.
+- **Status:** Complete; independently closed 2026-07-20
+- **Implementation:** Shared-engine cutover is implemented. The legacy
+  raw-terminal client and duplicated websocket loops have been removed; the
+  conformance evidence and status surfaces are reconciled.
 - **Contract review:** The 2026-07-19 independent review was closed, then the
   contract was materially amended on 2026-07-20 with Captain-requested explicit
-  terminal-reset behavior; the fresh independent review completed with no
-  findings on 2026-07-20
+  terminal-reset behavior; final fresh independent closure review completed
+  with no findings on 2026-07-20
 - **Approval:** The architecture decisions in this task were selected by Captain
   on 2026-07-19. Captain approved the independently reviewed normative client
-  contract, T-005 ownership reconciliation, and conformance-plan changes on
-  2026-07-20. Runtime implementation still requires separate explicit
-  authorization.
+  contract, T-005 ownership reconciliation, conformance-plan changes, and
+  runtime implementation on 2026-07-20.
 
 ## Objective
 
@@ -766,5 +765,4 @@ T-005 is complete only when:
 
 ## Next action
 
-Await a separate explicit `proceed` or `make it so` authorization before
-beginning runtime implementation.
+Complete independent closure verification and reconcile final passing evidence.

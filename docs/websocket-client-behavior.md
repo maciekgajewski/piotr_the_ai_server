@@ -543,17 +543,15 @@ Current related external message definitions and baseline clients:
 - [`ai_server/websocket_messages.py`](../ai_server/websocket_messages.py);
 - [`ai_server/chat_client.py`](../ai_server/chat_client.py);
 - [`ai_server/batch_ws_client.py`](../ai_server/batch_ws_client.py);
-- [`ai_server/ws_client_common.py`](../ai_server/ws_client_common.py);
+- [`ai_server/websocket_client/`](../ai_server/websocket_client/);
 - [`tests/test_websocket_server.py`](../tests/test_websocket_server.py).
 
-T-005 will replace the client behavior with sealed interfaces and typed results
-under `ai_server/websocket_client/`, remove `ai_server/ws_client_common.py`, and
-add focused state, presentation, PTY, subprocess, and deterministic live-server
-tests. Planned ownership and required evidence are tracked by the
+T-005 has replaced the client behavior with sealed interfaces and typed results
+under `ai_server/websocket_client/`, removed `ai_server/ws_client_common.py`, and
+added focused state, presentation, PTY, subprocess, and deterministic live-server
+tests. Current ownership and evidence are tracked by the
 [Protocol Conformance Catalogue](protocol-conformance-catalogue.md) and
-[T-005](tasks/T-005-websocket-client-ux-protocol-redesign.md). Until that work
-passes, the current files above are baseline references, not conformance claims
-for this approved contract.
+[T-005](tasks/T-005-websocket-client-ux-protocol-redesign.md).
 
 ## Compatibility policy
 

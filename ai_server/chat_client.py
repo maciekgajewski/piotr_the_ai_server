@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from aiohttp import ClientError, ClientSession
 
 from ai_server.websocket_client.aiohttp_transport import AiohttpTransport
+from ai_server.websocket_client.connection import ConnectionInterrupted, connect
+from ai_server.websocket_client.clock import SystemClock
 from ai_server.websocket_client.engine import ClientEngine
 from ai_server.websocket_client.messages import ExitKind, ExitResult
 from ai_server.websocket_client.options import DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS, DEFAULT_WEBSOCKET_URL, WEBSOCKET_HEARTBEAT_SECONDS
@@ -45,18 +47,56 @@ async def run_chat(options: ChatClientOptions) -> ExitResult:
         return ExitResult(ExitKind.USAGE_ERROR, "interactive client requires TTY stdin and stdout; use tools/batch-ws-client.sh")
     stop_event = asyncio.Event()
     _install_stop_handlers(stop_event)
-    presenter = TerminalPresenter()
-    await presenter.start()
+    clock = SystemClock()
+    presenter = TerminalPresenter(clock)
     try:
+        await presenter.start()
         presenter.system(f"Connecting to {options.url} ...")
+    except Exception as exc:
+        try:
+            presenter.system(f"local failure: {exc}")
+        except Exception:
+            pass
+        try:
+            await presenter.close()
+        except Exception:
+            pass
+        return ExitResult(ExitKind.LOCAL_FAILURE, str(exc))
+    result: ExitResult
+    try:
         async with ClientSession() as session:
-            async with session.ws_connect(options.url, heartbeat=WEBSOCKET_HEARTBEAT_SECONDS) as websocket:
-                return await ClientEngine(AiohttpTransport(websocket), presenter, user=options.user, area=options.area,
-                                          follow_up_timeout_seconds=options.follow_up_timeout_seconds, stop_event=stop_event).run()
+            websocket = await connect(session, options.url, WEBSOCKET_HEARTBEAT_SECONDS, stop_event)
+            async with websocket:
+                result = await ClientEngine(AiohttpTransport(websocket), presenter, user=options.user, area=options.area,
+                                            follow_up_timeout_seconds=options.follow_up_timeout_seconds, stop_event=stop_event,
+                                            clock=clock).run()
+                if result.detail and result.kind not in (ExitKind.COMPLETED, ExitKind.EXITED, ExitKind.INTERRUPTED):
+                    try:
+                        presenter.system(f"{result.kind.value.replace('_', ' ')}: {result.detail}")
+                    except Exception as exc:
+                        result = ExitResult(ExitKind.LOCAL_FAILURE, str(exc))
+                pass
     except (asyncio.TimeoutError, ClientError, OSError) as exc:
-        return ExitResult(ExitKind.CONNECTION_FAILED, str(exc))
+        try:
+            presenter.system(f"connection failed: {exc}")
+        except Exception:
+            result = ExitResult(ExitKind.LOCAL_FAILURE, str(exc))
+        else:
+            result = ExitResult(ExitKind.CONNECTION_FAILED, str(exc))
+    except ConnectionInterrupted:
+        result = ExitResult(ExitKind.INTERRUPTED)
+    except Exception as exc:
+        try:
+            presenter.system(f"local failure: {exc}")
+        except Exception:
+            pass
+        result = ExitResult(ExitKind.LOCAL_FAILURE, str(exc))
     finally:
-        await presenter.close()
+        try:
+            await presenter.close()
+        except Exception as exc:
+            result = ExitResult(ExitKind.LOCAL_FAILURE, str(exc))
+    return result
 
 
 def _install_stop_handlers(stop_event: asyncio.Event) -> None:
@@ -70,9 +110,8 @@ def _install_stop_handlers(stop_event: asyncio.Event) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     result = asyncio.run(run_chat(ChatClientOptions(**vars(parse_args(argv)))))
-    if result.detail:
-        stream = sys.stderr if result.kind is ExitKind.USAGE_ERROR else sys.stdout
-        print(f"{result.kind.value.replace('_', ' ')}: {result.detail}", file=stream, flush=True)
+    if result.detail and result.kind is ExitKind.USAGE_ERROR:
+        print(f"{result.kind.value.replace('_', ' ')}: {result.detail}", file=sys.stderr, flush=True)
     return result.code
 
 

@@ -2,26 +2,32 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import time
 
+from ai_server.websocket_client.clock import SystemClock
+from ai_server.websocket_client.interfaces import Clock
 from ai_server.websocket_client.messages import InputKind, InputResult, InputResultKind
 
 
 class BatchPresenter:
     is_batch = True
 
-    def __init__(self, messages: tuple[str, ...]) -> None:
+    def __init__(self, messages: tuple[str, ...], clock: Clock | None = None) -> None:
         self._messages = list(messages)
         self._blocked_input: asyncio.Future | None = None
+        self._clock = clock or SystemClock()
+
+    @property
+    def has_pending_messages(self) -> bool:
+        return bool(self._messages)
 
     async def present_input(self, kind: InputKind) -> float:
-        return time.monotonic()
+        return self._clock.monotonic()
 
     async def read_input(self, kind: InputKind) -> InputResult:
         if self._messages:
-            return InputResult(InputResultKind.TEXT, self._messages.pop(0), time.monotonic())
+            return InputResult(InputResultKind.TEXT, self._messages.pop(0), self._clock.monotonic())
         if kind is InputKind.START:
-            return InputResult(InputResultKind.EOF, None, time.monotonic())
+            return InputResult(InputResultKind.BATCH_COMPLETE, None, self._clock.monotonic())
         self._blocked_input = asyncio.get_running_loop().create_future()
         await self._blocked_input
         raise AssertionError("blocked batch input unexpectedly completed")

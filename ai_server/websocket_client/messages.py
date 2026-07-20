@@ -16,6 +16,7 @@ class InputResultKind(Enum):
     EXIT = "exit"
     EOF = "eof"
     UNKNOWN_COMMAND = "unknown_command"
+    BATCH_COMPLETE = "batch_complete"
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,8 @@ class ExitKind(Enum):
     REJECTED = "rejected"
     PROTOCOL_ERROR = "protocol_error"
     LOCAL_FAILURE = "local_failure"
+    KNOWN_UNSENT = "known_unsent"
+    DELIVERY_UNCERTAIN = "delivery_uncertain"
     USAGE_ERROR = "usage_error"
 
 

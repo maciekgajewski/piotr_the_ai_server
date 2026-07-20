@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from aiohttp import ClientError, ClientSession
 
 from ai_server.websocket_client.aiohttp_transport import AiohttpTransport
+from ai_server.websocket_client.connection import ConnectionInterrupted, connect
 from ai_server.websocket_client.batch_presenter import BatchPresenter
+from ai_server.websocket_client.clock import SystemClock
 from ai_server.websocket_client.engine import ClientEngine
 from ai_server.websocket_client.messages import ExitKind, ExitResult
 from ai_server.websocket_client.options import DEFAULT_FOLLOW_UP_TIMEOUT_SECONDS, DEFAULT_WEBSOCKET_URL, WEBSOCKET_HEARTBEAT_SECONDS
@@ -52,14 +54,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 async def run_batch_ws_client(options: BatchWsClientOptions) -> ExitResult:
     stop_event = asyncio.Event()
     _install_stop_handlers(stop_event)
-    presenter = BatchPresenter(options.messages)
+    clock = SystemClock()
+    presenter = BatchPresenter(options.messages, clock)
     try:
         async with ClientSession() as session:
-            async with session.ws_connect(options.url, heartbeat=WEBSOCKET_HEARTBEAT_SECONDS) as websocket:
+            websocket = await connect(session, options.url, WEBSOCKET_HEARTBEAT_SECONDS, stop_event)
+            async with websocket:
                 return await ClientEngine(AiohttpTransport(websocket), presenter, user=options.user, area=options.area,
-                                          follow_up_timeout_seconds=options.follow_up_timeout_seconds, stop_event=stop_event).run()
+                                          follow_up_timeout_seconds=options.follow_up_timeout_seconds, stop_event=stop_event,
+                                          clock=clock).run()
     except (asyncio.TimeoutError, ClientError, OSError) as exc:
         return ExitResult(ExitKind.CONNECTION_FAILED, str(exc))
+    except ConnectionInterrupted:
+        return ExitResult(ExitKind.INTERRUPTED)
+    except Exception as exc:
+        return ExitResult(ExitKind.LOCAL_FAILURE, str(exc))
 
 
 def _install_stop_handlers(stop_event: asyncio.Event) -> None:

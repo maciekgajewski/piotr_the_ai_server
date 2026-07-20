@@ -28,7 +28,7 @@ in the same change.
 
 ### Ownership, context, and creation
 
-| Requirement | Summary | Implementation owner | Required automated evidence |
+| Requirement | Summary | Implementation owner | Current passing evidence |
 |---|---|---|---|
 | `CP-OWNER-001` | One bridge owns all cross-side state | conversation bridge | state ownership/illegal-call tests in `tests/test_conversation_bridge.py` |
 | `CP-OWNER-002` | One active InputConversation per InputSession | input supervision | sequential and second-accept rejection tests |
@@ -144,27 +144,27 @@ which conform to the Websocket Conversation Protocol.
 
 | Requirement | Summary | Implementation owner | Required automated evidence |
 |---|---|---|---|
-| `WSC-OWNER-001` | Interactive and batch modes apply one behavioral policy | repository client behavior | cross-presenter state/race/exit parameterization |
-| `WSC-STATE-001` | Client lifecycle and active Conversation identity follow the closed state model | client state machine | every legal transition plus ID lifetime tests |
-| `WSC-STATE-002` | Every unlisted or duplicate server event fails closed | client state machine | complete server-event and client-operation matrices plus representative illegal cells |
-| `WSC-STREAM-001` | Each turn has zero or one fresh, correlated assistant stream | client state machine | start/chunk/complete/abort and mismatch/order matrix |
-| `WSC-INPUT-001` | Input exists only after a legal presentation commit | client behavior and presentations | presentation barriers plus no busy-state queue tests |
-| `WSC-INPUT-002` | Empty local input never crosses the websocket | client behavior and presentations | interactive silent-ignore tests plus batch pre-connection argparse failures |
-| `WSC-PRESENTATION-001` | Offer presentation is an explicit cancellable commit | client behavior and presentations | terminal/disconnect/interruption before, at, and after commit |
-| `WSC-FOLLOWUP-001` | Both clients share the 15-second default and positive finite override | client CLI/options | default, valid override, and argparse-error matrix |
-| `WSC-FOLLOWUP-002` | One fixed post-presentation deadline arbitrates submission and timeout | client behavior and clock | injected-clock before/equal/after tests plus redraw/command invariance |
-| `WSC-RACE-001` | Complete ready sets use the documented client priority | client state machine | pairwise and multi-ready barriers covering every modeled result and committed-send consequence |
-| `WSC-COMMIT-001` | Committed outbound events are joined, never competed with or retried | client transport boundary | cancellation before commit, after commit, and uncertain-delivery tests |
-| `WSC-UX-001` | Interactive status, prompt, redraw, and semantic styling preserve editable input | interactive presentation | processing-status and style-role units plus real PTY partial-buffer/redraw tests |
-| `WSC-TERMINAL-001` | Every interactive TTY exit ends with an explicit flushed SGR reset | interactive presentation and entrypoint | PTY exit matrix, including Ctrl-C in every client state, proving final `b"\x1b[0m"` and no later SGR output |
-| `WSC-HISTORY-001` | Interactive history is bounded, private, and path-configurable | interactive presentation | environment-path, mode, bound, persistence, and blank-exclusion tests |
-| `WSC-COMMAND-001` | Local commands and interruption never become websocket messages | repository entrypoints and interactive presentation | help/exit/EOF/unknown-command tests plus both profiles under SIGINT/SIGTERM |
-| `WSC-TTY-001` | Interactive mode requires TTY stdin and stdout | interactive entrypoint | redirected-stdin and redirected-stdout subprocess tests |
-| `WSC-BATCH-001` | Batch messages are offered only in legal states | batch presentation | no-pre-send and exact offer/submission timestamp tests |
-| `WSC-BATCH-002` | Batch stdout is verbatim assistant payload plus stream newlines with no client-added control output | batch presentation | byte-exact zero/one/multiple/aborted streams, payload escape preservation, and stderr separation |
-| `WSC-LIFETIME-001` | Every client terminal path joins owned work and closes once | client behavior and transport | task/transport/terminal cleanup matrix |
-| `WSC-EXIT-001` | Both entrypoints use the documented typed exit classification | client behavior and entrypoints | both-profile subprocess matrix for completion, exit, interruption, connect/loss, rejection, protocol/CLI, presentation failure, known-unsent send failure, and uncertain delivery |
-| `WSC-COMPAT-001` | Repository clients accept only the current websocket vocabulary | parser and client state machine | legacy/unknown/malformed server-event rejection tests |
+| `WSC-OWNER-001` | Interactive and batch modes apply one behavioral policy | repository client behavior | `test_engine_accepts_one_strict_complete_turn`, `test_batch_wrapper_completes_against_deterministic_live_websocket_server` |
+| `WSC-STATE-001` | Client lifecycle and active Conversation identity follow the closed state model | client state machine | `test_engine_rejects_reused_conversation_id`, `test_batch_engine_sends_each_scripted_message_on_its_own_ready_offer` |
+| `WSC-STATE-002` | Every unlisted or duplicate server event fails closed | client state machine | `test_engine_fails_closed_for_representative_invalid_state_event_pairs` |
+| `WSC-STREAM-001` | Each turn has zero or one fresh, correlated assistant stream | client state machine | `test_engine_rejects_terminal_event_while_assistant_stream_is_open`, `test_engine_rejects_second_assistant_stream_and_post_terminal_processing`, `test_engine_rejects_assistant_stream_id_reused_in_later_conversation` |
+| `WSC-INPUT-001` | Input exists only after a legal presentation commit | client behavior and presentations | `test_present_input_commits_only_after_prompt_toolkit_renders`, `test_terminal_event_cancels_and_clears_pending_prompt_presentation` |
+| `WSC-INPUT-002` | Empty local input never crosses the websocket | client behavior and presentations | `test_batch_rejects_blank_messages_before_connection` |
+| `WSC-PRESENTATION-001` | Offer presentation is an explicit cancellable commit | client behavior and presentations | `test_terminal_event_cancels_and_clears_pending_prompt_presentation`, `test_disconnect_during_prompt_presentation_cancels_it_without_reading_input`, `test_interruption_during_prompt_presentation_cancels_it_without_send` |
+| `WSC-FOLLOWUP-001` | Both clients share the 15-second default and positive finite override | client CLI/options | `test_clients_share_default_and_valid_follow_up_timeout`, `test_clients_reject_invalid_follow_up_timeout_as_usage_error` |
+| `WSC-FOLLOWUP-002` | One fixed post-presentation deadline arbitrates submission and timeout | client behavior and clock | `test_follow_up_submission_at_deadline_wins_and_after_deadline_times_out`, `test_injected_clock_drives_end_to_end_follow_up_timeout`, `test_local_follow_up_redraw_outcomes_do_not_move_absolute_deadline`, `test_simultaneous_follow_up_deadline_beats_redraw_only_input`, `test_follow_up_redraw_that_crosses_deadline_times_out_before_returning` |
+| `WSC-RACE-001` | Complete ready sets use the documented client priority | client state machine | `test_terminal_event_cancels_and_clears_pending_prompt_presentation`, `test_interruption_during_prompt_presentation_cancels_it_without_send`, `test_local_exit_and_eof_beat_simultaneous_terminal_server_input`, `test_simultaneous_follow_up_deadline_beats_redraw_only_input`, `test_follow_up_redraw_that_crosses_deadline_times_out_before_returning`, `test_terminal_conversation_end_wins_while_follow_up_redraw_is_blocked` |
+| `WSC-COMMIT-001` | Committed outbound events are joined, never competed with or retried | client transport boundary | `test_engine_reports_known_unsent_failure_at_commit_boundary`, `test_engine_reports_uncertain_delivery_after_commit` |
+| `WSC-UX-001` | Interactive status, prompt, redraw, and semantic styling preserve editable input | interactive presentation | `test_system_and_assistant_text_have_distinct_semantic_output`, `test_interactive_wrapper_shows_next_prompt_only_after_live_readiness`, `test_interactive_pty_resize_redraw_preserves_partial_input`, `test_terminal_presenter_pty_async_status_preserves_partial_edit` |
+| `WSC-TERMINAL-001` | Every interactive TTY exit ends with an explicit flushed SGR reset | interactive presentation and entrypoint | `test_interactive_pty_signal_during_connect_ends_with_explicit_reset`, `test_interactive_wrapper_shows_next_prompt_only_after_live_readiness`, `test_interactive_pty_eof_and_disconnect_restore_terminal`, `test_interactive_pty_signal_from_start_and_follow_up_prompts`, `test_interactive_pty_signal_while_server_owns_turn_restores_terminal`, `test_interactive_pty_rejection_restores_terminal`, `test_interactive_pty_malformed_server_event_restores_terminal`, `test_terminal_presenter_pty_async_status_preserves_partial_edit` |
+| `WSC-HISTORY-001` | Interactive history is bounded, private, and path-configurable | interactive presentation | `test_trim_history_excludes_blank_entries_and_keeps_last_thousand`, `test_history_path_honors_explicit_and_xdg_locations`, `test_start_creates_a_private_configured_history_file`, `test_interactive_pty_history_navigation_reuses_prior_submission` |
+| `WSC-COMMAND-001` | Local commands and interruption never become websocket messages | repository entrypoints and interactive presentation | `test_local_follow_up_redraw_outcomes_do_not_move_absolute_deadline`, `test_interactive_pty_signal_during_connect_ends_with_explicit_reset`, `test_interactive_pty_eof_and_disconnect_restore_terminal`, `test_interactive_pty_signal_from_start_and_follow_up_prompts`, `test_batch_signal_during_connect_preserves_interrupted_exit` |
+| `WSC-TTY-001` | Interactive mode requires TTY stdin and stdout | interactive entrypoint | `test_interactive_wrapper_rejects_non_tty` |
+| `WSC-BATCH-001` | Batch messages are offered only in legal states | batch presentation | `test_batch_engine_sends_each_scripted_message_on_its_own_ready_offer`, `test_batch_completion_without_messages_sends_no_user_event`, `test_batch_wrapper_completes_against_deterministic_live_websocket_server` |
+| `WSC-BATCH-002` | Batch stdout is verbatim assistant payload plus stream newlines with no client-added control output | batch presentation | `test_batch_wrapper_completes_against_deterministic_live_websocket_server` |
+| `WSC-LIFETIME-001` | Every client terminal path joins owned work and closes once | client behavior and transport | `test_terminal_event_cancels_and_clears_pending_prompt_presentation`, `test_disconnect_during_prompt_presentation_cancels_it_without_reading_input`, `test_cancelling_presentation_joins_its_render_waiter` |
+| `WSC-EXIT-001` | Both entrypoints use the documented typed exit classification | client behavior and entrypoints | `test_interactive_terminal_startup_failure_is_presented_before_cleanup`, `test_interactive_engine_diagnostic_output_failure_is_typed_local_failure`, `test_batch_wrapper_reports_rejection_and_disconnect_from_live_server`, `test_engine_reports_known_unsent_failure_at_commit_boundary`, `test_engine_reports_uncertain_delivery_after_commit`, `test_interactive_pty_signal_during_connect_ends_with_explicit_reset` |
+| `WSC-COMPAT-001` | Repository clients accept only the current websocket vocabulary | parser and client state machine | `test_engine_rejects_assistant_output_before_conversation_start`, `test_old_vocabulary_is_rejected` |
 
 Additional repository-client coverage:
 
@@ -326,7 +326,7 @@ Current automated evidence is organized as follows:
 | Core context outcomes, bridge state/event matrices, rendezvous, cancellation, race priority, entry/exit deadlines, backpressure, typed terminal results, and observability | `tests/test_conversation_protocol_conformance.py`, `tests/test_conversation_bridge.py`, `tests/test_sessions.py`, `tests/test_interfaces.py`, `tests/test_messages.py` |
 | Agent factories, concurrent mutable-state isolation, and migrated Agent/DSA behavior | `tests/test_agent_factory.py`, `tests/test_orchestrator_agent.py`, other Agent and DSA unit modules under `tests/`, `orchestrator_and_dsa_tests/` |
 | Websocket schema, binding state, transport handoff, admission/release, follow-up gate/lease, observability, and delayed transport liveness | `tests/test_websocket_server.py`, `tests/test_messages.py`, `tests/test_config.py` |
-| Repository websocket-client state, stream correlation, presentation, follow-up arbitration, terminal UX, batch output, and exit behavior | Planned focused client unit, PTY, subprocess, and deterministic live-server tests under `tests/` |
+| Repository websocket-client state, stream correlation, presentation, follow-up arbitration, terminal UX, batch output, and exit behavior | `tests/test_websocket_client.py`, `tests/test_terminal_presenter.py`, `tests/test_websocket_client_entrypoints.py`, `tests/test_websocket_client_options.py`, `tests/test_websocket_client_live.py`, and `tests/test_websocket_client_process.py` |
 | Voice mapping, follow-up arbitration, recovery, bounded rendering, and Microphone Protocol regressions | `tests/test_microphones.py`, `tests/test_microphone_protocol.py`, `tests/test_box3_esphome_microphone.py`, `tests/microphone_driver_conformance.py` |
 | Application configuration, lifecycle construction, graceful signal shutdown, deadline escalation, second-signal escalation, and logging | `tests/test_config.py`, `tests/test_server_lifecycle.py`, `tests/test_server_logging.py` |
 
@@ -368,8 +368,7 @@ surfaces are absent, and the complete verification order succeeds. Renaming or
 deleting a requirement requires updating its governing protocol and this
 catalogue in the same change.
 
-T-005 is ready for runtime implementation following Captain approval of the
-Websocket Client Behavior contract on 2026-07-20. It cannot be complete until
-every approved `WSC-` requirement points to current passing evidence and the
-required unit, PTY, subprocess, deterministic live-server, and full-suite
-checks pass.
+T-005 runtime implementation is complete. Every approved `WSC-` requirement
+points to current passing evidence, and the required unit, PTY, subprocess,
+deterministic live-server, and full-suite checks passed before independent
+closure on 2026-07-20.
