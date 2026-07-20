@@ -2,24 +2,24 @@
 
 ## Status and scope
 
-- **Authority:** Normative conformance plan for T-004 and the Microphone
-  Protocol; draft conformance plan for T-005 repository clients
+- **Authority:** Normative conformance plan for T-004, T-005, and the
+  Microphone Protocol
 - **Audience:** Implementers and reviewers of the Conversation bridge,
   websocket binding, repository websocket clients, microphone mapping, and
   driver protocol
 - **Read when:** Implementing T-004 or T-005, adding protocol tests, reviewing
   coverage, or closing a protocol migration
 - **Approval state:** T-004 sections approved by Captain on 2026-07-19; T-005
-  `WSC-` section and proposed `WS-FOLLOWUP-003/004` retirement await Captain
-  approval
+  `WSC-` section and `WS-FOLLOWUP-003/004` retirement approved by Captain on
+  2026-07-20
 
 This catalogue maps stable requirements to implementation owners and required
 evidence. T-004 implementation is present; a row becomes a conformance claim
 only when its referenced test or recorded manual check exists and passes.
 Existing `MP-` entries continue to describe the normative Microphone Protocol.
-Draft `WSC-` entries describe the proposed normative behavior of the repository
-websocket clients and are not conformance claims until their governing document
-is approved and the cited evidence exists and passes.
+`WSC-` entries describe the approved normative behavior of the repository
+websocket clients. They become conformance claims only when their cited
+evidence exists and passes.
 
 Equivalent focused filenames are permitted only when this catalogue is updated
 in the same change.
@@ -116,15 +116,12 @@ Additional exhaustive core coverage:
 | `WS-FOLLOWUP-002` | Outcome exposure follows bridge state acknowledgement | adapter and bridge | before handoff, during drain, before ack, after ack cases |
 | `WS-LEASE-001` | Server lease closes `1013` without forging timeout | websocket adapter | start/cancel/heartbeat/equal-boundary/expiry cases |
 
-Pending T-005 requirement retirement, not effective until Captain approval:
+T-005 requirement retirement effective 2026-07-20:
 
-- On approval, `WS-FOLLOWUP-003` will be replaced by the strengthened
-  `WSC-FOLLOWUP-001` and the old identifier MUST NOT be reused.
-- On approval, `WS-FOLLOWUP-004` will be replaced by the strengthened
-  `WSC-FOLLOWUP-002` and the old identifier MUST NOT be reused.
-
-Until that approval, `WS-FOLLOWUP-003` and `WS-FOLLOWUP-004` retain their
-approved T-004 meaning.
+- `WS-FOLLOWUP-003` was replaced by the strengthened `WSC-FOLLOWUP-001`; the
+  old identifier MUST NOT be reused.
+- `WS-FOLLOWUP-004` was replaced by the strengthened `WSC-FOLLOWUP-002`; the
+  old identifier MUST NOT be reused.
 
 Additional websocket coverage:
 
@@ -141,7 +138,7 @@ Additional websocket coverage:
 
 ## Websocket Client Behavior
 
-These draft requirements govern only the interactive and batch websocket
+These requirements govern only the interactive and batch websocket
 clients shipped in this repository. They do not constrain external clients
 which conform to the Websocket Conversation Protocol.
 
@@ -344,7 +341,7 @@ Current automated checkpoint before the final closure re-review:
 |---|---|
 | InputSession acceptance/close matrix | `test_voice_input_session_accept_operation_matrix_rejects_every_non_idle_state`, `test_voice_session_close_wins_uncommitted_acceptance_and_is_idempotent`, `test_voice_session_close_after_accept_commit_releases_active_control_and_never_rearms`, `test_websocket_input_session_accept_operation_matrix_rejects_every_non_idle_state`, `test_websocket_close_matrix_quiesces_non_active_session_states`, `test_websocket_active_close_waits_for_conversation_scope_cleanup`, `test_websocket_protocol_closure_remains_closing_until_active_scope_exits`, `test_websocket_reader_failure_remains_closing_until_active_scope_exits` |
 | Bridge ready-set and sink races | `test_race_operation_pairwise_and_multi_ready_precedence`, `test_race_operation_deadline_is_selected_only_when_neither_candidate_commits`, `test_terminal_input_preempts_each_inflight_sink_operation`, `test_terminal_input_is_observable_in_every_nonterminal_bridge_stage` |
-| Pre-T-005 repository-client baseline only | `test_interactive_submission_before_and_after_expiry_boundary`, `test_interactive_submission_wins_at_exact_expiry_boundary`, `test_interactive_terminal_wins_when_terminal_and_line_are_both_committed`, `test_batch_follow_up_timer_is_cancelled_by_terminal_server_event`, `test_interactive_assistant_response_resets_dim_client_style`; these do not yet prove the draft `WSC-` contract |
+| Pre-T-005 repository-client baseline only | `test_interactive_submission_before_and_after_expiry_boundary`, `test_interactive_submission_wins_at_exact_expiry_boundary`, `test_interactive_terminal_wins_when_terminal_and_line_are_both_committed`, `test_batch_follow_up_timer_is_cancelled_by_terminal_server_event`, `test_interactive_assistant_response_resets_dim_client_style`; these do not yet prove the approved `WSC-` contract |
 | Voice committed-media cancellation and timer origin | `test_voice_sink_cancellation_before_playback_commit_cancels_renderer`, `test_voice_sink_cancellation_at_playback_commit_drains_committed_renderer`, `test_processing_update_cancellation_drains_committed_playback`, `test_follow_up_cancellation_drains_committed_cue_without_starting_listening`, `test_follow_up_cancellation_stops_committed_listening_generation`, `test_voice_cleanup_immediately_after_follow_up_commit_stops_listening_generation`, `test_voice_cleanup_during_follow_up_capture_stops_capturing_generation`, `test_follow_up_deadline_is_fixed_at_listening_started_before_collector_scheduling`, `test_voice_follow_up_monotonic_before_equal_after_arbiter` |
 | Websocket drain, lease, heartbeat, and capacity | `test_follow_up_drain_failure_after_handoff_closes_typed_committed_interval`, `test_follow_up_lease_expiry_during_writer_drain_closes_and_joins_tasks`, `test_follow_up_resource_lease_closes_without_forging_timeout`, `test_capacity_is_released_when_websocket_preparation_fails`, `test_capacity_is_released_after_invalid_handshake_and_timeout` |
 | Full automated checkpoint | 707 passing pytest cases; `git diff --check` clean |
@@ -371,7 +368,8 @@ surfaces are absent, and the complete verification order succeeds. Renaming or
 deleting a requirement requires updating its governing protocol and this
 catalogue in the same change.
 
-T-005 cannot be ready for runtime implementation until the Captain approves
-the draft Websocket Client Behavior contract. It cannot be complete until every
-approved `WSC-` requirement points to current passing evidence and the required
-unit, PTY, subprocess, deterministic live-server, and full-suite checks pass.
+T-005 is ready for runtime implementation following Captain approval of the
+Websocket Client Behavior contract on 2026-07-20. It cannot be complete until
+every approved `WSC-` requirement points to current passing evidence and the
+required unit, PTY, subprocess, deterministic live-server, and full-suite
+checks pass.

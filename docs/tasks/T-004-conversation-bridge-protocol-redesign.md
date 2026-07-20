@@ -23,7 +23,7 @@ T-005 separates the external websocket binding from the behavior of the
 interactive and batch clients shipped in this repository. References below to
 repository-client presentation, the shared 15-second timeout, CLI policy, or
 client arbitration record the original T-004 cutover scope; their current
-proposed normative home, pending Captain approval, is the draft
+normative home, approved by Captain on 2026-07-20, is
 [Websocket Client Behavior](../websocket-client-behavior.md). The
 [Websocket Conversation Protocol](../websocket-conversation-protocol.md) now
 governs wire conformance for any client and does not require external clients to

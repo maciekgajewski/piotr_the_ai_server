@@ -2,15 +2,15 @@
 
 ## Status and scope
 
-- **Authority:** Draft normative repository-client contract
+- **Authority:** Normative repository-client contract
 - **Audience:** Maintainers of the repository interactive and batch websocket
   clients, their behavioral core, presentations, and conformance tests
 - **Read when:** Changing `ai_server.chat_client`,
   `ai_server.batch_ws_client`, repository-client presentation, client-side
   websocket ordering, follow-up timing, or client exit behavior
 - **Approval state:** Amended on 2026-07-20 with Captain-requested explicit
-  terminal-reset behavior; fresh independent documentation review required
-  before Captain approval
+  terminal-reset behavior; fresh independent documentation review completed
+  with no findings on 2026-07-20; approved by Captain on 2026-07-20
 
 This document defines the required behavior of the websocket clients shipped in
 this repository. It governs the interactive client launched by
@@ -553,7 +553,7 @@ tests. Planned ownership and required evidence are tracked by the
 [Protocol Conformance Catalogue](protocol-conformance-catalogue.md) and
 [T-005](tasks/T-005-websocket-client-ux-protocol-redesign.md). Until that work
 passes, the current files above are baseline references, not conformance claims
-for this draft contract.
+for this approved contract.
 
 ## Compatibility policy
 
@@ -568,6 +568,5 @@ or `ai_server.ws_client_common` as compatibility surfaces.
 
 ## Explicitly unresolved decisions
 
-None in the proposed contract. Approval and implementation evidence remain
-tracked by
+None. Implementation evidence remains tracked by
 [T-005 Websocket Client UX and Protocol Redesign](tasks/T-005-websocket-client-ux-protocol-redesign.md).

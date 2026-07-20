@@ -3,14 +3,14 @@
 ## Status and scope
 
 - **Authority:** Normative external binding implemented by T-004; T-005
-  repository-client ownership reconciliation is draft
+  repository-client ownership reconciliation approved
 - **Audience:** Maintainers of the websocket server, any websocket client,
   configuration, and transport conformance tests
 - **Read when:** Changing websocket admission, JSON events, client wire
   behavior, heartbeat, follow-up binding, or websocket shutdown
 - **Approval state:** T-004 external binding approved by Captain on 2026-07-19;
   T-005 removal of repository-specific client policy and retired-ID mapping
-  await approval with `docs/websocket-client-behavior.md`
+  approved with `docs/websocket-client-behavior.md` on 2026-07-20
 
 This document binds one websocket connection to one persistent text
 `InputSession` from the normative
@@ -399,19 +399,16 @@ Unknown and old events are external protocol violations.
 
 ## Explicitly unresolved decisions
 
-None. Captain approved the T-004 binding on 2026-07-19. The draft T-005
-ownership reconciliation and retired-ID mapping do not become normative until
-approved with the separate client contract. Verification and conformance
-evidence remain tracked by T-004 and T-005 respectively.
+None. Captain approved the T-004 binding on 2026-07-19 and the T-005 ownership
+reconciliation and retired-ID mapping with the separate client contract on
+2026-07-20. Verification and conformance evidence remain tracked by T-004 and
+T-005 respectively.
 
-## Proposed retired requirement identifiers
+## Retired requirement identifiers
 
-- On approval of the T-005 ownership reconciliation, `WS-FOLLOWUP-003`, which
-  requires the repository-client 15-second default and positive finite
-  override, will be replaced by strengthened `WSC-FOLLOWUP-001`; the old
-  identifier MUST NOT be reused.
-- On that approval, `WS-FOLLOWUP-004`, which requires repository-client
-  submission-versus-timeout arbitration, will be replaced by strengthened
-  `WSC-FOLLOWUP-002`; the old identifier MUST NOT be reused.
-
-Until that approval, both identifiers retain their approved T-004 meaning.
+- `WS-FOLLOWUP-003`, which required the repository-client 15-second default and
+  positive finite override, was replaced by strengthened `WSC-FOLLOWUP-001` on
+  2026-07-20; the old identifier MUST NOT be reused.
+- `WS-FOLLOWUP-004`, which required repository-client submission-versus-timeout
+  arbitration, was replaced by strengthened `WSC-FOLLOWUP-002` on 2026-07-20;
+  the old identifier MUST NOT be reused.

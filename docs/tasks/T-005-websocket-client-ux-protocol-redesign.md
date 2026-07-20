@@ -9,14 +9,17 @@
   `ai_server.batch_ws_client`, shared websocket-client state, terminal input,
   client-side follow-up timing, or repository-client exit behavior
 - **Created:** 2026-07-19
+- **Status:** Ready for implementation
 - **Implementation:** Not started
 - **Contract review:** The 2026-07-19 independent review was closed, then the
   contract was materially amended on 2026-07-20 with Captain-requested explicit
-  terminal-reset behavior; fresh independent review is required
+  terminal-reset behavior; the fresh independent review completed with no
+  findings on 2026-07-20
 - **Approval:** The architecture decisions in this task were selected by Captain
-  on 2026-07-19. The separate draft normative
-  `docs/websocket-client-behavior.md` still requires Captain approval before
-  implementation, which then requires explicit authorization.
+  on 2026-07-19. Captain approved the independently reviewed normative client
+  contract, T-005 ownership reconciliation, and conformance-plan changes on
+  2026-07-20. Runtime implementation still requires separate explicit
+  authorization.
 
 ## Objective
 
@@ -41,7 +44,7 @@ Any websocket client is valid when it conforms to the external binding; it need
 not reproduce repository-specific UX, timing, or exit policy. T-005 therefore
 defines the interactive and batch client requirements in the separate normative
 `docs/websocket-client-behavior.md`, not inside the external websocket protocol.
-Obtain Captain approval of that client contract before implementation. If later
+Captain approved that client contract and ownership split on 2026-07-20. If
 implementation discovers that either normative contract must change, stop and
 obtain separate Captain approval before continuing.
 
@@ -102,12 +105,11 @@ This task strengthens client-side enforcement and presentation of the approved
 binding. It does not transfer the server's admission, gate, lease, or transport
 commit responsibilities into the client.
 
-Before code changes, promote the applicable target behavior from this plan into
-the separate `docs/websocket-client-behavior.md`, add its stable `WSC-`
-requirement IDs to `docs/protocol-conformance-catalogue.md`, and obtain Captain
-approval. Until that approval, this task remains a plan, the client document
-remains draft normative, and current runtime behavior is not measured against
-the draft client contract.
+The applicable target behavior has been promoted into the separate normative
+`docs/websocket-client-behavior.md`, its stable `WSC-` requirement IDs are in
+`docs/protocol-conformance-catalogue.md`, and Captain approved the reconciled
+documents on 2026-07-20. Runtime implementation must conform to those approved
+requirements.
 
 ## Current baseline
 
@@ -585,9 +587,12 @@ missing. Do not add a silent fallback to the old `os.read()` path.
 
 1. Adapt scripted input and plain output to the same engine.
 2. Keep both shell wrapper names and existing CLI option names stable.
-3. Convert timeout validation to argparse-friendly errors.
-4. Normalize exit results across interactive and batch entrypoints.
-5. Remove `ws_client_common.py` once no caller remains.
+3. Remove the shell wrappers' `SIGINT` traps which currently coerce an
+   interrupted client to exit `0`; preserve the Python entrypoint's typed exit
+   status, including `130` for `SIGINT`/`Ctrl-C` and `SIGTERM`.
+4. Convert timeout validation to argparse-friendly errors.
+5. Normalize exit results across interactive and batch entrypoints.
+6. Remove `ws_client_common.py` once no caller remains.
 
 ### Stage 5: Documentation reconciliation and verification
 
@@ -689,6 +694,8 @@ Likely modifications:
 
 - `ai_server/chat_client.py`;
 - `ai_server/batch_ws_client.py`;
+- `tools/ai-server-chat.sh`;
+- `tools/batch-ws-client.sh`;
 - `requirements.txt`;
 - `tests/test_websocket_server.py` or smaller focused client test modules;
 - `docs/websocket-conversation-protocol.md` only to preserve the external-wire
@@ -757,6 +764,5 @@ T-005 is complete only when:
 
 ## Next action
 
-Present the independently reviewed client contract and ownership reconciliation
-for Captain approval. Do not begin runtime implementation until that approval
-and a later explicit `proceed` or `make it so` authorization.
+Await a separate explicit `proceed` or `make it so` authorization before
+beginning runtime implementation.
