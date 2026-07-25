@@ -14,7 +14,7 @@ from ai_server.conversations.messages import InputSessionClosed, UserMessage
 from ai_server.microphones.conversation_adapter import VoiceInputConversation, VoiceInputSession
 from ai_server.microphones.conversation_adapter import VoiceAssistantSink, VoiceSessionState
 from ai_server.microphones.interfaces import MicrophoneUnavailable
-from ai_server.microphones.manager import CapturedUtterance, MicrophoneManager
+from ai_server.microphones.manager import CapturedUtterance, MicrophoneManager, _MicrophoneAvailabilityLogger
 from ai_server.microphones.messages import CueFinished, CueType, ListeningMode, ListeningStarted, ListeningStopped
 from ai_server.microphones.messages import PlaybackBegin, PlaybackChunk, PlaybackEnd, PlaybackFinished, PlayCue
 from ai_server.microphones.messages import AudioChunk, ResetWakeCandidate, SetVisualState, SpeechEnded, SpeechStarted
@@ -610,6 +610,53 @@ def test_unavailable_boundary_is_closed_and_protocol_state_is_recreated() -> Non
         assert microphone.close_count == 1
         assert manager._protocols["fake"] is not old_protocol
         assert manager._protocols["fake"].snapshot.state is DriverState.DISARMED
+
+    asyncio.run(run())
+
+
+def test_microphone_unavailability_logs_once_until_recovery(caplog) -> None:
+    logger = logging.getLogger("test.microphone.availability")
+    availability_logger = _MicrophoneAvailabilityLogger(logger)
+
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        availability_logger.unavailable(MicrophoneUnavailable("first failure"))
+        availability_logger.unavailable(MicrophoneUnavailable("retry failure"))
+        availability_logger.available()
+        availability_logger.unavailable(MicrophoneUnavailable("later failure"))
+
+    warning_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    ]
+    info_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.INFO
+    ]
+
+    assert warning_messages == [
+        "microphone unavailable; retrying soon error=first failure",
+        "microphone unavailable; retrying soon error=later failure",
+    ]
+    assert info_messages == ["microphone available again"]
+
+
+def test_microphone_boundary_recreation_is_debug_observability(caplog) -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = _manager(microphone)
+        logger = logging.getLogger("test.microphone.recovery")
+
+        with caplog.at_level(logging.DEBUG, logger=logger.name):
+            await manager._recover_microphone_boundary(
+                microphone,
+                logger,
+                MicrophoneUnavailable("offline"),
+            )
+
+        assert [record for record in caplog.records if record.levelno == logging.WARNING] == []
+        assert "recreating microphone protocol boundary after unavailability" in caplog.text
 
     asyncio.run(run())
 

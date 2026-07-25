@@ -999,7 +999,7 @@ class MicrophoneManager:
         error: BaseException,
     ) -> None:
         snapshot = self._protocols[microphone.context.name].snapshot
-        logger.warning(
+        logger.debug(
             "recreating microphone protocol boundary after unavailability state=%s correlations=%s error=%s",
             snapshot.state.value,
             snapshot,
