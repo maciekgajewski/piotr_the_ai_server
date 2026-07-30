@@ -170,7 +170,7 @@ class MicrophoneManager:
             finally:
                 self._input_sessions.pop(microphone.context.name, None)
                 await session.close()
-                logger.info("microphone session ended")
+                logger.debug("microphone input attempt ended")
             if not self._closing:
                 await asyncio.sleep(0.5)
 

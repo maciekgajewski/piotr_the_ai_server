@@ -721,7 +721,7 @@ def test_speech_start_cancellation_joins_receive_and_timer_tasks() -> None:
     asyncio.run(run())
 
 
-def test_microphone_runtime_recovers_unavailable_acceptance_boundary() -> None:
+def test_microphone_runtime_recovers_unavailable_acceptance_boundary(caplog) -> None:
     async def run() -> None:
         microphone = FakeMicrophone()
         manager = _manager(microphone)
@@ -739,10 +739,23 @@ def test_microphone_runtime_recovers_unavailable_acceptance_boundary() -> None:
         manager._begin_new_conversation_listening = unavailable
         manager._recover_microphone_boundary = recover
 
-        await manager._run_microphone(microphone)
+        logger_name = (
+            "ai_server.microphones.manager.MicrophoneManager["
+            f"{microphone.context.instance_id}]"
+        )
+        with caplog.at_level(logging.DEBUG, logger=logger_name):
+            await manager._run_microphone(microphone)
 
         assert recovered.is_set()
         assert microphone.close_count == 1
+        assert "microphone input attempt ended" in caplog.text
+        assert "microphone session ended" not in caplog.text
+        assert not [
+            record
+            for record in caplog.records
+            if record.levelno == logging.INFO
+            and record.getMessage() == "microphone input attempt ended"
+        ]
 
     asyncio.run(run())
 
