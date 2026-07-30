@@ -36,7 +36,7 @@ from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.conversations.contexts import ConversationContext, ConversationMedium
 from ai_server.conversations.messages import AssistantMessageCompleted, AssistantMessageStarted
 from ai_server.conversations.messages import AssistantTextChunk, ProcessingUpdate, UserMessage
-from ai_server.ollama_client import OllamaClient
+from ai_server.ollama_connection import OllamaConnection
 
 
 ROOT = Path(__file__).resolve().parent
@@ -86,9 +86,9 @@ class CaseResult:
         return not self.failures
 
 
-class RecordingOllamaClient:
+class RecordingOllamaConnection:
     def __init__(self, *, base_url: str) -> None:
-        self._inner = OllamaClient(base_url=base_url)
+        self._inner = OllamaConnection(base_url=base_url)
         self.requests: list[dict[str, Any]] = []
         self.responses: list[dict[str, Any]] = []
 
@@ -386,7 +386,7 @@ class FakeWeatherProvider:
         pass
 
 
-class FakeWeatherOllamaClient:
+class FakeWeatherOllamaConnection:
     async def chat(self, payload: dict[str, Any]) -> dict[str, Any]:
         del payload
         raise AssertionError("unexpected weather LLM call")
@@ -562,12 +562,12 @@ async def _run_orchestrator_case(case: TestCase, settings: dict[str, Any]) -> Ca
         for domain, results in domain_results.items()
         if isinstance(results, dict)
     }
-    ollama = RecordingOllamaClient(base_url=settings["ollama_url"])
+    ollama = RecordingOllamaConnection(base_url=settings["ollama_url"])
     agent = OrchestratorAgent(
         orchestrator_model=settings["orchestrator_model"],
         domain_agents=domain_agents,
-        ollama_client=ollama,
-        owns_ollama_client=True,
+        ollama_connection=ollama,
+        owns_ollama_connection=True,
         home_assistant_inventory_provider=StaticHomeAssistantInventoryProvider(_home_assistant_inventory()),
     )
     result = CaseResult(case=case)
@@ -594,12 +594,12 @@ async def _run_composite_case(case: TestCase, settings: dict[str, Any]) -> CaseR
     temp_dir = tempfile.TemporaryDirectory(prefix="orchestrator-dsa-time-")
     task_traces: list[dict[str, Any]] = []
     agents = _composite_domain_agents(raw, settings, fake_ha, Path(temp_dir.name), task_traces)
-    ollama = RecordingOllamaClient(base_url=settings["ollama_url"])
+    ollama = RecordingOllamaConnection(base_url=settings["ollama_url"])
     agent = OrchestratorAgent(
         orchestrator_model=settings["orchestrator_model"],
         domain_agents=agents,
-        ollama_client=ollama,
-        owns_ollama_client=True,
+        ollama_connection=ollama,
+        owns_ollama_connection=True,
         home_assistant_inventory_provider=fake_ha,
     )
     result = CaseResult(case=case)
@@ -658,7 +658,7 @@ async def _run_dsa_media_case(case: TestCase, settings: dict[str, Any]) -> CaseR
     dsa = MediaPlayerDomainAgent(
         model=settings["dsa_model"],
         connection=fake_ha,
-        ollama_client=FakeWeatherOllamaClient(),
+        ollama_connection=FakeWeatherOllamaConnection(),
     )
     result = CaseResult(case=case)
     try:
@@ -785,7 +785,7 @@ def _composite_domain_agents(
         "media_player": MediaPlayerDomainAgent(
             model=settings["dsa_model"],
             connection=fake_ha,
-            ollama_client=FakeWeatherOllamaClient(),
+            ollama_connection=FakeWeatherOllamaConnection(),
         ),
         "time": CurrentTimeDomainAgent(
             timezone=settings["timezone"],
@@ -803,7 +803,7 @@ def _composite_domain_agents(
     return {domain: TracingDomainAgent(domain, agent, traces) for domain, agent in agents.items()}
 
 
-def _collect_orchestrator_observations(result: CaseResult, ollama: RecordingOllamaClient, task_traces: list[dict[str, Any]]) -> None:
+def _collect_orchestrator_observations(result: CaseResult, ollama: RecordingOllamaConnection, task_traces: list[dict[str, Any]]) -> None:
     result.model_requests = ollama.requests
     result.model_responses = ollama.responses
     result.task_results = task_traces

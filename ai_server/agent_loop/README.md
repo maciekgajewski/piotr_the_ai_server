@@ -8,7 +8,9 @@
 
 `ai_server.agent_loop` is an Ollama `/api/chat` loop with tool calling.
 It keeps loop-specific fallback/backoff policy in `AgentLoopOllamaConnection`
-and uses `ai_server.ollama_client.OllamaClient` for the HTTP transport.
+and uses the process-wide `ai_server.ollama_connection.OllamaConnection` for
+HTTP transport. Agent loops may run concurrent requests, while exclusive model
+residency repair waits for active requests and blocks new ones.
 
 ## Tool conventions
 

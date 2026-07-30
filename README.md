@@ -19,6 +19,7 @@ A project to turn this computer into a AI server
 ## Architecture decisions
 
 - STT should become an event source that can emit partial and final transcript events per microphone session.
+- The AI server owns one process-wide `OllamaConnection`. It is injected through the Agent factory into Ollama-backed agents, DSAs, tools, and agent loops; it does not cross the sealed Conversation bridge interface.
 
 ## Directory
 

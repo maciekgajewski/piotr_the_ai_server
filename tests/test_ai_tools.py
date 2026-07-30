@@ -87,7 +87,7 @@ def test_time_tool_logs_locale_failure(monkeypatch, caplog) -> None:
         return value
 
     monkeypatch.setattr(locale, "setlocale", fake_setlocale)
-    monkeypatch.setattr("ai_server.ai_tools.time.time.OllamaClient", lambda base_url: FakeOllamaClient())
+    monkeypatch.setattr("ai_server.ai_tools.time.time.OllamaConnection", lambda base_url: FakeOllamaConnection())
     config = AgentConfig(
         type="assistant",
         options={"intent_router_model": "llama3.2:3b", "ollama_url": "http://ollama:11434"},
@@ -770,7 +770,7 @@ class FakeSession:
         raise AssertionError("unexpected HTTP request")
 
 
-class FakeOllamaClient:
+class FakeOllamaConnection:
     async def chat(self, payload: dict):
         return {"message": {"role": "assistant", "content": "Jest południe."}}
 

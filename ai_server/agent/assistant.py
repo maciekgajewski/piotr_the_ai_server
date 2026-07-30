@@ -12,7 +12,7 @@ from ai_server.ai_tools.interfaces import Tool
 from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.conversations.agent_runtime import AgentChannel, ConversationAgent
 from ai_server.conversations.contexts import ConversationContext
-from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
+from ai_server.ollama_connection import OLLAMA_BASE_URL, OllamaConnection, OllamaError
 
 
 USER_PROMPT_TEMPLATE = """
@@ -52,14 +52,14 @@ class AssistantAgent(ConversationAgent):
         tools: Mapping[str, Tool],
         base_url: str = OLLAMA_BASE_URL,
         session: ClientSession | None = None,
-        ollama_client: OllamaClient | None = None,
-        owns_ollama_client: bool = True,
+        ollama_connection: OllamaConnection | None = None,
+        owns_ollama_connection: bool = True,
     ) -> None:
         self._intent_router_model = intent_router_model
         self._tools = dict(tools)
         self._user_prompt_template = _build_user_prompt_template(self._tools)
-        self._ollama = ollama_client or OllamaClient(base_url=base_url, session=session)
-        self._owns_ollama = owns_ollama_client
+        self._ollama = ollama_connection or OllamaConnection(base_url=base_url, session=session)
+        self._owns_ollama = owns_ollama_connection
         self._logger = logging.getLogger(f"{__name__}.AssistantAgent[{intent_router_model}]")
 
     async def preload(self) -> None:

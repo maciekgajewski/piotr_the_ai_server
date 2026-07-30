@@ -15,7 +15,7 @@ from ai_server.conversations.agent_runtime import AgentChannel, ConversationAgen
 from ai_server.conversations.contexts import ConversationContext, ConversationMedium
 from ai_server.domain_agents import DomainAgent, DomainTask, QueryCapability
 from ai_server.home_assistant.interfaces import HomeAssistantInventory
-from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
+from ai_server.ollama_connection import OLLAMA_BASE_URL, OllamaConnection, OllamaError
 from ai_server.orchestrator.known_utterances import KnownUtteranceTasks, collect_known_utterance_tasks, known_utterance_task
 from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 from ai_server.utils.processing import ProcessingUpdateCallback, ProcessingUpdateThrottle, await_with_processing_updates
@@ -119,8 +119,8 @@ class OrchestratorAgent(ConversationAgent):
         clarification_model: str | None = None,
         base_url: str = OLLAMA_BASE_URL,
         session: ClientSession | None = None,
-        ollama_client: OllamaClient | None = None,
-        owns_ollama_client: bool = True,
+        ollama_connection: OllamaConnection | None = None,
+        owns_ollama_connection: bool = True,
         server_config: ServerConfig = ServerConfig(),
         processing_update_interval_seconds: float = 5.0,
         home_assistant_inventory_provider: HomeAssistantInventoryProvider | None = None,
@@ -130,8 +130,8 @@ class OrchestratorAgent(ConversationAgent):
         self._domain_agents = dict(domain_agents or {})
         self._planning_system_prompt = _build_planning_system_prompt(self._domain_agents)
         self._known_utterance_tasks = collect_known_utterance_tasks(self._domain_agents)
-        self._ollama = ollama_client or OllamaClient(base_url=base_url, session=session)
-        self._owns_ollama = owns_ollama_client
+        self._ollama = ollama_connection or OllamaConnection(base_url=base_url, session=session)
+        self._owns_ollama = owns_ollama_connection
         self._server_config = server_config
         self._processing_update_interval_seconds = processing_update_interval_seconds
         self._home_assistant_inventory_provider = home_assistant_inventory_provider

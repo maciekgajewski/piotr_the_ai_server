@@ -28,7 +28,7 @@ from ai_server.domain_agents.media_player.parser import (
 )
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.conversations.agent_context import AgentExecutionContext
-from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient
+from ai_server.ollama_connection import OLLAMA_BASE_URL, OllamaConnection
 from ai_server.utils.conversation_style import reply_style_instruction
 from ai_server.utils.processing import ProcessingUpdateCallback, await_with_processing_updates
 
@@ -74,7 +74,7 @@ class MediaPlayerDomainAgent:
         ollama_url: str = OLLAMA_BASE_URL,
         fallback_model: str | None = None,
         fallback_backoff_seconds: float = 300.0,
-        ollama_client: OllamaClient | None = None,
+        ollama_connection: OllamaConnection | None = None,
         liked_songs_media_id: str = "Liked Songs",
         liked_songs_media_type: str = "playlist",
         default_music_media_id: str = "Liked Songs",
@@ -87,8 +87,8 @@ class MediaPlayerDomainAgent:
         self._ollama_url = ollama_url
         self._fallback_model = fallback_model
         self._fallback_backoff_seconds = fallback_backoff_seconds
-        self._ollama = ollama_client or OllamaClient(base_url=ollama_url)
-        self._owns_ollama = ollama_client is None
+        self._ollama = ollama_connection or OllamaConnection(base_url=ollama_url)
+        self._owns_ollama = ollama_connection is None
         self._fallback_until = 0.0
         self._liked_songs_media_id = liked_songs_media_id
         self._liked_songs_media_type = liked_songs_media_type

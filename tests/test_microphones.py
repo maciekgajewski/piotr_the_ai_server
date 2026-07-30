@@ -125,6 +125,19 @@ class FakeLifecycle:
         return None
 
 
+class BlockingStartLifecycle(FakeLifecycle):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.closed = False
+
+    async def start(self) -> None:
+        self.started.set()
+        await asyncio.Event().wait()
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 def _manager(
     microphone: FakeMicrophone,
     *,
@@ -152,6 +165,33 @@ def test_new_conversation_listening_generation_has_fresh_correlation() -> None:
 
     assert first.mode is ListeningMode.OPEN_MIC
     assert first.listen_id != second.listen_id
+
+
+def test_manager_start_cancellation_closes_partially_acquired_resources() -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        stt = BlockingStartLifecycle()
+        tts = FakeLifecycle()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=stt,
+            tts=tts,
+            agent=object(),
+            follow_up_timeout_seconds=60,
+            bridge_settings=BridgeSettings(1.0, 0.1),
+            microphone_assistant_text_buffers={"fake": 100},
+        )
+        start_task = asyncio.create_task(manager.start())
+        await stt.started.wait()
+
+        start_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await start_task
+
+        assert stt.closed
+        assert microphone.close_count == 1
+
+    asyncio.run(run())
 
 
 def test_manager_validates_command_and_driver_event_together() -> None:

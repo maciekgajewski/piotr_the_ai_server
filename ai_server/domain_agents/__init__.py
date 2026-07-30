@@ -10,12 +10,14 @@ from ai_server.domain_agents.system_status import SystemStatusCollector, SystemS
 from ai_server.domain_agents.weather import WeatherDomainAgent
 from ai_server.domain_agents.wikipedia import WikipediaDomainAgent
 from ai_server.home_assistant import HomeAssistantConnection
+from ai_server.agent_loop import AgentLoopOllamaConnection
+from ai_server.ollama_connection import OllamaConnection
 from ai_server.utils import JsonFileStore
 
 
 def create_domain_agents(
     config: AgentConfig,
-    ollama_url: str,
+    ollama_connection: OllamaConnection,
     *,
     home_assistant_connection: HomeAssistantConnection | None = None,
     server_config: ServerConfig = ServerConfig(),
@@ -23,6 +25,11 @@ def create_domain_agents(
     cache_dir: Path = Path(DEFAULT_CACHE_DIR).expanduser(),
     data_store: JsonFileStore | None = None,
 ) -> dict[str, DomainAgent]:
+    ollama_url = ollama_connection.base_url
+    agent_loop_ollama_connection = AgentLoopOllamaConnection(
+        base_url=ollama_url,
+        ollama_connection=ollama_connection,
+    )
     raw_domain_agents = config.options.get("domain_agents", {})
     if not isinstance(raw_domain_agents, dict):
         raise ValueError("agent.domain_agents must be a mapping")
@@ -40,6 +47,7 @@ def create_domain_agents(
                 fallback_model=_domain_agent_fallback_model(config.options, raw_options, domain),
                 fallback_backoff_seconds=_domain_agent_fallback_backoff_seconds(config.options, raw_options, domain),
                 ollama_url=ollama_url,
+                ollama_connection=agent_loop_ollama_connection,
                 connection=home_assistant_connection,
                 processing_update_interval_seconds=processing_updates.interval_seconds,
             )
@@ -59,6 +67,7 @@ def create_domain_agents(
                 fallback_model=_domain_agent_fallback_model(config.options, raw_options, domain),
                 fallback_backoff_seconds=_domain_agent_fallback_backoff_seconds(config.options, raw_options, domain),
                 ollama_url=ollama_url,
+                ollama_connection=ollama_connection,
                 connection=home_assistant_connection,
                 liked_songs_media_id=_optional_domain_string(raw_options, domain, "liked_songs_media_id", "Liked Songs") or "Liked Songs",
                 liked_songs_media_type=_optional_domain_string(raw_options, domain, "liked_songs_media_type", "playlist") or "playlist",
@@ -74,6 +83,7 @@ def create_domain_agents(
                 fallback_model=_domain_agent_fallback_model(config.options, raw_options, domain),
                 fallback_backoff_seconds=_domain_agent_fallback_backoff_seconds(config.options, raw_options, domain),
                 ollama_url=ollama_url,
+                ollama_connection=agent_loop_ollama_connection,
                 languages=_domain_languages(raw_options, domain),
                 processing_update_interval_seconds=processing_updates.interval_seconds,
             )
@@ -84,6 +94,7 @@ def create_domain_agents(
                 fallback_model=_domain_agent_fallback_model(config.options, raw_options, domain),
                 fallback_backoff_seconds=_domain_agent_fallback_backoff_seconds(config.options, raw_options, domain),
                 ollama_url=ollama_url,
+                ollama_connection=agent_loop_ollama_connection,
                 location=_optional_domain_string(raw_options, domain, "location", server_config.location),
                 cache_dir=_domain_cache_dir(raw_options, domain, cache_dir),
                 data_store=data_store,
@@ -104,6 +115,7 @@ def create_domain_agents(
                 fallback_model=_domain_agent_fallback_model(config.options, raw_options, domain),
                 fallback_backoff_seconds=_domain_agent_fallback_backoff_seconds(config.options, raw_options, domain),
                 ollama_url=ollama_url,
+                ollama_connection=agent_loop_ollama_connection,
                 collector=collector,
                 max_short_report_issues=options.max_short_report_issues,
                 processing_update_interval_seconds=processing_updates.interval_seconds,

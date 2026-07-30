@@ -10,6 +10,7 @@ from ai_server.ai_tools.web_search.web_search import WebSearchTool
 from ai_server.ai_tools.wikipedia.wikipedia import WikipediaTool
 from ai_server.config import AgentConfig, ProcessingUpdatesConfig
 from ai_server.home_assistant import HomeAssistantConnection
+from ai_server.ollama_connection import OllamaConnection
 
 
 TOOL_CLASSES = (
@@ -25,6 +26,7 @@ TOOL_CLASSES = (
 
 def create_tools(
     config: AgentConfig,
+    ollama_connection: OllamaConnection | None = None,
     home_assistant_connection: HomeAssistantConnection | None = None,
     processing_updates: ProcessingUpdatesConfig = ProcessingUpdatesConfig(),
 ) -> dict[str, Tool]:
@@ -35,8 +37,11 @@ def create_tools(
             tool = tool_class(
                 config,
                 connection=home_assistant_connection,
+                ollama_connection=ollama_connection,
                 processing_update_interval_seconds=processing_updates.interval_seconds,
             )
+        elif tool_class is TimeTool:
+            tool = tool_class(config, ollama_connection=ollama_connection)
         else:
             tool = tool_class(config)
         if tool.name in tools:

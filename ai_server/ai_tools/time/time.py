@@ -7,7 +7,7 @@ from ai_server.ai_tools.interfaces import BaseTool
 from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.conversations.agent_runtime import AgentChannel
 from ai_server.conversations.messages import UserMessage
-from ai_server.ollama_client import OllamaClient
+from ai_server.ollama_connection import OllamaConnection
 
 GENERATION_OPTIONS = {
     "num_predict": 32,
@@ -20,13 +20,14 @@ class TimeTool(BaseTool):
     name = "time"
     description = "A tool for providing the current time, date or day of week. Use this for any time-related queries."
 
-    def __init__(self, config) -> None:
+    def __init__(self, config, ollama_connection: OllamaConnection | None = None) -> None:
         super().__init__(config)
         ollama_url = self._config.options.get("ollama_url")
         if not isinstance(ollama_url, str) or not ollama_url:
             raise ValueError("agent.ollama_url must be a non-empty string for TimeTool")
         self._ollama_url = ollama_url
-        self._ollama: OllamaClient | None = None
+        self._ollama = ollama_connection
+        self._owns_ollama_connection = ollama_connection is None
 
     async def run(self, conversation: AgentExecutionContext, channel: AgentChannel, request: UserMessage) -> None:
         current_locale = locale.setlocale(locale.LC_TIME)
@@ -45,7 +46,7 @@ class TimeTool(BaseTool):
                 f"Pytanie: {request.text}"
             )
 
-            response = await self._ollama_client().chat(
+            response = await self._ollama_connection().chat(
                 {
                     "model": self._config.options["intent_router_model"],
                     "raw": False,
@@ -71,11 +72,11 @@ class TimeTool(BaseTool):
             locale.setlocale(locale.LC_TIME, current_locale)
 
     async def close(self) -> None:
-        if self._ollama is not None:
+        if self._owns_ollama_connection and self._ollama is not None:
             await self._ollama.close()
             self._ollama = None
 
-    def _ollama_client(self) -> OllamaClient:
+    def _ollama_connection(self) -> OllamaConnection:
         if self._ollama is None:
-            self._ollama = OllamaClient(base_url=self._ollama_url)
+            self._ollama = OllamaConnection(base_url=self._ollama_url)
         return self._ollama

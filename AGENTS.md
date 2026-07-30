@@ -5,6 +5,7 @@
 - Prefer one step at a time for ESP32-S3-BOX-3 setup work.
 - Read the "Architecture decisions" section in README.md before architecture-related work.
 - Use `docs/README.md` as the project documentation index. It identifies normative, operational, planned, and historical documents.
+- After implementing a task, use [$review-agent] to review the implementation. Address all findings, repeat the review until it comes clean.
 
 # File naming
 

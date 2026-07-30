@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from ai_server.agent_loop import AgentLoop, AgentLoopConfig
+from ai_server.agent_loop import AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
 from ai_server.ai_tools.interfaces import BaseTool
 from ai_server.config import AgentConfig
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
@@ -11,6 +11,7 @@ from ai_server.home_assistant.toolset import HomeAssistantToolSet
 from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.conversations.agent_runtime import AgentChannel
 from ai_server.conversations.messages import UserMessage
+from ai_server.ollama_connection import OllamaConnection
 
 
 class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
@@ -24,6 +25,7 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
         self,
         config: AgentConfig,
         connection: HomeAssistantConnection | None = None,
+        ollama_connection: OllamaConnection | None = None,
         processing_update_interval_seconds: float = 5.0,
     ) -> None:
         BaseTool.__init__(self, config)
@@ -34,6 +36,10 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
         self._agent_loop_fallback_model = _parse_agent_loop_fallback_model(config.options)
         self._agent_loop_fallback_backoff_seconds = _parse_agent_loop_fallback_backoff_seconds(config.options)
         self._ollama_url = _parse_ollama_url(config.options)
+        self._agent_loop_ollama_connection = AgentLoopOllamaConnection(
+            base_url=self._ollama_url,
+            ollama_connection=ollama_connection,
+        )
         self._processing_update_interval_seconds = processing_update_interval_seconds
         self._start_task: asyncio.Task[None] | None = None
         self._logger.debug(
@@ -68,6 +74,7 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
             config=loop_config,
             system_prompt=system_prompt,
             tools=self,
+            ollama_connection=self._agent_loop_ollama_connection,
             processing_update_callback=channel.processing_update,
             processing_update_interval_seconds=self._processing_update_interval_seconds,
         ) as loop:
@@ -119,6 +126,7 @@ class HomeAssistantTool(BaseTool, HomeAssistantToolSet):
                 pass
         if self._owns_connection:
             await self._connection.close()
+        await self._agent_loop_ollama_connection.close()
 
     def _start_owned_connection(self) -> None:
         if not self._owns_connection:

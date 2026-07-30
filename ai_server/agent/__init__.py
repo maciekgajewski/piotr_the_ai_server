@@ -13,19 +13,20 @@ from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, DEFAULT_DATA_DIR, P
 from ai_server.conversations.interfaces import Agent
 from ai_server.domain_agents import create_domain_agents
 from ai_server.home_assistant import HomeAssistantConnection
-from ai_server.ollama_client import OllamaClient
+from ai_server.ollama_connection import OllamaConnection
 from ai_server.utils import JsonFileStore
 
 
 async def create_agent(
     config: AgentConfig,
-    ollama_url: str,
+    ollama_connection: OllamaConnection,
     home_assistant_connection: HomeAssistantConnection | None = None,
     server_config: ServerConfig = ServerConfig(),
     processing_updates: ProcessingUpdatesConfig = ProcessingUpdatesConfig(),
     cache_dir: Path = Path(DEFAULT_CACHE_DIR).expanduser(),
     data_store: JsonFileStore | None = None,
 ) -> Agent:
+    ollama_url = ollama_connection.base_url
     logger = logging.getLogger(f"{__name__}.factory[{config.type}]")
     logger.info("Creating agent type=%s", config.type)
     if config.type == "echo":
@@ -39,8 +40,11 @@ async def create_agent(
     if config.type == "polite_reply":
         model = config.options["model"]
         logger.info("Creating polite_reply agent model=%s", model)
-        ollama_client = OllamaClient(base_url=ollama_url)
-        agent = PoliteReplyAgent(model=model, ollama_client=ollama_client)
+        agent = PoliteReplyAgent(
+            model=model,
+            ollama_connection=ollama_connection,
+            owns_ollama_connection=False,
+        )
         try:
             logger.info("Preloading polite_reply agent model=%s", model)
             await agent.preload()
@@ -53,15 +57,20 @@ async def create_agent(
     if config.type == "assistant":
         intent_router_model = config.options["intent_router_model"]
         logger.info("Creating assistant agent intent_router_model=%s", intent_router_model)
-        ollama_client = OllamaClient(base_url=ollama_url)
         tool_config = AgentConfig(type=config.type, options={**config.options, "ollama_url": ollama_url})
         tools = create_tools(
             tool_config,
+            ollama_connection=ollama_connection,
             home_assistant_connection=home_assistant_connection,
             processing_updates=processing_updates,
         )
         logger.info("Loaded %s assistant tools", len(tools))
-        agent = AssistantAgent(intent_router_model=intent_router_model, tools=tools, ollama_client=ollama_client)
+        agent = AssistantAgent(
+            intent_router_model=intent_router_model,
+            tools=tools,
+            ollama_connection=ollama_connection,
+            owns_ollama_connection=False,
+        )
         try:
             logger.info("Preloading assistant agent intent_router_model=%s", intent_router_model)
 
@@ -80,10 +89,9 @@ async def create_agent(
             orchestrator_model,
             clarification_model,
         )
-        ollama_client = OllamaClient(base_url=ollama_url)
         domain_agents = create_domain_agents(
             config,
-            ollama_url,
+            ollama_connection,
             home_assistant_connection=home_assistant_connection,
             server_config=server_config,
             processing_updates=processing_updates,
@@ -100,7 +108,8 @@ async def create_agent(
             orchestrator_model=orchestrator_model,
             clarification_model=clarification_model,
             domain_agents=domain_agents,
-            ollama_client=ollama_client,
+            ollama_connection=ollama_connection,
+            owns_ollama_connection=False,
             server_config=server_config,
             processing_update_interval_seconds=processing_updates.interval_seconds,
             home_assistant_inventory_provider=home_assistant_connection,

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ai_server.agent_loop.interfaces import HttpSession
-from ai_server.ollama_client import OllamaClient, OllamaError
+from ai_server.ollama_connection import OllamaConnection, OllamaError
 
 
 @dataclass(frozen=True)
@@ -24,22 +24,22 @@ class AgentLoopOllamaConnection:
         base_url: str,
         session: HttpSession | None = None,
         now_factory: Callable[[], float] = time.monotonic,
-        ollama_client: OllamaClient | None = None,
+        ollama_connection: OllamaConnection | None = None,
         local_first_cloud_grace_seconds: float = 10.0,
     ) -> None:
         if local_first_cloud_grace_seconds <= 0:
             raise ValueError("local_first_cloud_grace_seconds must be positive")
         self._base_url = base_url.rstrip("/")
-        self._ollama_client = ollama_client or OllamaClient(base_url=self._base_url, session=session)
-        self._owns_ollama_client = ollama_client is None
+        self._ollama_connection = ollama_connection or OllamaConnection(base_url=self._base_url, session=session)
+        self._owns_ollama_connection = ollama_connection is None
         self._now_factory = now_factory
         self._local_first_cloud_grace_seconds = local_first_cloud_grace_seconds
         self._backoff_until: dict[_BackoffKey, float] = {}
         self._logger = logging.getLogger(f"{__name__}.AgentLoopOllamaConnection[{self._base_url}]")
 
     async def close(self) -> None:
-        if self._owns_ollama_client:
-            await self._ollama_client.close()
+        if self._owns_ollama_connection:
+            await self._ollama_connection.close()
 
     async def chat(
         self,
@@ -233,7 +233,7 @@ class AgentLoopOllamaConnection:
         *,
         request_timeout_seconds: float | None,
     ) -> dict[str, Any]:
-        return await self._ollama_client.chat(
+        return await self._ollama_connection.chat(
             _payload_with_model(payload, model),
             request_timeout_seconds=request_timeout_seconds,
         )

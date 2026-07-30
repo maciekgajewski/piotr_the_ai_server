@@ -20,17 +20,22 @@ from ai_server.domain_agents.weather import WeatherDomainAgent
 from ai_server.domain_agents.weather.local_cache import WeatherLocalCache
 from ai_server.domain_agents.wikipedia import WikipediaDomainAgent
 from ai_server.home_assistant import HomeAssistantConnection, parse_home_assistant_options
+from ai_server.ollama_connection import OllamaConnection
 from ai_server.utils import JsonFileStore
 
 
+def _ollama_connection() -> OllamaConnection:
+    return OllamaConnection(base_url="http://ollama:11434", session=FakeSession())
+
+
 def test_create_agent_returns_echo_agent() -> None:
-    agent = asyncio.run(create_agent(AgentConfig(type="echo", options={}), "http://ollama:11434"))
+    agent = asyncio.run(create_agent(AgentConfig(type="echo", options={}), _ollama_connection()))
 
     assert isinstance(agent, EchoAgent)
 
 
 def test_create_agent_returns_interrogator_agent() -> None:
-    agent = asyncio.run(create_agent(AgentConfig(type="interrogator", options={}), "http://ollama:11434"))
+    agent = asyncio.run(create_agent(AgentConfig(type="interrogator", options={}), _ollama_connection()))
 
     assert isinstance(agent, InterrogatorAgent)
 
@@ -45,7 +50,7 @@ def test_create_agent_returns_polite_reply_agent(monkeypatch) -> None:
                 type="polite_reply",
                 options={"model": "qwen3:4b"},
             ),
-            "http://ollama:11434",
+            _ollama_connection(),
         )
 
         try:
@@ -76,9 +81,10 @@ def test_create_agent_returns_assistant_agent_with_loaded_tools(monkeypatch) -> 
             },
         )
         home_assistant_connection = HomeAssistantConnection(parse_home_assistant_options(config.options))
+        ollama_connection = _ollama_connection()
         agent = await create_agent(
             config,
-            "http://ollama:11434",
+            ollama_connection,
             home_assistant_connection=home_assistant_connection,
         )
 
@@ -86,6 +92,8 @@ def test_create_agent_returns_assistant_agent_with_loaded_tools(monkeypatch) -> 
             assert isinstance(agent, AssistantAgent)
             assert agent._tools["home_assistant"]._config.options["ollama_url"] == "http://ollama:11434"
             assert agent._tools["home_assistant"]._connection is home_assistant_connection
+            assert agent._tools["home_assistant"]._agent_loop_ollama_connection._ollama_connection is ollama_connection
+            assert agent._tools["time"]._ollama is ollama_connection
             assert "calculator" in agent._tools
             assert "- calculator: A tool for performing mathematical calculations." in agent._user_prompt_template
             assert "User input: {user_input}" in agent._user_prompt_template
@@ -133,12 +141,13 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             },
         )
         home_assistant_connection = HomeAssistantConnection(parse_home_assistant_options(config.options))
+        ollama_connection = _ollama_connection()
         agent = await create_agent(
             AgentConfig(
                 type="orchestrator",
                 options=config.options,
             ),
-            "http://ollama:11434",
+            ollama_connection,
             home_assistant_connection=home_assistant_connection,
             server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
             processing_updates=ProcessingUpdatesConfig(interval_seconds=2.5),
@@ -151,12 +160,14 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert agent._orchestrator_model == "qwen3:4b-instruct"
             assert agent._clarification_model == "gpt-oss:20b-cloud"
             assert agent._ollama._base_url == "http://ollama:11434"
+            assert agent._ollama is ollama_connection
             assert agent._server_config == ServerConfig(timezone="Europe/Warsaw", location="Wrocław")
             assert agent._processing_update_interval_seconds == 2.5
             assert agent._domain_agents["home_assistant"]._model == "qwen3:8b"
             assert agent._domain_agents["home_assistant"]._fallback_model == "qwen3:4b"
             assert agent._domain_agents["home_assistant"]._fallback_backoff_seconds == 120
             assert agent._domain_agents["home_assistant"]._processing_update_interval_seconds == 2.5
+            assert agent._domain_agents["home_assistant"]._ollama_connection._ollama_connection is ollama_connection
             assert isinstance(agent._domain_agents["time"], CurrentTimeDomainAgent)
             assert agent._domain_agents["time"]._timezone == "Europe/Warsaw"
             assert agent._domain_agents["time"]._location == "Wrocław"
@@ -165,16 +176,19 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert agent._domain_agents["wikipedia"]._model == "gpt-oss:20b-cloud"
             assert agent._domain_agents["wikipedia"]._fallback_model == "qwen3:4b-instruct-fallback"
             assert agent._domain_agents["wikipedia"]._processing_update_interval_seconds == 2.5
+            assert agent._domain_agents["wikipedia"]._ollama_connection._ollama_connection is ollama_connection
             assert isinstance(agent._domain_agents["weather"], WeatherDomainAgent)
             assert agent._domain_agents["weather"]._model == "gpt-oss:20b-cloud"
             assert agent._domain_agents["weather"]._fallback_model == "qwen3:4b-instruct-fallback"
             assert agent._domain_agents["weather"]._location == "Wrocław"
             assert agent._domain_agents["weather"]._processing_update_interval_seconds == 2.5
+            assert agent._domain_agents["weather"]._ollama_connection._ollama_connection is ollama_connection
             assert isinstance(agent._domain_agents["system_status"], SystemStatusDomainAgent)
             assert agent._domain_agents["system_status"]._model == "gpt-oss:20b-cloud"
             assert agent._domain_agents["system_status"]._fallback_model == "qwen3:4b-instruct-fallback"
             assert agent._domain_agents["system_status"]._processing_update_interval_seconds == 2.5
             assert agent._domain_agents["system_status"]._max_short_report_issues == 4
+            assert agent._domain_agents["system_status"]._ollama_connection._ollama_connection is ollama_connection
             assert agent._domain_agents["system_status"]._collector._options.collection_interval_seconds == 2.0
             assert agent._domain_agents["system_status"]._collector._options.home_assistant_entities == ("sensor.piotr_health",)
             assert isinstance(agent._domain_agents["media_player"], MediaPlayerDomainAgent)
@@ -183,6 +197,7 @@ def test_create_agent_returns_orchestrator_agent(monkeypatch) -> None:
             assert agent._domain_agents["media_player"]._default_music_media_id == "Liked Songs"
             assert agent._domain_agents["media_player"]._default_music_media_type == "playlist"
             assert agent._domain_agents["media_player"]._processing_update_interval_seconds == 2.5
+            assert agent._domain_agents["media_player"]._ollama is ollama_connection
         finally:
             await agent.close()
 
@@ -215,7 +230,7 @@ def test_create_agent_home_assistant_domain_agent_inherits_orchestrator_models(m
         home_assistant_connection = HomeAssistantConnection(parse_home_assistant_options(config.options))
         agent = await create_agent(
             config,
-            "http://ollama:11434",
+            _ollama_connection(),
             home_assistant_connection=home_assistant_connection,
         )
 
@@ -253,7 +268,7 @@ def test_create_agent_weather_domain_agent_uses_only_local_model_as_primary(monk
         )
         agent = await create_agent(
             config,
-            "http://ollama:11434",
+            _ollama_connection(),
             server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
             cache_dir=Path("/tmp/piotr-test-cache"),
         )
@@ -290,7 +305,7 @@ def test_create_agent_domain_agent_uses_only_cloud_model_as_primary(monkeypatch)
                 },
             },
         )
-        agent = await create_agent(config, "http://ollama:11434")
+        agent = await create_agent(config, _ollama_connection())
 
         try:
             wikipedia = agent._domain_agents["wikipedia"]
@@ -317,7 +332,7 @@ def test_create_domain_agents_configures_weather_astronomy_refresher(tmp_path: P
                 },
             },
         ),
-        "http://ollama:11434",
+        _ollama_connection(),
         server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
         cache_dir=tmp_path,
         data_store=JsonFileStore(tmp_path),
@@ -344,7 +359,7 @@ def test_create_domain_agents_rejects_empty_weather_astronomy_api_key(tmp_path: 
                     },
                 },
             ),
-            "http://ollama:11434",
+            _ollama_connection(),
             server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
             cache_dir=tmp_path,
             data_store=JsonFileStore(tmp_path),
@@ -364,9 +379,12 @@ def test_assistant_prompt_template_preserves_json_schema_braces() -> None:
 
 def test_create_agent_rejects_unknown_agent_type() -> None:
     with pytest.raises(ValueError, match="unsupported agent type: unknown"):
-        asyncio.run(create_agent(AgentConfig(type="unknown", options={}), "http://ollama:11434"))
+        asyncio.run(create_agent(AgentConfig(type="unknown", options={}), _ollama_connection()))
 
 
 class FakeSession:
+    def get(self, url: str, timeout=None):
+        raise AssertionError("unexpected HTTP request")
+
     def post(self, url: str, json: dict):
         raise AssertionError("unexpected HTTP request")

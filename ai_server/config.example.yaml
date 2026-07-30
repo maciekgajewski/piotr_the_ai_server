@@ -29,6 +29,7 @@ agent:
 #   orchestrator_model: qwen3:4b-instruct
 #   cloud_model: gpt-oss:20b-cloud
 #   clarification_model: gpt-oss:20b-cloud
+#   # The top-level local_model is pinned and checked for full GPU residency.
 #   local_model: qwen3:4b-instruct
 #   domain_agents:
 #     time: {}

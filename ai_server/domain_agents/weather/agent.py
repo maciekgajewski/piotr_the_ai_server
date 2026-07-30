@@ -34,7 +34,7 @@ from ai_server.domain_agents.weather.messages import WEATHER_AGENT_SYSTEM_PROMPT
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
 from ai_server.conversations.agent_context import AgentExecutionContext
-from ai_server.ollama_client import OLLAMA_BASE_URL
+from ai_server.ollama_connection import OLLAMA_BASE_URL
 from ai_server.utils import JsonFileStore
 from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 from ai_server.utils.polish_numbers import polish_cardinal, polish_decimal

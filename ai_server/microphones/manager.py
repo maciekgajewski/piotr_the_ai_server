@@ -118,7 +118,7 @@ class MicrophoneManager:
                 logger = _microphone_logger(microphone)
                 logger.info("starting persistent microphone session")
                 self._tasks.append(asyncio.create_task(self._run_microphone(microphone)))
-        except Exception:
+        except BaseException:
             await self.close()
             raise
 

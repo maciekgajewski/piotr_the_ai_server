@@ -7,7 +7,7 @@ from aiohttp import ClientSession
 
 from ai_server.conversations.agent_runtime import AgentChannel, ConversationAgent
 from ai_server.conversations.contexts import ConversationContext
-from ai_server.ollama_client import OLLAMA_BASE_URL, OllamaClient, OllamaError
+from ai_server.ollama_connection import OLLAMA_BASE_URL, OllamaConnection, OllamaError
 
 
 POLITE_REPLY_PROMPT = (
@@ -29,12 +29,12 @@ class PoliteReplyAgent(ConversationAgent):
         model: str,
         base_url: str = OLLAMA_BASE_URL,
         session: ClientSession | None = None,
-        ollama_client: OllamaClient | None = None,
-        owns_ollama_client: bool = True,
+        ollama_connection: OllamaConnection | None = None,
+        owns_ollama_connection: bool = True,
     ) -> None:
         self._model = model
-        self._ollama = ollama_client or OllamaClient(base_url=base_url, session=session)
-        self._owns_ollama = owns_ollama_client
+        self._ollama = ollama_connection or OllamaConnection(base_url=base_url, session=session)
+        self._owns_ollama = owns_ollama_connection
         self._logger = logging.getLogger(f"{__name__}.PoliteReplyAgent[{model}]")
 
     async def preload(self) -> None:

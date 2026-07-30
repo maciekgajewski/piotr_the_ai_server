@@ -12,7 +12,7 @@ def test_media_known_utterance_routes_to_media_player() -> None:
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=FakeMediaConnection(),
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = known_utterance_task("Spotify!", collect_known_utterance_tasks({"media_player": agent}))
 
@@ -24,7 +24,7 @@ def test_media_known_utterance_routes_volume_up_phrase_to_media_player() -> None
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=FakeMediaConnection(),
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = known_utterance_task("Przygłośnij Muzykę", collect_known_utterance_tasks({"media_player": agent}))
 
@@ -40,7 +40,7 @@ def test_media_known_utterance_routes_volume_down_phrase_to_media_player() -> No
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=FakeMediaConnection(),
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = known_utterance_task("Ścisz Muzykę", collect_known_utterance_tasks({"media_player": agent}))
 
@@ -56,7 +56,7 @@ def test_media_known_utterance_routes_tiny_volume_phrases_to_media_player() -> N
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=FakeMediaConnection(),
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     known_utterances = collect_known_utterance_tasks({"media_player": agent})
 
@@ -207,7 +207,7 @@ def test_media_domain_agent_start_last_uses_default_music_when_queue_and_memory_
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -232,7 +232,7 @@ def test_media_domain_agent_start_last_uses_conversation_user_media_settings() -
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -266,7 +266,7 @@ def test_media_domain_agent_start_last_is_noop_when_target_is_already_playing() 
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -286,11 +286,11 @@ def test_media_domain_agent_start_last_is_noop_when_target_is_already_playing() 
 
 def test_media_domain_agent_executes_simple_volume_without_llm() -> None:
     connection = FakeMediaConnection()
-    ollama = FakeOllamaClient([])
+    ollama = FakeOllamaConnection([])
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=ollama,
+        ollama_connection=ollama,
     )
     task = {
         "id": "t1",
@@ -314,7 +314,7 @@ def test_media_domain_agent_keeps_volume_on_direct_entity_when_ma_duplicate_exis
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -336,7 +336,7 @@ def test_media_domain_agent_interprets_planner_percent_volume_level() -> None:
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -359,7 +359,7 @@ def test_media_domain_agent_does_not_clarify_when_current_area_has_no_speaker() 
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -384,7 +384,7 @@ def test_media_domain_agent_does_not_clarify_when_current_area_has_no_speaker() 
 
 def test_media_domain_agent_uses_llm_for_complex_command() -> None:
     connection = FakeMediaConnection()
-    ollama = FakeOllamaClient(
+    ollama = FakeOllamaConnection(
         [
             {
                 "intent": "play_media",
@@ -398,7 +398,7 @@ def test_media_domain_agent_uses_llm_for_complex_command() -> None:
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=ollama,
+        ollama_connection=ollama,
     )
     task = {
         "id": "t1",
@@ -424,7 +424,7 @@ def test_media_domain_agent_falls_back_to_raw_play_media_when_search_config_entr
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -448,7 +448,7 @@ def test_media_domain_agent_prefers_ma_duplicate_for_play_media() -> None:
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -472,7 +472,7 @@ def test_media_domain_agent_uses_conversation_user_liked_songs_without_searching
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -504,7 +504,7 @@ def test_media_domain_agent_answers_configuration_query_without_service_calls() 
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -535,7 +535,7 @@ def test_media_domain_agent_resolves_user_playlist_alias() -> None:
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -585,7 +585,7 @@ def test_media_domain_agent_tries_next_search_candidate_when_playlist_is_unplaya
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -620,7 +620,7 @@ def test_media_domain_agent_tries_next_search_candidate_when_playlist_is_unplaya
 
 def test_media_domain_agent_uses_llm_to_resolve_inflected_playlist_alias() -> None:
     connection = FakeMediaConnection(include_ma_duplicate=True)
-    ollama = FakeOllamaClient(
+    ollama = FakeOllamaConnection(
         [
             {
                 "alias": "Muzyka do pracy",
@@ -632,7 +632,7 @@ def test_media_domain_agent_uses_llm_to_resolve_inflected_playlist_alias() -> No
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=ollama,
+        ollama_connection=ollama,
     )
     task = {
         "id": "t1",
@@ -667,7 +667,7 @@ def test_media_domain_agent_groups_whole_home_named_media_before_playback() -> N
         include_ma_duplicate=True,
         global_players=_whole_home_music_assistant_players(),
     )
-    ollama = FakeOllamaClient(
+    ollama = FakeOllamaConnection(
         [
             {
                 "alias": "Muzyka do pracy",
@@ -679,7 +679,7 @@ def test_media_domain_agent_groups_whole_home_named_media_before_playback() -> N
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=ollama,
+        ollama_connection=ollama,
     )
     task = {
         "id": "t1",
@@ -719,7 +719,7 @@ def test_media_domain_agent_groups_whole_home_named_media_before_playback() -> N
 
 def test_media_domain_agent_warns_when_alias_resolver_exhausts_budget(caplog) -> None:
     connection = FakeMediaConnection(include_ma_duplicate=True)
-    ollama = FakeOllamaClient(
+    ollama = FakeOllamaConnection(
         [
             {
                 "__raw_response__": {
@@ -733,7 +733,7 @@ def test_media_domain_agent_warns_when_alias_resolver_exhausts_budget(caplog) ->
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=ollama,
+        ollama_connection=ollama,
     )
     task = {
         "id": "t1",
@@ -765,7 +765,7 @@ def test_media_domain_agent_start_last_uses_in_memory_recent_media() -> None:
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     conversation = agent_context("c1", {"medium": "voice", "area": "office", "user": "Maciek"})
     play_task = {
@@ -826,7 +826,7 @@ def test_media_domain_agent_relocates_current_queue_for_only_request() -> None:
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -883,7 +883,7 @@ def test_media_domain_agent_start_last_with_explicit_target_transfers_active_que
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -956,7 +956,7 @@ def test_media_domain_agent_relocates_current_music_reference_instead_of_searchi
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -1021,7 +1021,7 @@ def test_media_domain_agent_adds_requested_room_to_current_outputs() -> None:
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -1074,7 +1074,7 @@ def test_media_domain_agent_treats_join_timeout_as_success_when_state_changed() 
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -1128,7 +1128,7 @@ def test_media_domain_agent_falls_back_to_transfer_when_join_is_unavailable() ->
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -1162,7 +1162,7 @@ def test_media_domain_agent_start_last_with_explicit_target_resumes_when_nothing
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -1209,7 +1209,7 @@ def test_media_domain_agent_start_last_resumes_queue_instead_of_replaying_curren
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -1234,7 +1234,7 @@ def test_media_domain_agent_start_last_groups_multiple_targets_and_resumes_idle_
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -1270,7 +1270,7 @@ def test_media_domain_agent_plays_tok_fm_radio_from_music_assistant_search() -> 
     agent = MediaPlayerDomainAgent(
         model="qwen3:4b-instruct",
         connection=connection,
-        ollama_client=FakeOllamaClient([]),
+        ollama_connection=FakeOllamaConnection([]),
     )
     task = {
         "id": "t1",
@@ -1524,7 +1524,7 @@ def _whole_home_music_assistant_players() -> list[dict]:
     ]
 
 
-class FakeOllamaClient:
+class FakeOllamaConnection:
     def __init__(self, contents: list[dict]) -> None:
         self._contents = list(contents)
         self.requests = []

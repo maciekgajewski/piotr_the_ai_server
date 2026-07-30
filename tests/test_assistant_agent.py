@@ -37,8 +37,8 @@ def test_assistant_routes_message_to_selected_tool() -> None:
     agent = AssistantAgent(
         intent_router_model="llama3.2:3b",
         tools={"time": tool},
-        ollama_client=FakeOllamaClient('{"tool": "time", "confidence": 1.0}'),
-        owns_ollama_client=False,
+        ollama_connection=FakeOllamaConnection('{"tool": "time", "confidence": 1.0}'),
+        owns_ollama_connection=False,
     )
     request = TextMessage(text="która godzina?")
     endpoint = FakeAgentChannel([request])
@@ -67,7 +67,7 @@ class RecordingTool:
         pass
 
 
-class FakeOllamaClient:
+class FakeOllamaConnection:
     def __init__(self, content: str) -> None:
         self.content = content
 

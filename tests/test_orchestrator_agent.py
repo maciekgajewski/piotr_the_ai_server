@@ -12,7 +12,7 @@ from ai_server.domain_agents import QueryCapability
 from ai_server.domain_agents.weather import WeatherDomainAgent
 from ai_server.home_assistant.interfaces import HomeAssistantArea, HomeAssistantInventory
 from conftest import TextMessage, text_message_to_events
-from ai_server.ollama_client import OllamaError
+from ai_server.ollama_connection import OllamaError
 from conftest import FakeAgentChannel, agent_context, run_agent
 
 
@@ -212,7 +212,7 @@ def test_orchestrator_does_not_read_followup_without_explicit_request(caplog) ->
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient(
+    ollama = FakeOllamaConnection(
         [
             json.dumps(plan_one),
             "Włączyłem klimatyzację w salonie.",
@@ -222,8 +222,8 @@ def test_orchestrator_does_not_read_followup_without_explicit_request(caplog) ->
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"home_assistant": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
         server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
     )
     endpoint = FakeAgentChannel([TextMessage(text="włącz klimę w salonie"), TextMessage(text="ustaw ją na 26")])
@@ -263,8 +263,8 @@ def test_orchestrator_reports_unsupported_domain_to_final_synthesis() -> None:
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(plan), "Wikipedia nie jest jeszcze podłączona."])
-    agent = OrchestratorAgent(orchestrator_model="qwen3:4b-instruct", ollama_client=ollama, owns_ollama_client=False)
+    ollama = FakeOllamaConnection([json.dumps(plan), "Wikipedia nie jest jeszcze podłączona."])
+    agent = OrchestratorAgent(orchestrator_model="qwen3:4b-instruct", ollama_connection=ollama, owns_ollama_connection=False)
     endpoint = FakeAgentChannel([TextMessage(text="sprawdź Einsteina na Wikipedii")])
     conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "text"})
 
@@ -294,7 +294,7 @@ def test_orchestrator_planning_prompt_uses_only_loaded_domain_prompts() -> None:
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(plan), "Cześć."])
+    ollama = FakeOllamaConnection([json.dumps(plan), "Cześć."])
     domain_agent = RecordingDomainAgent(
         planning_prompt="For time tasks only.",
         query_capabilities={
@@ -311,8 +311,8 @@ def test_orchestrator_planning_prompt_uses_only_loaded_domain_prompts() -> None:
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"time": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="co u ciebie?")])
 
@@ -340,7 +340,7 @@ def test_orchestrator_planning_output_logs_token_counts(caplog) -> None:
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient(
+    ollama = FakeOllamaConnection(
         [
             {
                 "message": {"role": "assistant", "content": json.dumps(plan)},
@@ -352,8 +352,8 @@ def test_orchestrator_planning_output_logs_token_counts(caplog) -> None:
     )
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="hej")])
 
@@ -373,15 +373,15 @@ def test_orchestrator_returns_single_verbatim_task_result_without_final_synthesi
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(plan)])
+    ollama = FakeOllamaConnection([json.dumps(plan)])
     domain_agent = RecordingDomainAgent(
         [{"status": "ok", "text": "Tekst kontrolowany przez DSA.", "final_reply_mode": "verbatim"}]
     )
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"wikipedia": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="sprawdź Einsteina na Wikipedii")])
     conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
@@ -393,7 +393,7 @@ def test_orchestrator_returns_single_verbatim_task_result_without_final_synthesi
 
 
 def test_orchestrator_short_path_dispatches_known_time_utterance_without_ollama() -> None:
-    ollama = FakeOllamaClient([])
+    ollama = FakeOllamaConnection([])
     domain_agent = RecordingDomainAgent(
         [{"status": "ok", "text": "czternasta zero pięć", "final_reply_mode": "verbatim"}],
         known_utterances={
@@ -410,8 +410,8 @@ def test_orchestrator_short_path_dispatches_known_time_utterance_without_ollama(
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"time": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="Która godzina?")])
 
@@ -432,7 +432,7 @@ def test_orchestrator_short_path_dispatches_known_time_utterance_without_ollama(
 
 
 def test_orchestrator_short_path_dispatches_system_status_check_in_without_ollama() -> None:
-    ollama = FakeOllamaClient([])
+    ollama = FakeOllamaConnection([])
     domain_agent = RecordingDomainAgent(
         [{"status": "ok", "text": "Wszystko działa dobrze, Krzysztofie.", "final_reply_mode": "verbatim"}],
         known_utterances={
@@ -449,8 +449,8 @@ def test_orchestrator_short_path_dispatches_system_status_check_in_without_ollam
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"system_status": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="Jak się masz?")])
 
@@ -471,7 +471,7 @@ def test_orchestrator_short_path_dispatches_system_status_check_in_without_ollam
 
 
 def test_orchestrator_short_path_dispatches_weather_utterance_without_ollama() -> None:
-    ollama = FakeOllamaClient([])
+    ollama = FakeOllamaConnection([])
     domain_agent = RecordingDomainAgent(
         [{"status": "ok", "text": "We Wrocławiu jest 16 stopni.", "final_reply_mode": "verbatim"}],
         known_utterances={
@@ -493,8 +493,8 @@ def test_orchestrator_short_path_dispatches_weather_utterance_without_ollama() -
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"weather": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="Jaka pogoda na weekend?")])
 
@@ -529,8 +529,8 @@ def test_orchestrator_weather_planning_prompt_routes_minimal_commands(tmp_path: 
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"weather": weather_agent},
-        ollama_client=FakeOllamaClient([]),
-        owns_ollama_client=False,
+        ollama_connection=FakeOllamaConnection([]),
+        owns_ollama_connection=False,
     )
 
     prompt = agent._planning_system_prompt
@@ -592,7 +592,7 @@ def test_orchestrator_does_not_carry_pronoun_context_between_agent_conversations
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(initial_plan), json.dumps(followup_plan)])
+    ollama = FakeOllamaConnection([json.dumps(initial_plan), json.dumps(followup_plan)])
     domain_agent = RecordingDomainAgent(
         [
             {"status": "ok", "text": "Włączono klimatyzację w salonie.", "final_reply_mode": "verbatim"},
@@ -602,8 +602,8 @@ def test_orchestrator_does_not_carry_pronoun_context_between_agent_conversations
     agent = OrchestratorAgent(
         orchestrator_model="big",
         domain_agents={"home_assistant": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
         home_assistant_inventory_provider=FakeAreaInventoryProvider(),
     )
     first_conversation = agent_context(
@@ -685,15 +685,15 @@ def test_orchestrator_plans_media_stop_with_extra_tail() -> None:
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(plan)])
+    ollama = FakeOllamaConnection([json.dumps(plan)])
     domain_agent = RecordingDomainAgent(
         [{"status": "ok", "text": "Zatrzymałem muzykę.", "final_reply_mode": "verbatim"}]
     )
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"media_player": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="Zatrzymaj muzykę. Ok, na pół.")])
 
@@ -741,7 +741,7 @@ def test_orchestrator_plans_composite_after_known_media_phrase_prefix() -> None:
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(plan), "Zatrzymałem muzykę i wyłączyłem klimatyzację."])
+    ollama = FakeOllamaConnection([json.dumps(plan), "Zatrzymałem muzykę i wyłączyłem klimatyzację."])
     media_agent = RecordingDomainAgent(
         [{"status": "ok", "text": "Zatrzymałem muzykę.", "final_reply_mode": "verbatim"}],
         known_utterances={
@@ -761,8 +761,8 @@ def test_orchestrator_plans_composite_after_known_media_phrase_prefix() -> None:
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"media_player": media_agent, "home_assistant": home_assistant_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="Wyłącz muzykę i wyłącz klimatyzator.")])
 
@@ -792,15 +792,15 @@ def test_orchestrator_uses_area_inventory_for_named_media_room_instead_of_short_
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(plan)])
+    ollama = FakeOllamaConnection([json.dumps(plan)])
     domain_agent = RecordingDomainAgent(
         [{"status": "ok", "text": "Zatrzymałem muzykę.", "final_reply_mode": "verbatim"}]
     )
     agent = OrchestratorAgent(
         orchestrator_model="big",
         domain_agents={"media_player": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
         home_assistant_inventory_provider=FakeAreaInventoryProvider(),
     )
     endpoint = FakeAgentChannel([TextMessage(text="zatrzymaj muzykę w pracowni")])
@@ -852,13 +852,13 @@ def test_orchestrator_merges_split_media_room_tasks_before_dispatch() -> None:
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(plan), "Włączam muzykę."])
+    ollama = FakeOllamaConnection([json.dumps(plan), "Włączam muzykę."])
     domain_agent = RecordingDomainAgent([{"status": "ok", "text": "Włączam muzykę."}])
     agent = OrchestratorAgent(
         orchestrator_model="big",
         domain_agents={"media_player": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
         home_assistant_inventory_provider=FakeAreaInventoryProvider(),
     )
     endpoint = FakeAgentChannel([TextMessage(text="graj muzykę do pracy w salonie i pracowni")])
@@ -906,15 +906,15 @@ def test_orchestrator_canonicalizes_home_assistant_room_alias_from_inventory() -
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(plan)])
+    ollama = FakeOllamaConnection([json.dumps(plan)])
     domain_agent = RecordingDomainAgent(
         [{"status": "ok", "text": "Wyłączyłem klimatyzację.", "final_reply_mode": "verbatim"}]
     )
     agent = OrchestratorAgent(
         orchestrator_model="big",
         domain_agents={"home_assistant": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
         home_assistant_inventory_provider=FakeAreaInventoryProvider(),
     )
     endpoint = FakeAgentChannel([TextMessage(text="wyłącz klimatyzację w pracowni")])
@@ -948,13 +948,13 @@ def test_orchestrator_blocks_unknown_planned_area_before_dispatch() -> None:
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(plan), "O który pokój chodzi?"])
+    ollama = FakeOllamaConnection([json.dumps(plan), "O który pokój chodzi?"])
     domain_agent = RecordingDomainAgent()
     agent = OrchestratorAgent(
         orchestrator_model="big",
         domain_agents={"media_player": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
         home_assistant_inventory_provider=FakeAreaInventoryProvider(),
     )
     endpoint = FakeAgentChannel([TextMessage(text="zatrzymaj muzykę w pracowni")])
@@ -968,7 +968,7 @@ def test_orchestrator_blocks_unknown_planned_area_before_dispatch() -> None:
 
 
 def test_orchestrator_short_path_dispatches_tok_fm_without_ollama() -> None:
-    ollama = FakeOllamaClient([])
+    ollama = FakeOllamaConnection([])
     domain_agent = RecordingDomainAgent(
         [{"status": "ok", "text": "Włączam TOK FM.", "final_reply_mode": "verbatim"}],
         known_utterances={
@@ -990,8 +990,8 @@ def test_orchestrator_short_path_dispatches_tok_fm_without_ollama() -> None:
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"media_player": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="Włącz TOK FM w całym domu")])
 
@@ -1006,7 +1006,7 @@ def test_orchestrator_short_path_dispatches_tok_fm_without_ollama() -> None:
 
 
 def test_orchestrator_short_path_dispatches_media_volume_up_without_ollama() -> None:
-    ollama = FakeOllamaClient([])
+    ollama = FakeOllamaConnection([])
     domain_agent = RecordingDomainAgent(
         [{"status": "ok", "text": "Głośność: 40 procent.", "final_reply_mode": "verbatim"}],
         known_utterances={
@@ -1027,8 +1027,8 @@ def test_orchestrator_short_path_dispatches_media_volume_up_without_ollama() -> 
     agent = OrchestratorAgent(
         orchestrator_model="qwen3:4b-instruct",
         domain_agents={"media_player": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="Przygłośnij Muzykę")])
 
@@ -1059,12 +1059,12 @@ def test_orchestrator_retries_low_confidence_plan_with_clarification_model() -> 
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(low_confidence_plan), json.dumps(high_confidence_plan), "Jest odpowiedź."])
+    ollama = FakeOllamaConnection([json.dumps(low_confidence_plan), json.dumps(high_confidence_plan), "Jest odpowiedź."])
     agent = OrchestratorAgent(
         orchestrator_model="small",
         clarification_model="big",
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="opowiedz o Marii Curie")])
 
@@ -1083,12 +1083,12 @@ def test_orchestrator_retries_invalid_plan_with_clarification_model() -> None:
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient(["not-json", json.dumps(valid_plan), "Dobrze."])
+    ollama = FakeOllamaConnection(["not-json", json.dumps(valid_plan), "Dobrze."])
     agent = OrchestratorAgent(
         orchestrator_model="small",
         clarification_model="big",
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="pogadajmy")])
 
@@ -1107,12 +1107,12 @@ def test_orchestrator_returns_error_phrase_when_clarification_model_fails() -> N
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(low_confidence_plan), OllamaError("cloud failed")])
+    ollama = FakeOllamaConnection([json.dumps(low_confidence_plan), OllamaError("cloud failed")])
     agent = OrchestratorAgent(
         orchestrator_model="small",
         clarification_model="big",
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="coś trudnego")])
 
@@ -1130,12 +1130,12 @@ def test_orchestrator_retries_empty_final_reply_with_clarification_model() -> No
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(plan), "", "Duża odpowiedź."])
+    ollama = FakeOllamaConnection([json.dumps(plan), "", "Duża odpowiedź."])
     agent = OrchestratorAgent(
         orchestrator_model="small",
         clarification_model="big",
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="odpowiedz")])
 
@@ -1191,7 +1191,7 @@ def test_orchestrator_clarification_answer_can_correct_home_assistant_selection_
             "clarification_question": None,
         },
     }
-    ollama = FakeOllamaClient(
+    ollama = FakeOllamaConnection(
         [
             json.dumps(initial_plan),
             "Jaką dokładnie zmianę mam wykonać?",
@@ -1214,8 +1214,8 @@ def test_orchestrator_clarification_answer_can_correct_home_assistant_selection_
         orchestrator_model="small",
         clarification_model="big",
         domain_agents={"home_assistant": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="sprawdź klimatyzator"), TextMessage(text="Włącz klimatyzator")])
 
@@ -1258,7 +1258,7 @@ def test_orchestrator_retries_empty_clarification_response_with_orchestrator_mod
             "clarification_question": None,
         },
     }
-    ollama = FakeOllamaClient(
+    ollama = FakeOllamaConnection(
         [
             json.dumps(initial_plan),
             "Które światło mam włączyć?",
@@ -1282,8 +1282,8 @@ def test_orchestrator_retries_empty_clarification_response_with_orchestrator_mod
         orchestrator_model="small",
         clarification_model="big",
         domain_agents={"home_assistant": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="włącz światło"), TextMessage(text="w salonie")])
 
@@ -1313,8 +1313,8 @@ def test_orchestrator_logs_blocked_task_clarification_utterance(caplog) -> None:
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient([json.dumps(plan), "Które światło mam włączyć?"])
-    agent = OrchestratorAgent(orchestrator_model="small", ollama_client=ollama, owns_ollama_client=False)
+    ollama = FakeOllamaConnection([json.dumps(plan), "Które światło mam włączyć?"])
+    agent = OrchestratorAgent(orchestrator_model="small", ollama_connection=ollama, owns_ollama_connection=False)
     endpoint = FakeAgentChannel([TextMessage(text="włącz światło")])
 
     with caplog.at_level(logging.WARNING, logger="ai_server.orchestrator"):
@@ -1349,7 +1349,7 @@ def test_orchestrator_stores_dsa_clarification_and_resumes_same_domain(caplog) -
             "clarification_question": None,
         },
     }
-    ollama = FakeOllamaClient(
+    ollama = FakeOllamaConnection(
         [
             json.dumps(initial_plan),
             "Które światło mam włączyć?",
@@ -1372,8 +1372,8 @@ def test_orchestrator_stores_dsa_clarification_and_resumes_same_domain(caplog) -
         orchestrator_model="small",
         clarification_model="big",
         domain_agents={"home_assistant": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="włącz światło"), TextMessage(text="w salonie")])
     conversation = agent_context(conversation_id="c1", attributes={"medium": "voice"})
@@ -1402,14 +1402,14 @@ def test_orchestrator_pending_clarification_takes_priority_over_short_path() -> 
             "clarification_question": None,
         },
     }
-    ollama = FakeOllamaClient([json.dumps(resolved_task), "Włączyłem światło w salonie."])
+    ollama = FakeOllamaConnection([json.dumps(resolved_task), "Włączyłem światło w salonie."])
     domain_agent = RecordingDomainAgent([{"status": "ok", "text": "Włączyłem światło w salonie."}])
     agent = OrchestratorAgent(
         orchestrator_model="small",
         clarification_model="big",
         domain_agents={"home_assistant": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     conversation = agent_context(conversation_id="c1", attributes={"medium": "voice"})
     conversation.agent_state["orchestrator"] = {
@@ -1448,14 +1448,14 @@ def test_orchestrator_pending_clarification_takes_priority_over_short_path() -> 
 
 
 def test_orchestrator_clears_pending_clarification_on_thanks() -> None:
-    ollama = FakeOllamaClient([])
+    ollama = FakeOllamaConnection([])
     domain_agent = RecordingDomainAgent()
     agent = OrchestratorAgent(
         orchestrator_model="small",
         clarification_model="big",
         domain_agents={"media_player": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     conversation = agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"})
     conversation.agent_state["orchestrator"] = {
@@ -1518,7 +1518,7 @@ def test_orchestrator_drops_unanswered_clarification_when_conversation_ends() ->
         "needs_clarification": False,
         "clarification_question": None,
     }
-    ollama = FakeOllamaClient(
+    ollama = FakeOllamaConnection(
         [
             json.dumps(initial_plan),
             "Które światło mam włączyć?",
@@ -1540,8 +1540,8 @@ def test_orchestrator_drops_unanswered_clarification_when_conversation_ends() ->
         orchestrator_model="small",
         clarification_model="big",
         domain_agents={"home_assistant": domain_agent},
-        ollama_client=ollama,
-        owns_ollama_client=False,
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
     )
     conversation = agent_context(conversation_id="c1", attributes={"medium": "voice"})
 
@@ -1566,7 +1566,7 @@ def _ha_command(intent: str, description: str, parameters=None):
     }
 
 
-class FakeOllamaClient:
+class FakeOllamaConnection:
     def __init__(self, contents: list[str | dict | Exception]) -> None:
         self._contents = list(contents)
         self.requests = []
