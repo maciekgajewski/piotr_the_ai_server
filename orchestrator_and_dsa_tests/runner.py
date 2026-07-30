@@ -18,19 +18,19 @@ from zoneinfo import ZoneInfo
 import yaml
 
 import agent_tool_eval
-from ai_server.orchestrator import OrchestratorAgent
-from ai_server.domain_agents.current_time import PLANNING_PROMPT as TIME_PLANNING_PROMPT
+from ai_server.orchestrator.orchestrator import OrchestratorAgent
+from ai_server.domain_agents.current_time import ROUTING_SUMMARY as TIME_ROUTING_SUMMARY
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
-from ai_server.domain_agents.home_assistant import PLANNING_PROMPT as HOME_ASSISTANT_PLANNING_PROMPT
+from ai_server.domain_agents.home_assistant import ROUTING_SUMMARY as HOME_ASSISTANT_ROUTING_SUMMARY
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
-from ai_server.domain_agents.media_player.agent import PLANNING_PROMPT as MEDIA_PLAYER_PLANNING_PROMPT
-from ai_server.domain_agents.system_status.agent import PLANNING_PROMPT as SYSTEM_STATUS_PLANNING_PROMPT
+from ai_server.domain_agents.media_player.agent import ROUTING_SUMMARY as MEDIA_PLAYER_ROUTING_SUMMARY
+from ai_server.domain_agents.system_status.agent import ROUTING_SUMMARY as SYSTEM_STATUS_ROUTING_SUMMARY
 from ai_server.domain_agents.system_status.agent import KNOWN_UTTERANCES as SYSTEM_STATUS_KNOWN_UTTERANCES
 from ai_server.domain_agents.weather import CurrentWeather, WeatherDomainAgent, WeatherNowRequest
-from ai_server.domain_agents.weather.agent import PLANNING_PROMPT as WEATHER_PLANNING_PROMPT
+from ai_server.domain_agents.weather.agent import ROUTING_SUMMARY as WEATHER_ROUTING_SUMMARY
 from ai_server.domain_agents.weather.astronomy import AstronomyRecord, AstronomySnapshot
-from ai_server.domain_agents.wikipedia import PLANNING_PROMPT as WIKIPEDIA_PLANNING_PROMPT
+from ai_server.domain_agents.wikipedia import ROUTING_SUMMARY as WIKIPEDIA_ROUTING_SUMMARY
 from ai_server.domain_agents.wikipedia import WikipediaArticle, WikipediaDomainAgent, WikipediaSearchResult
 from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.conversations.contexts import ConversationContext, ConversationMedium
@@ -44,13 +44,13 @@ DEFAULT_CONFIG = ROOT / "config.yaml"
 DEFAULT_SCENARIOS_DIR = ROOT / "scenarios"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen3:4b-instruct"
-STUB_PLANNING_PROMPTS = {
-    "home_assistant": HOME_ASSISTANT_PLANNING_PROMPT,
-    "media_player": MEDIA_PLAYER_PLANNING_PROMPT,
-    "system_status": SYSTEM_STATUS_PLANNING_PROMPT,
-    "time": TIME_PLANNING_PROMPT,
-    "weather": WEATHER_PLANNING_PROMPT,
-    "wikipedia": WIKIPEDIA_PLANNING_PROMPT,
+STUB_ROUTING_SUMMARIES = {
+    "home_assistant": HOME_ASSISTANT_ROUTING_SUMMARY,
+    "media_player": MEDIA_PLAYER_ROUTING_SUMMARY,
+    "system_status": SYSTEM_STATUS_ROUTING_SUMMARY,
+    "time": TIME_ROUTING_SUMMARY,
+    "weather": WEATHER_ROUTING_SUMMARY,
+    "wikipedia": WIKIPEDIA_ROUTING_SUMMARY,
 }
 
 
@@ -109,19 +109,13 @@ class StubDomainAgent:
         self._used_result_keys: set[str] = set()
         self._traces = traces
 
-    def known_utterances(self) -> dict[str, dict[str, Any]]:
+    def known_utterances(self) -> tuple[str, ...]:
         if self._domain == "system_status":
             return SYSTEM_STATUS_KNOWN_UTTERANCES
-        return {}
+        return ()
 
-    def planning_prompt(self) -> str:
-        return STUB_PLANNING_PROMPTS.get(self._domain, "")
-
-    def query_capabilities(self) -> dict[str, Any]:
-        return {}
-
-    def query_capabilities_prompt(self) -> str:
-        return ""
+    def routing_summary(self) -> str:
+        return STUB_ROUTING_SUMMARIES.get(self._domain, "")
 
     async def run_task(
         self,
@@ -130,6 +124,20 @@ class StubDomainAgent:
         active_context: dict[str, Any],
     ) -> dict[str, Any]:
         del conversation, active_context
+        result = copy.deepcopy(self._result_for_task(task["id"]))
+        self._traces.append({"task": copy.deepcopy(task), "result": copy.deepcopy(result)})
+        return result
+
+    async def resume_clarification(
+        self,
+        conversation: AgentExecutionContext,
+        task: dict[str, Any],
+        question: str,
+        answer: str,
+        active_context: dict[str, Any],
+        continuation: Any,
+    ) -> dict[str, Any]:
+        del conversation, question, answer, active_context, continuation
         result = copy.deepcopy(self._result_for_task(task["id"]))
         self._traces.append({"task": copy.deepcopy(task), "result": copy.deepcopy(result)})
         return result
@@ -154,17 +162,11 @@ class TracingDomainAgent:
         self._inner = inner
         self._traces = traces
 
-    def known_utterances(self) -> dict[str, dict[str, Any]]:
+    def known_utterances(self) -> tuple[str, ...]:
         return self._inner.known_utterances()
 
-    def planning_prompt(self) -> str:
-        return self._inner.planning_prompt()
-
-    def query_capabilities(self) -> dict[str, Any]:
-        return self._inner.query_capabilities()
-
-    def query_capabilities_prompt(self) -> str:
-        return self._inner.query_capabilities_prompt()
+    def routing_summary(self) -> str:
+        return self._inner.routing_summary()
 
     async def run_task(
         self,
@@ -174,6 +176,28 @@ class TracingDomainAgent:
     ) -> dict[str, Any]:
         result = await self._inner.run_task(conversation, task, active_context)
         self._traces.append({"domain": self._domain, "task": copy.deepcopy(task), "result": copy.deepcopy(result)})
+        return result
+
+    async def resume_clarification(
+        self,
+        conversation: AgentExecutionContext,
+        task: dict[str, Any],
+        question: str,
+        answer: str,
+        active_context: dict[str, Any],
+        continuation: Any,
+    ) -> dict[str, Any]:
+        result = await self._inner.resume_clarification(
+            conversation,
+            task,
+            question,
+            answer,
+            active_context,
+            continuation,
+        )
+        self._traces.append(
+            {"domain": self._domain, "task": copy.deepcopy(task), "result": copy.deepcopy(result)}
+        )
         return result
 
     async def close(self) -> None:
@@ -406,11 +430,6 @@ class StaticAstronomyRefresher:
         pass
 
 
-@dataclass(frozen=True)
-class StaticHomeAssistantInventoryProvider:
-    inventory: Any
-
-
 def main() -> int:
     args = _parse_args()
     config = _load_yaml(args.config)
@@ -568,7 +587,6 @@ async def _run_orchestrator_case(case: TestCase, settings: dict[str, Any]) -> Ca
         domain_agents=domain_agents,
         ollama_connection=ollama,
         owns_ollama_connection=True,
-        home_assistant_inventory_provider=StaticHomeAssistantInventoryProvider(_home_assistant_inventory()),
     )
     result = CaseResult(case=case)
     try:
@@ -600,7 +618,6 @@ async def _run_composite_case(case: TestCase, settings: dict[str, Any]) -> CaseR
         domain_agents=agents,
         ollama_connection=ollama,
         owns_ollama_connection=True,
-        home_assistant_inventory_provider=fake_ha,
     )
     result = CaseResult(case=case)
     try:
@@ -812,6 +829,16 @@ def _collect_orchestrator_observations(result: CaseResult, ollama: RecordingOlla
 
 
 def _score_orchestrator_expectations(result: CaseResult) -> None:
+    expected_route_keys = {"id", "domain", "request", "depends_on"}
+    for index, task in enumerate(result.tasks):
+        if set(task) != expected_route_keys:
+            result.failures.append(
+                f"task #{index + 1} must use the route-only schema "
+                f"{sorted(expected_route_keys)!r}, got keys={sorted(task)!r}"
+            )
+        if not isinstance(task.get("request"), str) or not task["request"].strip():
+            result.failures.append(f"task #{index + 1} request must be a non-empty string")
+
     expected_tasks = _list_or_empty(result.case.raw.get("expected_tasks"))
     if len(result.tasks) < len(expected_tasks):
         result.failures.append(f"expected at least {len(expected_tasks)} task(s), got {len(result.tasks)}")
@@ -820,6 +847,12 @@ def _score_orchestrator_expectations(result: CaseResult) -> None:
             break
         if not _partial_match(expected_task, result.tasks[index]):
             result.failures.append(f"task #{index + 1} mismatch expected={expected_task!r} actual={result.tasks[index]!r}")
+
+    expected_planning_requests = result.case.raw.get("expected_planning_requests")
+    if isinstance(expected_planning_requests, int) and len(result.planning_contexts) != expected_planning_requests:
+        result.failures.append(
+            f"expected {expected_planning_requests} planning request(s), got {len(result.planning_contexts)}"
+        )
 
     for expected_context in _list_or_empty(result.case.raw.get("expected_planning_context")):
         message_index = expected_context.get("message_index") if isinstance(expected_context, dict) else None
@@ -911,6 +944,8 @@ def _partial_match(expected: Any, actual: Any) -> bool:
     if isinstance(expected, dict):
         if set(expected) == {"$any"} and isinstance(expected["$any"], list):
             return any(_partial_match(candidate, actual) for candidate in expected["$any"])
+        if set(expected) == {"$nonempty"} and expected["$nonempty"] is True:
+            return isinstance(actual, str) and bool(actual.strip())
         if not isinstance(actual, dict):
             return False
         for key, expected_value in expected.items():

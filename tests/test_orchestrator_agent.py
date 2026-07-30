@@ -5,345 +5,200 @@ from pathlib import Path
 
 import pytest
 
-from ai_server.conversations.agent_context import AgentExecutionContext
-from ai_server.orchestrator import GENERATION_FAILURE_MESSAGE, OrchestratorAgent, _parse_plan
 from ai_server.config import ServerConfig
-from ai_server.domain_agents import QueryCapability
-from ai_server.domain_agents.weather import WeatherDomainAgent
-from ai_server.home_assistant.interfaces import HomeAssistantArea, HomeAssistantInventory
-from conftest import TextMessage, text_message_to_events
-from ai_server.ollama_connection import OllamaError
-from conftest import FakeAgentChannel, agent_context, run_agent
+from ai_server.domain_agents.system_status.agent import (
+    KNOWN_UTTERANCES as SYSTEM_STATUS_KNOWN_UTTERANCES,
+)
+from ai_server.domain_agents.system_status.agent import (
+    ROUTING_SUMMARY as SYSTEM_STATUS_ROUTING_SUMMARY,
+)
+from ai_server.orchestrator.orchestrator import (
+    GENERATION_FAILURE_MESSAGE,
+    MAX_FIXED_PLANNING_PROMPT_BYTES,
+    MAX_ROUTING_SUMMARY_BYTES,
+    OrchestratorAgent,
+    _build_planning_system_prompt,
+    _parse_plan,
+)
+from conftest import FakeAgentChannel, TextMessage, agent_context, run_agent, text_message_to_events
+from tools.lib.t007_route_prompt_measurement import _configured_summary_agents
 
 
-def test_parse_plan_validates_home_assistant_command_envelope() -> None:
-    plan = _parse_plan(
-        json.dumps(
-            {
-                "kind": "single_task",
-                "confidence": 0.9,
-                "tasks": [
-                    {
-                        "id": "t1",
-                        "domain": "home_assistant",
-                        "command": {
-                            "selection": {
-                                "include": [{"domain": "light", "scope": "all"}],
-                                "exclude": [{"name": "lampka nocna"}],
-                            },
-                            "operation": {
-                                "intent": "turn_off",
-                                "description": "turn them off gently",
-                                "parameters": {},
-                            },
-                        },
-                    }
-                ],
-                "context_updates": {"salient_entities": [], "active_domain": None},
-                "needs_clarification": False,
-                "clarification_question": None,
-            }
-        )
-    )
-
-    assert plan["tasks"][0]["command"]["operation"]["intent"] == "turn_off"
+DOMAINS = frozenset(
+    {"time", "wikipedia", "weather", "home_assistant", "media_player", "system_status"}
+)
 
 
-def test_parse_plan_validates_media_player_command() -> None:
-    plan = _parse_plan(
-        json.dumps(
-            {
-                "kind": "single_task",
-                "confidence": 0.9,
-                "tasks": [
-                    {
-                        "id": "t1",
-                        "domain": "media_player",
-                        "command": {
-                            "intent": "play_media",
-                            "query": "Liked Songs",
-                            "media_type": "playlist",
-                            "all_speakers": True,
-                        },
-                    }
-                ],
-                "context_updates": {"salient_entities": [], "active_domain": "media_player"},
-                "needs_clarification": False,
-                "clarification_question": None,
-            }
-        )
-    )
-
-    assert plan["tasks"][0]["command"] == {
-        "intent": "play_media",
-        "query": "Liked Songs",
-        "media_type": "playlist",
-        "all_speakers": True,
+def _task(
+    domain: str,
+    request: str,
+    *,
+    task_id: str = "t1",
+    depends_on: list[str] | None = None,
+) -> dict:
+    return {
+        "id": task_id,
+        "domain": domain,
+        "request": request,
+        "depends_on": depends_on or [],
     }
 
 
-def test_parse_plan_validates_media_player_transfer_command() -> None:
-    plan = _parse_plan(
-        json.dumps(
-            {
-                "kind": "single_task",
-                "confidence": 0.9,
-                "tasks": [
-                    {
-                        "id": "t1",
-                        "domain": "media_player",
-                        "command": {
-                            "intent": "transfer_playback",
-                            "query": "Graj muzykę tylko w biurze",
-                            "areas": ["office"],
-                            "replace_outputs": True,
-                        },
-                    }
-                ],
-                "context_updates": {"salient_entities": [], "active_domain": "media_player"},
-                "needs_clarification": False,
-                "clarification_question": None,
-            }
-        )
-    )
-
-    assert plan["tasks"][0]["command"] == {
-        "intent": "transfer_playback",
-        "query": "Graj muzykę tylko w biurze",
-        "areas": ["office"],
-        "replace_outputs": True,
+def _plan(
+    tasks: list[dict],
+    *,
+    kind: str = "single_task",
+    confidence: float = 0.9,
+    active_domain: str | None = None,
+    needs_clarification: bool = False,
+    clarification_question: str | None = None,
+) -> dict:
+    return {
+        "kind": kind,
+        "confidence": confidence,
+        "tasks": tasks,
+        "context_updates": {
+            "salient_entities": [],
+            "active_domain": active_domain,
+        },
+        "needs_clarification": needs_clarification,
+        "clarification_question": clarification_question,
     }
 
 
-def test_parse_plan_allows_system_status_command() -> None:
-    plan = _parse_plan(
-        json.dumps(
-            {
-                "kind": "single_task",
-                "confidence": 0.9,
-                "tasks": [
-                    {
-                        "id": "t1",
-                        "domain": "system_status",
-                        "command": {"intent": "summary", "query": "status systemu"},
-                    }
-                ],
-                "context_updates": {"salient_entities": [], "active_domain": "system_status"},
-                "needs_clarification": False,
-                "clarification_question": None,
-            }
-        )
+def test_parse_plan_accepts_generic_route_tasks() -> None:
+    raw = _plan(
+        [
+            _task("home_assistant", "Włącz światło w biurze."),
+            _task(
+                "media_player",
+                "Potem puść muzykę w kuchni.",
+                task_id="t2",
+                depends_on=["t1"],
+            ),
+        ],
+        kind="multi_task",
+        active_domain="media_player",
     )
 
-    assert plan["tasks"][0]["domain"] == "system_status"
-    assert plan["tasks"][0]["command"] == {"intent": "summary", "query": "status systemu"}
-
-
-def test_parse_plan_ignores_embedded_string_fragments_in_tasks() -> None:
-    plan = _parse_plan(
-        json.dumps(
-            {
-                "kind": "single_task",
-                "confidence": 0.9,
-                "tasks": [
-                    {
-                        "id": "t1",
-                        "domain": "home_assistant",
-                        "command": _ha_command("turn_on", "włącz klimatyzację w salonie"),
-                    },
-                    'context_updates":{"salient_entities":["climate.salon"],"active_domain":"home_assistant"},',
-                ],
-                "needs_clarification": False,
-                "clarification_question": None,
-            }
-        )
-    )
-
-    assert len(plan["tasks"]) == 1
-    assert plan["context_updates"] == {
-        "salient_entities": ["climate.salon"],
-        "active_domain": "home_assistant",
-    }
-
-
-def test_parse_plan_repairs_quoted_plan_with_malformed_embedded_context() -> None:
-    plan = _parse_plan(
-        '"{\\"kind\\":\\"single_task\\",\\"tasks\\":[{\\"id\\":\\"t1\\",\\"domain\\":\\"home_assistant\\",'
-        '\\"confidence\\":0.9,'
-        '\\"command\\":{\\"selection\\":{\\"include\\":[{\\"domain\\":\\"climate\\",\\"scope\\":\\"all\\"}]},'
-        '\\"operation\\":{\\"intent\\":\\"turn_off\\",\\"description\\":\\"wyłącz wszystkie klimatyzacje\\",'
-        '\\"parameters\\":{}}},\\"depends_on\\":[],\\"status\\":\\"ready\\",\\"clarification_question\\":null},'
-        '\\"context_updates\\\\\\":{\\\\\\"salient_entities\\\\\\":[], "'
-    )
-
-    assert len(plan["tasks"]) == 1
-    assert plan["tasks"][0]["command"]["selection"]["include"] == [{"domain": "climate", "scope": "all"}]
-    assert plan["context_updates"] == {}
+    assert _parse_plan(json.dumps(raw, ensure_ascii=False), DOMAINS) == raw
 
 
 @pytest.mark.parametrize(
-    ("content", "error"),
+    ("mutate", "error"),
     [
-        ("not-json", "orchestrator plan must be valid JSON"),
-        ("[]", "orchestrator plan must be a JSON object"),
-        ('{"tasks": []}', "kind must be a non-empty string"),
-        ('{"kind": "single_task", "tasks": []}', "confidence must be a number"),
-        ('{"kind": "single_task", "confidence": 2, "tasks": []}', "confidence must be a number"),
-        ('{"kind": "single_task", "confidence": 0.9, "tasks": [{"id": "t1", "domain": "home_assistant", "command": {}}]}', "selection must be an object"),
+        (lambda plan: plan.update(extra=True), "fields must be exactly"),
+        (lambda plan: plan["tasks"][0].update(command={}), "fields must be exactly"),
+        (lambda plan: plan["tasks"][0].update(tool={}), "fields must be exactly"),
+        (lambda plan: plan["tasks"][0].update(domain="unknown"), "available domain"),
+        (lambda plan: plan["tasks"][0].update(request=""), "non-empty string"),
+        (lambda plan: plan["tasks"].append(_task("time", "again")), "duplicated"),
+        (lambda plan: plan["tasks"][0].update(depends_on=["missing"]), "earlier task"),
+        (lambda plan: plan["tasks"][0].update(depends_on=["t1"]), "depend on itself"),
+        (
+            lambda plan: plan["tasks"].extend(
+                [_task("time", "second", task_id="t2", depends_on=["t3"])]
+            ),
+            "earlier task",
+        ),
+        (lambda plan: plan["context_updates"].update(invented=True), "invented or missing"),
     ],
 )
-def test_parse_plan_rejects_invalid_response(content: str, error: str) -> None:
+def test_parse_plan_rejects_non_generic_or_invalid_plans(mutate, error: str) -> None:
+    raw = _plan([_task("time", "Która godzina?")], active_domain="time")
+    mutate(raw)
     with pytest.raises(ValueError, match=error):
-        _parse_plan(content)
+        _parse_plan(json.dumps(raw), DOMAINS)
 
 
-def test_orchestrator_does_not_read_followup_without_explicit_request(caplog) -> None:
-    plan_one = {
-        "kind": "single_task",
-        "confidence": 0.9,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "home_assistant",
-                "command": _ha_command("turn_on", "turn on the air conditioning in the living room"),
-            }
-        ],
-        "context_updates": {"salient_entities": ["climate.salon"], "active_domain": "home_assistant"},
-        "needs_clarification": False,
-        "clarification_question": None,
+def test_parse_plan_rejects_invalid_json() -> None:
+    with pytest.raises(ValueError, match="must be valid JSON"):
+        _parse_plan("not-json", DOMAINS)
+
+
+def test_planning_prompt_is_sorted_and_bounded() -> None:
+    agents = {
+        domain: RecordingDomainAgent(routing_summary=f"Owns {domain} requests.")
+        for domain in reversed(sorted(DOMAINS))
     }
-    ollama = FakeOllamaConnection(
-        [
-            json.dumps(plan_one),
-            "Włączyłem klimatyzację w salonie.",
-        ]
+
+    prompt, contributions = _build_planning_system_prompt(agents)
+
+    assert len(prompt.encode("utf-8")) <= MAX_FIXED_PLANNING_PROMPT_BYTES
+    assert list(contributions) == sorted(DOMAINS)
+    assert prompt.index("- home_assistant:") < prompt.index("- media_player:")
+    assert "command" not in "\n".join(
+        line for line in prompt.splitlines() if line.startswith("- ")
     )
-    domain_agent = RecordingDomainAgent()
-    agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
-        domain_agents={"home_assistant": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-        server_config=ServerConfig(timezone="Europe/Warsaw", location="Wrocław"),
+
+
+def test_routing_summary_does_not_embed_exact_known_utterance_examples() -> None:
+    normalized_summary = SYSTEM_STATUS_ROUTING_SUMMARY.casefold()
+    for utterance in SYSTEM_STATUS_KNOWN_UTTERANCES:
+        assert utterance.casefold().strip(" ?.!") not in normalized_summary
+
+
+def test_planning_prompt_rejects_oversized_summary() -> None:
+    agent = RecordingDomainAgent(routing_summary="x" * (MAX_ROUTING_SUMMARY_BYTES + 1))
+    with pytest.raises(ValueError, match="routing summary.*exceeds"):
+        _build_planning_system_prompt({"time": agent})
+
+
+def test_planning_prompt_rejects_oversized_combined_prompt(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_server.orchestrator.orchestrator.MAX_FIXED_PLANNING_PROMPT_BYTES",
+        32,
     )
-    endpoint = FakeAgentChannel([TextMessage(text="włącz klimę w salonie"), TextMessage(text="ustaw ją na 26")])
-    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office"})
-
-    with caplog.at_level(logging.INFO, logger="ai_server.orchestrator"):
-        asyncio.run(run_agent(agent, conversation, endpoint))
-
-    assert endpoint.sent == list(
-        text_message_to_events(TextMessage(text="Włączyłem klimatyzację w salonie."))
-    )
-    assert endpoint.control_events == ["end_conversation"]
-    assert [task["id"] for task in domain_agent.tasks] == ["t1"]
-    planning_payload = json.loads(ollama.requests[0]["messages"][-1]["content"])
-    assert planning_payload["conversation"]["area"] == "office"
-    assert planning_payload["conversation"]["medium"] == "voice"
-    assert planning_payload["conversation"]["server_location"] == "Wrocław"
-    assert planning_payload["conversation"]["server_timezone"] == "Europe/Warsaw"
-    assert "user_settings" not in planning_payload["conversation"]
-    assert "location" not in planning_payload["conversation"]
-    assert "room" not in planning_payload["conversation"]
-    assert conversation.agent_state["orchestrator"]["active_domain"] == "home_assistant"
-    assert "received message text='włącz klimę w salonie'" in caplog.text
-    assert "planning output model=qwen3:4b-instruct kind=single_task confidence=0.9" in caplog.text
-    assert "dispatching task task=" in caplog.text
-    assert "task result task_id=t1" in caplog.text
-    assert "final reply output model=qwen3:4b-instruct text='Włączyłem klimatyzację w salonie.'" in caplog.text
-    assert "produced reply text='Ustawiłem klimatyzację w salonie na 26 stopni.'" not in caplog.text
+    with pytest.raises(ValueError, match="fixed route-only planning prompt exceeds"):
+        _build_planning_system_prompt(
+            {"time": RecordingDomainAgent(routing_summary="Time.")}
+        )
 
 
-def test_orchestrator_reports_unsupported_domain_to_final_synthesis() -> None:
-    plan = {
-        "kind": "single_task",
-        "confidence": 0.9,
-        "tasks": [{"id": "t1", "domain": "wikipedia", "command": {"topic": "Albert Einstein"}}],
-        "context_updates": {"salient_entities": [], "active_domain": None},
-        "needs_clarification": False,
-        "clarification_question": None,
+def test_registration_order_does_not_change_prompt() -> None:
+    forward = {
+        "time": RecordingDomainAgent(routing_summary="Time."),
+        "weather": RecordingDomainAgent(routing_summary="Weather."),
     }
-    ollama = FakeOllamaConnection([json.dumps(plan), "Wikipedia nie jest jeszcze podłączona."])
-    agent = OrchestratorAgent(orchestrator_model="qwen3:4b-instruct", ollama_connection=ollama, owns_ollama_connection=False)
-    endpoint = FakeAgentChannel([TextMessage(text="sprawdź Einsteina na Wikipedii")])
-    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "text"})
-
-    asyncio.run(run_agent(agent, conversation, endpoint))
-
-    final_payload = json.loads(ollama.requests[1]["messages"][-1]["content"])
-    final_system_prompt = ollama.requests[1]["messages"][0]["content"]
-    assert final_payload["conversation"]["medium"] == "text"
-    assert "Markdown bullets, numbered lists, tables, digits, and normal date formats" in final_system_prompt
-    assert final_payload["task_results"] == [
-        {
-            "task_id": "t1",
-            "domain": "wikipedia",
-            "status": "unsupported_domain",
-            "message": "Domain agent is not available: wikipedia",
-        }
-    ]
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Wikipedia nie jest jeszcze podłączona.")))
+    reverse = dict(reversed(list(forward.items())))
+    assert _build_planning_system_prompt(forward) == _build_planning_system_prompt(reverse)
 
 
-def test_orchestrator_planning_prompt_uses_only_loaded_domain_prompts() -> None:
-    plan = {
-        "kind": "chat",
-        "confidence": 0.95,
-        "tasks": [],
-        "context_updates": {"salient_entities": [], "active_domain": None},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(plan), "Cześć."])
-    domain_agent = RecordingDomainAgent(
-        planning_prompt="For time tasks only.",
-        query_capabilities={
-            "current_time": QueryCapability(
-                name="Current time",
-                description="Read the current configured time.",
-                intents=("current_time",),
-                command_template={"query": "original question"},
-                examples=({"utterance": "która godzina?", "command": {"query": "która godzina?"}},),
-            )
-        },
-        query_capabilities_prompt="- Prefer the server timezone for local time questions.",
+def test_checked_in_measurement_fixture_is_within_acceptance_bounds() -> None:
+    fixture = json.loads(
+        Path("tests/fixtures/t007-route-only-planning-request.json").read_text(
+            encoding="utf-8"
+        )
     )
-    agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
-        domain_agents={"time": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
+    evidence = fixture["recorded_evidence"]
+    current_prompt, _ = _build_planning_system_prompt(_configured_summary_agents())
+    assert evidence["model"] == fixture["model"]
+    assert evidence["fixed_prompt_utf8_bytes"] == len(current_prompt.encode("utf-8"))
+    assert (
+        evidence["fixed_prompt_utf8_bytes"]
+        <= fixture["acceptance"]["max_fixed_prompt_utf8_bytes"]
     )
-    endpoint = FakeAgentChannel([TextMessage(text="co u ciebie?")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
-
-    system_prompt = ollama.requests[0]["messages"][0]["content"]
-    assert "Available task domains: time" in system_prompt
-    assert "For time tasks only." in system_prompt
-    assert "time read-only queries:" in system_prompt
-    assert "current_time: Read the current configured time.; intents=current_time" in system_prompt
-    assert 'command={"query": "original question"}' in system_prompt
-    assert "która godzina?" not in system_prompt
-    assert "Prefer the server timezone for local time questions." in system_prompt
-    assert "system_status" not in system_prompt
-    assert "home_assistant" not in system_prompt
-    assert "general" not in system_prompt
-
-
-def test_orchestrator_planning_output_logs_token_counts(caplog) -> None:
-    plan = {
-        "kind": "chat",
-        "confidence": 0.95,
-        "tasks": [],
-        "context_updates": {"salient_entities": [], "active_domain": None},
-        "needs_clarification": False,
-        "clarification_question": None,
+    assert evidence["prompt_tokens"] <= fixture["acceptance"]["max_input_tokens"]
+    planning_payload = {
+        "utterance": fixture["utterance"],
+        "conversation": fixture["conversation"],
+        "active_context": fixture["active_context"],
     }
+    serialized = json.dumps(planning_payload, ensure_ascii=False)
+    assert "excluded_home_assistant_inventory" not in serialized
+    assert '"area_id"' not in serialized
+    assert '"aliases"' not in serialized
+    assert "kitchen" not in serialized
+
+
+def test_planner_payload_contains_only_routing_context(caplog) -> None:
     ollama = FakeOllamaConnection(
         [
             {
-                "message": {"role": "assistant", "content": json.dumps(plan)},
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps(_plan([], kind="chat")),
+                },
                 "prompt_eval_count": 123,
                 "eval_count": 12,
             },
@@ -351,1227 +206,384 @@ def test_orchestrator_planning_output_logs_token_counts(caplog) -> None:
         ]
     )
     agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
+        orchestrator_model="router",
+        domain_agents={},
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
+        server_config=ServerConfig(location="Wrocław", timezone="Europe/Warsaw"),
+    )
+    context = agent_context(
+        conversation_id="c1",
+        attributes={
+            "medium": "voice",
+            "area": "office",
+            "user": "Maciek",
+            "user_settings": {
+                "credentials": "secret",
+                "voice_profile_path": "/private/profile",
+                "media": {"default": "Liked Songs"},
+            },
+        },
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="ai_server.orchestrator"):
+        asyncio.run(
+            run_agent(
+                agent,
+                context,
+                FakeAgentChannel([TextMessage(text="hej")]),
+            )
+        )
+
+    payload = json.loads(ollama.requests[0]["messages"][-1]["content"])
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert payload == {
+        "utterance": "hej",
+        "conversation": {
+            "user": "Maciek",
+            "area": "office",
+            "server_location": "Wrocław",
+            "server_timezone": "Europe/Warsaw",
+        },
+        "active_context": {
+            "last_turns": [],
+            "salient_entities": [],
+            "active_domain": None,
+            "pending_tasks": [],
+            "pending_clarification": None,
+        },
+    }
+    for forbidden in (
+        "credentials",
+        "voice_profile",
+        "Liked Songs",
+        "home_assistant_areas",
+        '"command"',
+        '"tool"',
+    ):
+        assert forbidden not in serialized
+    assert "prompt_tokens=123 completion_tokens=12 total_tokens=135" in caplog.text
+    assert "fixed_prompt_bytes=" in caplog.text
+    assert "dynamic_payload_bytes=" in caplog.text
+    assert "routing_summary_bytes=" in caplog.text
+    assert "duration_ms=" in caplog.text
+
+
+def test_single_task_is_dispatched_as_user_text_and_verbatim_reply_is_fast() -> None:
+    route = _plan(
+        [_task("time", "Która godzina?")],
+        active_domain="time",
+    )
+    ollama = FakeOllamaConnection([json.dumps(route)])
+    domain_agent = RecordingDomainAgent(
+        results=[
+            {
+                "status": "ok",
+                "text": "Jest czternasta.",
+                "entities": ["timezone.Europe/Warsaw"],
+                "final_reply_mode": "verbatim",
+            }
+        ]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="router",
+        domain_agents={"time": domain_agent},
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
+    )
+    endpoint = FakeAgentChannel([TextMessage(text="Która jest godzina teraz?")])
+    context = agent_context(conversation_id="c1", attributes={"medium": "voice"})
+
+    asyncio.run(run_agent(agent, context, endpoint))
+
+    assert domain_agent.tasks == [_task("time", "Która godzina?")]
+    assert len(ollama.requests) == 1
+    assert endpoint.sent == list(
+        text_message_to_events(TextMessage(text="Jest czternasta."))
+    )
+    assert context.agent_state["orchestrator"]["salient_entities"] == [
+        "timezone.Europe/Warsaw"
+    ]
+
+
+def test_known_utterance_bypasses_router_without_exposing_command() -> None:
+    domain_agent = RecordingDomainAgent(
+        known_utterances=("Która godzina?",),
+        results=[
+            {
+                "status": "ok",
+                "text": "Jest czternasta.",
+                "final_reply_mode": "verbatim",
+            }
+        ],
+    )
+    ollama = FakeOllamaConnection([])
+    agent = OrchestratorAgent(
+        orchestrator_model="router",
+        domain_agents={"time": domain_agent},
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
+    )
+
+    asyncio.run(
+        run_agent(
+            agent,
+            agent_context(conversation_id="c1", attributes={"medium": "voice"}),
+            FakeAgentChannel([TextMessage(text="Która godzina?")]),
+        )
+    )
+
+    assert ollama.requests == []
+    assert domain_agent.tasks == [_task("time", "Która godzina?")]
+
+
+def test_multi_task_dependency_order_and_partial_failure() -> None:
+    route = _plan(
+        [
+            _task("home_assistant", "Włącz światło.", task_id="t1"),
+            _task("media_player", "Puść muzykę.", task_id="t2"),
+            _task(
+                "weather",
+                "Sprawdź pogodę.",
+                task_id="t3",
+                depends_on=["t1"],
+            ),
+        ],
+        kind="multi_task",
+    )
+    ha = RecordingDomainAgent(results=[{"status": "failed", "text": "Nie udało się."}])
+    media = RecordingDomainAgent(results=[{"status": "ok", "text": "Gra."}])
+    weather = RecordingDomainAgent()
+    ollama = FakeOllamaConnection([json.dumps(route), "Światło się nie udało, muzyka gra."])
+    agent = OrchestratorAgent(
+        orchestrator_model="router",
+        domain_agents={
+            "home_assistant": ha,
+            "media_player": media,
+            "weather": weather,
+        },
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
+    )
+
+    asyncio.run(
+        run_agent(
+            agent,
+            agent_context(conversation_id="c1", attributes={"medium": "text"}),
+            FakeAgentChannel([TextMessage(text="zrób trzy rzeczy")]),
+        )
+    )
+
+    assert len(ha.tasks) == 1
+    assert len(media.tasks) == 1
+    assert weather.tasks == []
+    final_payload = json.loads(ollama.requests[-1]["messages"][-1]["content"])
+    assert final_payload["task_results"][2]["error"] == "missing_dependencies"
+
+
+def test_low_confidence_route_retries_with_clarification_model() -> None:
+    low = _plan([], kind="chat", confidence=0.2)
+    high = _plan([], kind="chat", confidence=0.95)
+    ollama = FakeOllamaConnection([json.dumps(low), json.dumps(high), "Odpowiedź."])
+    agent = OrchestratorAgent(
+        orchestrator_model="small",
+        clarification_model="big",
+        domain_agents={},
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
+    )
+
+    asyncio.run(
+        run_agent(
+            agent,
+            agent_context(conversation_id="c1", attributes={"medium": "text"}),
+            FakeAgentChannel([TextMessage(text="hmm")]),
+        )
+    )
+
+    assert [request["model"] for request in ollama.requests[:2]] == ["small", "big"]
+
+
+def test_invalid_route_retries_with_clarification_model_and_logs_each_request(caplog) -> None:
+    route = _plan([], kind="chat", confidence=0.95)
+    ollama = FakeOllamaConnection(
+        [
+            {
+                "message": {"role": "assistant", "content": "not-json"},
+                "prompt_eval_count": 101,
+                "eval_count": 7,
+            },
+            {
+                "message": {"role": "assistant", "content": json.dumps(route)},
+                "prompt_eval_count": 103,
+                "eval_count": 9,
+            },
+            "Odpowiedź.",
+        ]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="small",
+        clarification_model="big",
+        domain_agents={},
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
+    )
+
+    caplog.set_level(logging.INFO)
+    asyncio.run(
+        run_agent(
+            agent,
+            agent_context(conversation_id="c1", attributes={"medium": "text"}),
+            FakeAgentChannel([TextMessage(text="hmm")]),
+        )
+    )
+
+    assert [request["model"] for request in ollama.requests[:2]] == ["small", "big"]
+    assert (
+        "planning output model=small outcome=invalid prompt_tokens=101 "
+        "completion_tokens=7 total_tokens=108 duration_ms="
+    ) in caplog.text
+    assert (
+        "planning output model=big outcome=ok kind=chat confidence=0.95 "
+        "tasks=[] needs_clarification=False prompt_tokens=103 "
+        "completion_tokens=9 total_tokens=112 duration_ms="
+    ) in caplog.text
+
+
+def test_dsa_clarification_resumes_same_dsa_without_router_and_passes_opaque_value() -> None:
+    route = _plan(
+        [_task("home_assistant", "Włącz światło.")],
+        active_domain="home_assistant",
+    )
+    continuation = {
+        "candidate_ids": ["light.office"],
+        "selection": {"preferred": None},
+        "step": 2,
+    }
+    dsa = RecordingDomainAgent(
+        results=[
+            {
+                "status": "needs_clarification",
+                "text": "Które światło?",
+                "clarification_question": "Które światło?",
+                "continuation": continuation,
+            }
+        ],
+        resumed_result={
+            "status": "ok",
+            "text": "Włączyłem lampę.",
+            "final_reply_mode": "verbatim",
+        },
+    )
+    ollama = FakeOllamaConnection([json.dumps(route), "Które światło?"])
+    endpoint = FakeAgentChannel(
+        [TextMessage(text="włącz światło"), TextMessage(text="lampę biurkową")]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="router",
+        domain_agents={"home_assistant": dsa},
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
+    )
+
+    asyncio.run(
+        run_agent(
+            agent,
+            agent_context(conversation_id="c1", attributes={"medium": "voice"}),
+            endpoint,
+        )
+    )
+
+    assert len(ollama.requests) == 2
+    assert len(dsa.resume_calls) == 1
+    assert dsa.resume_calls[0]["continuation"] == continuation
+    assert dsa.resume_calls[0]["answer"] == "lampę biurkową"
+    assert endpoint.control_events == ["request_follow_up", "end_conversation"]
+
+
+def test_router_clarification_returns_to_router() -> None:
+    ambiguous = _plan(
+        [],
+        kind="chat",
+        confidence=0.5,
+        needs_clarification=True,
+        clarification_question="Czy chodzi o pogodę czy godzinę?",
+    )
+    resolved = _plan(
+        [_task("weather", "Sprawdź pogodę.")],
+        kind="clarification_answer",
+        active_domain="weather",
+    )
+    weather = RecordingDomainAgent(
+        results=[
+            {
+                "status": "ok",
+                "text": "Jest słonecznie.",
+                "final_reply_mode": "verbatim",
+            }
+        ]
+    )
+    ollama = FakeOllamaConnection(
+        [json.dumps(ambiguous), "Czy chodzi o pogodę czy godzinę?", json.dumps(resolved)]
+    )
+    agent = OrchestratorAgent(
+        orchestrator_model="router",
+        domain_agents={"weather": weather},
+        ollama_connection=ollama,
+        owns_ollama_connection=False,
+    )
+
+    asyncio.run(
+        run_agent(
+            agent,
+            agent_context(conversation_id="c1", attributes={"medium": "voice"}),
+            FakeAgentChannel(
+                [TextMessage(text="sprawdź to"), TextMessage(text="pogodę")]
+            ),
+        )
+    )
+
+    assert len(ollama.requests) == 3
+    second_route_payload = json.loads(ollama.requests[2]["messages"][-1]["content"])
+    assert "Odpowiedź użytkownika: pogodę" in second_route_payload["utterance"]
+    assert weather.tasks == [_task("weather", "Sprawdź pogodę.")]
+
+
+def test_planning_failure_logs_metrics_and_ends_with_existing_failure_reply(caplog) -> None:
+    ollama = FakeOllamaConnection([RuntimeError("down")])
+    agent = OrchestratorAgent(
+        orchestrator_model="router",
+        domain_agents={},
         ollama_connection=ollama,
         owns_ollama_connection=False,
     )
     endpoint = FakeAgentChannel([TextMessage(text="hej")])
 
-    with caplog.at_level(logging.INFO, logger="ai_server.orchestrator"):
-        asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
-
-    assert "planning output model=qwen3:4b-instruct kind=chat confidence=0.95" in caplog.text
-    assert "prompt_tokens=123 completion_tokens=12 total_tokens=135" in caplog.text
-
-
-def test_orchestrator_returns_single_verbatim_task_result_without_final_synthesis() -> None:
-    plan = {
-        "kind": "single_task",
-        "confidence": 0.9,
-        "tasks": [{"id": "t1", "domain": "wikipedia", "command": {"topic": "Albert Einstein"}}],
-        "context_updates": {"salient_entities": [], "active_domain": "wikipedia"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(plan)])
-    domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "Tekst kontrolowany przez DSA.", "final_reply_mode": "verbatim"}]
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
-        domain_agents={"wikipedia": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="sprawdź Einsteina na Wikipedii")])
-    conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice"})
-
-    asyncio.run(run_agent(agent, conversation, endpoint))
-
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Tekst kontrolowany przez DSA.")))
-    assert len(ollama.requests) == 1
-
-
-def test_orchestrator_short_path_dispatches_known_time_utterance_without_ollama() -> None:
-    ollama = FakeOllamaConnection([])
-    domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "czternasta zero pięć", "final_reply_mode": "verbatim"}],
-        known_utterances={
-            "Która godzina?": {
-                "id": "t1",
-                "domain": "time",
-                "command": {"query": "Która godzina?"},
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-        },
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
-        domain_agents={"time": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="Która godzina?")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
-
-    assert ollama.requests == []
-    assert domain_agent.tasks == [
-        {
-            "id": "t1",
-            "domain": "time",
-            "command": {"query": "Która godzina?"},
-            "depends_on": [],
-            "status": "ready",
-            "clarification_question": None,
-        }
-    ]
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="czternasta zero pięć")))
-
-
-def test_orchestrator_short_path_dispatches_system_status_check_in_without_ollama() -> None:
-    ollama = FakeOllamaConnection([])
-    domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "Wszystko działa dobrze, Krzysztofie.", "final_reply_mode": "verbatim"}],
-        known_utterances={
-            "Jak się masz?": {
-                "id": "t1",
-                "domain": "system_status",
-                "command": {"intent": "quick_check", "query": "Jak się masz?"},
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-        },
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
-        domain_agents={"system_status": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="Jak się masz?")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "user": "Krzysztof"}), endpoint))
-
-    assert ollama.requests == []
-    assert domain_agent.tasks == [
-        {
-            "id": "t1",
-            "domain": "system_status",
-            "command": {"intent": "quick_check", "query": "Jak się masz?"},
-            "depends_on": [],
-            "status": "ready",
-            "clarification_question": None,
-        }
-    ]
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Wszystko działa dobrze, Krzysztofie.")))
-
-
-def test_orchestrator_short_path_dispatches_weather_utterance_without_ollama() -> None:
-    ollama = FakeOllamaConnection([])
-    domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "We Wrocławiu jest 16 stopni.", "final_reply_mode": "verbatim"}],
-        known_utterances={
-            "Jaka pogoda na weekend?": {
-                "id": "t1",
-                "domain": "weather",
-                "command": {
-                    "tool": "get_weather_forecast",
-                    "query": "Jaka pogoda na weekend?",
-                    "horizon": "weekend",
-                    "granularity": "daily",
-                },
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-        },
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
-        domain_agents={"weather": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="Jaka pogoda na weekend?")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
-
-    assert ollama.requests == []
-    assert domain_agent.tasks == [
-        {
-            "id": "t1",
-            "domain": "weather",
-            "command": {
-                "tool": "get_weather_forecast",
-                "query": "Jaka pogoda na weekend?",
-                "horizon": "weekend",
-                "granularity": "daily",
-            },
-            "depends_on": [],
-            "status": "ready",
-            "clarification_question": None,
-        }
-    ]
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="We Wrocławiu jest 16 stopni.")))
-
-
-def test_orchestrator_weather_planning_prompt_routes_minimal_commands(tmp_path: Path) -> None:
-    weather_agent = WeatherDomainAgent(
-        model="qwen3:4b-instruct",
-        location="Wrocław",
-        cache_dir=tmp_path,
-        providers=[],
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
-        domain_agents={"weather": weather_agent},
-        ollama_connection=FakeOllamaConnection([]),
-        owns_ollama_connection=False,
-    )
-
-    prompt = agent._planning_system_prompt
-    assert 'command={"query": "original weather question"}' in prompt
-    assert '{"query": "original weather question"}' in prompt
-    assert "get_weather_forecast" not in prompt
-    assert '"location"' not in prompt
-
-
-def test_orchestrator_does_not_carry_pronoun_context_between_agent_conversations() -> None:
-    initial_plan = {
-        "kind": "single_task",
-        "confidence": 0.95,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "home_assistant",
-                "command": {
-                    "selection": {
-                        "include": [{"domain": "climate", "scope": "single", "area": "living_room"}],
-                        "exclude": [],
-                    },
-                    "operation": {
-                        "intent": "turn_on",
-                        "description": "Włącz klimatyzację w salonie",
-                        "parameters": {},
-                    },
-                },
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            }
-        ],
-        "context_updates": {"salient_entities": ["climate.living_room"], "active_domain": "home_assistant"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    followup_plan = {
-        "kind": "followup",
-        "confidence": 0.95,
-        "tasks": [
-            {
-                "id": "t2",
-                "domain": "home_assistant",
-                "command": {
-                    "selection": {"include": [], "exclude": []},
-                    "operation": {
-                        "intent": "set_temperature",
-                        "description": "ustaw ją na 22 stopnie",
-                        "parameters": {"temperature": 22},
-                    },
-                },
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            }
-        ],
-        "context_updates": {"salient_entities": [], "active_domain": "home_assistant"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(initial_plan), json.dumps(followup_plan)])
-    domain_agent = RecordingDomainAgent(
-        [
-            {"status": "ok", "text": "Włączono klimatyzację w salonie.", "final_reply_mode": "verbatim"},
-            {"status": "ok", "text": "Ustawiono klimatyzację w salonie na 22 stopnie.", "final_reply_mode": "verbatim"},
-        ]
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="big",
-        domain_agents={"home_assistant": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-        home_assistant_inventory_provider=FakeAreaInventoryProvider(),
-    )
-    first_conversation = agent_context(
-        conversation_id="c1",
-        attributes={"medium": "voice", "area": "office"},
-    )
-    second_conversation = agent_context(
-        conversation_id="c2",
-        attributes={"medium": "voice", "area": "office"},
-    )
-    first_endpoint = FakeAgentChannel([TextMessage(text="Włącz klimatyzację w salonie")])
-    second_endpoint = FakeAgentChannel([TextMessage(text="Super! I ustaw ją na 22 stopnie")])
-
-    asyncio.run(run_agent(agent, first_conversation, first_endpoint))
-    asyncio.run(run_agent(agent, second_conversation, second_endpoint))
-
-    assert len(ollama.requests) == 2
-    followup_payload = json.loads(ollama.requests[1]["messages"][1]["content"])
-    assert followup_payload["active_context"]["salient_entities"] == []
-    assert [task["domain"] for task in domain_agent.tasks] == ["home_assistant", "home_assistant"]
-    assert domain_agent.tasks[1]["command"]["operation"]["intent"] == "set_temperature"
-    assert domain_agent.tasks[1]["command"]["selection"]["include"] == []
-    assert first_endpoint.sent == list(text_message_to_events(TextMessage(text="Włączono klimatyzację w salonie.")))
-    assert second_endpoint.sent == list(
-        text_message_to_events(TextMessage(text="Ustawiono klimatyzację w salonie na 22 stopnie."))
-    )
-
-
-def test_concurrent_public_agent_conversations_have_isolated_mutable_state(monkeypatch) -> None:
-    async def run() -> None:
-        agent = object.__new__(OrchestratorAgent)
-        agent._processing_update_interval_seconds = 1.0
-        entered: list[AgentExecutionContext] = []
-        both_entered = asyncio.Event()
-
-        async def capture_execution(
-            self,
-            conversation,
-            channel,
-            processing_update_throttle=None,
-        ) -> None:
-            del self, channel, processing_update_throttle
-            conversation.agent_state["owner"] = conversation.conversation_id
-            entered.append(conversation)
-            if len(entered) == 2:
-                both_entered.set()
-            await both_entered.wait()
-            assert conversation.agent_state == {"owner": conversation.conversation_id}
-
-        monkeypatch.setattr(OrchestratorAgent, "_run_execution_context", capture_execution)
-        first = agent_context("concurrent-1", {"medium": "text"}).conversation
-        second = agent_context("concurrent-2", {"medium": "text"}).conversation
-        await asyncio.gather(
-            agent.run_agent_conversation(first, FakeAgentChannel()),
-            agent.run_agent_conversation(second, FakeAgentChannel()),
+    caplog.set_level(logging.INFO)
+    asyncio.run(
+        run_agent(
+            agent,
+            agent_context(conversation_id="c1", attributes={"medium": "voice"}),
+            endpoint,
         )
-        assert len(entered) == 2
-        assert entered[0] is not entered[1]
-        assert entered[0].agent_state is not entered[1].agent_state
-
-    asyncio.run(run())
-
-
-def test_orchestrator_plans_media_stop_with_extra_tail() -> None:
-    plan = {
-        "kind": "single_task",
-        "confidence": 0.95,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "media_player",
-                "command": {"intent": "stop", "query": "Zatrzymaj muzykę. Ok, na pół."},
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            }
-        ],
-        "context_updates": {"salient_entities": [], "active_domain": "media_player"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(plan)])
-    domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "Zatrzymałem muzykę.", "final_reply_mode": "verbatim"}]
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
-        domain_agents={"media_player": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="Zatrzymaj muzykę. Ok, na pół.")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
-
-    assert len(ollama.requests) == 1
-    assert domain_agent.tasks[0]["domain"] == "media_player"
-    assert domain_agent.tasks[0]["command"]["intent"] == "stop"
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Zatrzymałem muzykę.")))
-
-
-def test_orchestrator_plans_composite_after_known_media_phrase_prefix() -> None:
-    plan = {
-        "kind": "multi_task",
-        "confidence": 0.95,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "media_player",
-                "command": {"intent": "stop", "query": "Wyłącz muzykę"},
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-            {
-                "id": "t2",
-                "domain": "home_assistant",
-                "command": {
-                    "selection": {
-                        "include": [{"domain": "climate", "scope": "single", "area": "office"}],
-                        "exclude": [],
-                    },
-                    "operation": {
-                        "intent": "turn_off",
-                        "description": "wyłącz klimatyzator",
-                        "parameters": {},
-                    },
-                },
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-        ],
-        "context_updates": {"salient_entities": ["climate.office"], "active_domain": "home_assistant"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(plan), "Zatrzymałem muzykę i wyłączyłem klimatyzację."])
-    media_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "Zatrzymałem muzykę.", "final_reply_mode": "verbatim"}],
-        known_utterances={
-            "Wyłącz muzykę": {
-                "id": "t1",
-                "domain": "media_player",
-                "command": {"intent": "stop", "query": "Wyłącz muzykę"},
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-        },
-    )
-    home_assistant_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "Wyłączyłem klimatyzację w biurze.", "final_reply_mode": "verbatim"}]
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
-        domain_agents={"media_player": media_agent, "home_assistant": home_assistant_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="Wyłącz muzykę i wyłącz klimatyzator.")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
-
-    assert len(ollama.requests) == 2
-    assert media_agent.tasks[0]["domain"] == "media_player"
-    assert home_assistant_agent.tasks[0]["domain"] == "home_assistant"
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Zatrzymałem muzykę i wyłączyłem klimatyzację.")))
-
-
-def test_orchestrator_uses_area_inventory_for_named_media_room_instead_of_short_path() -> None:
-    plan = {
-        "kind": "single_task",
-        "confidence": 0.95,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "media_player",
-                "command": {"intent": "stop", "query": "zatrzymaj muzykę w pracowni", "areas": ["office"]},
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            }
-        ],
-        "context_updates": {"salient_entities": [], "active_domain": "media_player"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(plan)])
-    domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "Zatrzymałem muzykę.", "final_reply_mode": "verbatim"}]
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="big",
-        domain_agents={"media_player": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-        home_assistant_inventory_provider=FakeAreaInventoryProvider(),
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="zatrzymaj muzykę w pracowni")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
-
-    planning_payload = json.loads(ollama.requests[0]["messages"][1]["content"])
-    assert planning_payload["conversation"]["home_assistant_areas"] == [
-        {"area_id": "living_room", "name": "Living room", "aliases": ["Salon"]},
-        {"area_id": "office", "name": "Office", "aliases": ["Biuro", "Pracownia"]},
-    ]
-    assert domain_agent.tasks[0]["command"]["areas"] == ["office"]
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Zatrzymałem muzykę.")))
-
-
-def test_orchestrator_merges_split_media_room_tasks_before_dispatch() -> None:
-    plan = {
-        "kind": "multi_task",
-        "confidence": 0.95,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "media_player",
-                "command": {
-                    "intent": "play_media",
-                    "query": "Muzyka do pracy",
-                    "media_type": "playlist",
-                    "areas": ["salon"],
-                },
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-            {
-                "id": "t2",
-                "domain": "media_player",
-                "command": {
-                    "intent": "play_media",
-                    "query": "Muzyka do pracy",
-                    "media_type": "playlist",
-                    "areas": ["Pracownia"],
-                },
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-        ],
-        "context_updates": {"salient_entities": ["living_room", "office"], "active_domain": "media_player"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(plan), "Włączam muzykę."])
-    domain_agent = RecordingDomainAgent([{"status": "ok", "text": "Włączam muzykę."}])
-    agent = OrchestratorAgent(
-        orchestrator_model="big",
-        domain_agents={"media_player": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-        home_assistant_inventory_provider=FakeAreaInventoryProvider(),
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="graj muzykę do pracy w salonie i pracowni")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
-
-    assert len(domain_agent.tasks) == 1
-    assert domain_agent.tasks[0]["id"] == "t1"
-    assert domain_agent.tasks[0]["command"] == {
-        "intent": "play_media",
-        "query": "Muzyka do pracy",
-        "media_type": "playlist",
-        "areas": ["living_room", "office"],
-    }
-    final_reply_payload = json.loads(ollama.requests[1]["messages"][1]["content"])
-    assert final_reply_payload["plan"]["kind"] == "single_task"
-    assert len(final_reply_payload["plan"]["tasks"]) == 1
-
-
-def test_orchestrator_canonicalizes_home_assistant_room_alias_from_inventory() -> None:
-    plan = {
-        "kind": "single_task",
-        "confidence": 0.95,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "home_assistant",
-                "command": {
-                    "selection": {
-                        "include": [{"domain": "climate", "scope": "single", "area": "Pracownia"}],
-                        "exclude": [],
-                    },
-                    "operation": {
-                        "intent": "turn_off",
-                        "description": "wyłącz klimatyzację w pracowni",
-                        "parameters": {},
-                    },
-                },
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            }
-        ],
-        "context_updates": {"salient_entities": ["climate.office"], "active_domain": "home_assistant"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(plan)])
-    domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "Wyłączyłem klimatyzację.", "final_reply_mode": "verbatim"}]
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="big",
-        domain_agents={"home_assistant": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-        home_assistant_inventory_provider=FakeAreaInventoryProvider(),
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="wyłącz klimatyzację w pracowni")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
-
-    planning_payload = json.loads(ollama.requests[0]["messages"][1]["content"])
-    assert planning_payload["conversation"]["home_assistant_areas"] == [
-        {"area_id": "living_room", "name": "Living room", "aliases": ["Salon"]},
-        {"area_id": "office", "name": "Office", "aliases": ["Biuro", "Pracownia"]},
-    ]
-    assert domain_agent.tasks[0]["command"]["selection"]["include"][0]["area"] == "office"
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Wyłączyłem klimatyzację.")))
-
-
-def test_orchestrator_blocks_unknown_planned_area_before_dispatch() -> None:
-    plan = {
-        "kind": "single_task",
-        "confidence": 0.95,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "media_player",
-                "command": {"intent": "stop", "query": "zatrzymaj muzykę w pracowni", "areas": ["pracowni"]},
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            }
-        ],
-        "context_updates": {"salient_entities": [], "active_domain": "media_player"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(plan), "O który pokój chodzi?"])
-    domain_agent = RecordingDomainAgent()
-    agent = OrchestratorAgent(
-        orchestrator_model="big",
-        domain_agents={"media_player": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-        home_assistant_inventory_provider=FakeAreaInventoryProvider(),
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="zatrzymaj muzykę w pracowni")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
-
-    assert domain_agent.tasks == []
-    assert "Nie znam pokoju" in json.loads(ollama.requests[1]["messages"][1]["content"])["task_results"][0]["clarification_question"]
-    assert endpoint.control_events
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="O który pokój chodzi?")))
-
-
-def test_orchestrator_short_path_dispatches_tok_fm_without_ollama() -> None:
-    ollama = FakeOllamaConnection([])
-    domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "Włączam TOK FM.", "final_reply_mode": "verbatim"}],
-        known_utterances={
-            "Włącz TOK FM w całym domu": {
-                "id": "t1",
-                "domain": "media_player",
-                "command": {
-                    "intent": "play_media",
-                    "query": "Włącz TOK FM w całym domu",
-                    "media_type": "radio",
-                    "all_speakers": True,
-                },
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-        },
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
-        domain_agents={"media_player": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="Włącz TOK FM w całym domu")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"}), endpoint))
-
-    assert ollama.requests == []
-    assert domain_agent.tasks[0]["domain"] == "media_player"
-    assert domain_agent.tasks[0]["command"]["intent"] == "play_media"
-    assert domain_agent.tasks[0]["command"]["media_type"] == "radio"
-    assert domain_agent.tasks[0]["command"]["all_speakers"] is True
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Włączam TOK FM.")))
-
-
-def test_orchestrator_short_path_dispatches_media_volume_up_without_ollama() -> None:
-    ollama = FakeOllamaConnection([])
-    domain_agent = RecordingDomainAgent(
-        [{"status": "ok", "text": "Głośność: 40 procent.", "final_reply_mode": "verbatim"}],
-        known_utterances={
-            "Przygłośnij muzykę": {
-                "id": "t1",
-                "domain": "media_player",
-                "command": {
-                    "intent": "volume_delta",
-                    "query": "Przygłośnij muzykę",
-                    "volume_delta": 0.05,
-                },
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-        },
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="qwen3:4b-instruct",
-        domain_agents={"media_player": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="Przygłośnij Muzykę")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
-
-    assert ollama.requests == []
-    assert domain_agent.tasks[0]["domain"] == "media_player"
-    assert domain_agent.tasks[0]["command"]["intent"] == "volume_delta"
-    assert domain_agent.tasks[0]["command"]["query"] == "Przygłośnij Muzykę"
-    assert domain_agent.tasks[0]["command"]["volume_delta"] == 0.05
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Głośność: 40 procent.")))
-
-
-def test_orchestrator_retries_low_confidence_plan_with_clarification_model() -> None:
-    low_confidence_plan = {
-        "kind": "chat",
-        "confidence": 0.3,
-        "tasks": [],
-        "context_updates": {"salient_entities": [], "active_domain": None},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    high_confidence_plan = {
-        "kind": "single_task",
-        "confidence": 0.95,
-        "tasks": [{"id": "t1", "domain": "wikipedia", "command": {"topic": "Maria Skłodowska-Curie"}}],
-        "context_updates": {"salient_entities": [], "active_domain": None},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(low_confidence_plan), json.dumps(high_confidence_plan), "Jest odpowiedź."])
-    agent = OrchestratorAgent(
-        orchestrator_model="small",
-        clarification_model="big",
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="opowiedz o Marii Curie")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
-
-    assert [request["model"] for request in ollama.requests] == ["small", "big", "small"]
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Jest odpowiedź.")))
-
-
-def test_orchestrator_retries_invalid_plan_with_clarification_model() -> None:
-    valid_plan = {
-        "kind": "chat",
-        "confidence": 0.9,
-        "tasks": [],
-        "context_updates": {"salient_entities": [], "active_domain": None},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection(["not-json", json.dumps(valid_plan), "Dobrze."])
-    agent = OrchestratorAgent(
-        orchestrator_model="small",
-        clarification_model="big",
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="pogadajmy")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
-
-    assert [request["model"] for request in ollama.requests] == ["small", "big", "small"]
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Dobrze.")))
-
-
-def test_orchestrator_returns_error_phrase_when_clarification_model_fails() -> None:
-    low_confidence_plan = {
-        "kind": "chat",
-        "confidence": 0.2,
-        "tasks": [],
-        "context_updates": {"salient_entities": [], "active_domain": None},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(low_confidence_plan), OllamaError("cloud failed")])
-    agent = OrchestratorAgent(
-        orchestrator_model="small",
-        clarification_model="big",
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="coś trudnego")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
-
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text=GENERATION_FAILURE_MESSAGE)))
-
-
-def test_orchestrator_retries_empty_final_reply_with_clarification_model() -> None:
-    plan = {
-        "kind": "chat",
-        "confidence": 0.9,
-        "tasks": [],
-        "context_updates": {"salient_entities": [], "active_domain": None},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(plan), "", "Duża odpowiedź."])
-    agent = OrchestratorAgent(
-        orchestrator_model="small",
-        clarification_model="big",
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="odpowiedz")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
-
-    assert [request["model"] for request in ollama.requests] == ["small", "small", "big"]
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Duża odpowiedź.")))
-
-
-def test_orchestrator_clarification_answer_can_correct_home_assistant_selection_domain() -> None:
-    initial_plan = {
-        "kind": "single_task",
-        "confidence": 0.9,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "home_assistant",
-                "command": {
-                    "selection": {
-                        "include": [{"domain": "light", "scope": "single", "area": "office"}],
-                        "exclude": [],
-                    },
-                    "operation": {
-                        "intent": "turn_on",
-                        "description": "włącz klimatyzację.",
-                        "parameters": {},
-                    },
-                },
-            }
-        ],
-        "context_updates": {"salient_entities": [], "active_domain": "home_assistant"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    resolved_task = {
-        "confidence": 0.95,
-        "task": {
-            "id": "t1",
-            "domain": "home_assistant",
-            "command": {
-                "selection": {
-                    "include": [{"domain": "climate", "scope": "single", "area": "office"}],
-                    "exclude": [],
-                },
-                "operation": {
-                    "intent": "turn_on",
-                    "description": "Włącz klimatyzację.",
-                    "parameters": {},
-                },
-            },
-            "depends_on": [],
-            "status": "ready",
-            "clarification_question": None,
-        },
-    }
-    ollama = FakeOllamaConnection(
-        [
-            json.dumps(initial_plan),
-            "Jaką dokładnie zmianę mam wykonać?",
-            json.dumps(resolved_task),
-            "Włączyłem klimatyzator.",
-        ]
-    )
-    domain_agent = RecordingDomainAgent(
-        [
-            {
-                "status": "needs_clarification",
-                "text": "Jaką dokładnie zmianę mam wykonać?",
-                "needs_clarification": True,
-                "clarification_question": "Jaką dokładnie zmianę mam wykonać?",
-            },
-            {"status": "ok", "text": "Włączyłem klimatyzator."},
-        ]
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="small",
-        clarification_model="big",
-        domain_agents={"home_assistant": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="sprawdź klimatyzator"), TextMessage(text="Włącz klimatyzator")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "office"}), endpoint))
-
-    assert [request["model"] for request in ollama.requests] == ["small", "small", "big", "small"]
-    assert [task["command"]["selection"]["include"][0]["domain"] for task in domain_agent.tasks] == ["light", "climate"]
-    assert [task["command"]["operation"]["intent"] for task in domain_agent.tasks] == ["turn_on", "turn_on"]
-    assert domain_agent.tasks[1]["command"]["selection"]["include"] == [
-        {"domain": "climate", "scope": "single", "area": "office"}
-    ]
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Jaką dokładnie zmianę mam wykonać?"))) + list(
-        text_message_to_events(TextMessage(text="Włączyłem klimatyzator."))
     )
 
-
-def test_orchestrator_retries_empty_clarification_response_with_orchestrator_model() -> None:
-    initial_plan = {
-        "kind": "single_task",
-        "confidence": 0.9,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "home_assistant",
-                "command": _ha_command("turn_on", "włącz światło"),
-            }
-        ],
-        "context_updates": {"salient_entities": [], "active_domain": "home_assistant"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    resolved_task = {
-        "confidence": 0.92,
-        "task": {
-            "id": "t1",
-            "domain": "home_assistant",
-            "command": _ha_command("turn_on", "włącz światło w salonie"),
-            "depends_on": [],
-            "status": "ready",
-            "clarification_question": None,
-        },
-    }
-    ollama = FakeOllamaConnection(
-        [
-            json.dumps(initial_plan),
-            "Które światło mam włączyć?",
-            "",
-            json.dumps(resolved_task),
-            "Włączyłem światło w salonie.",
-        ]
+    assert endpoint.sent == list(
+        text_message_to_events(TextMessage(text=GENERATION_FAILURE_MESSAGE))
     )
-    domain_agent = RecordingDomainAgent(
-        [
-            {
-                "status": "needs_clarification",
-                "text": "Które światło mam włączyć?",
-                "needs_clarification": True,
-                "clarification_question": "Które światło mam włączyć?",
-            },
-            {"status": "ok", "text": "Włączyłem światło w salonie."},
-        ]
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="small",
-        clarification_model="big",
-        domain_agents={"home_assistant": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="włącz światło"), TextMessage(text="w salonie")])
-
-    asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
-
-    assert [request["model"] for request in ollama.requests] == ["small", "small", "big", "small", "small"]
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Które światło mam włączyć?"))) + list(
-        text_message_to_events(TextMessage(text="Włączyłem światło w salonie."))
-    )
-
-
-def test_orchestrator_logs_blocked_task_clarification_utterance(caplog) -> None:
-    plan = {
-        "kind": "single_task",
-        "confidence": 0.9,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "home_assistant",
-                "command": _ha_command("turn_on", "włącz światło"),
-                "depends_on": [],
-                "status": "blocked",
-                "clarification_question": "Które światło mam włączyć?",
-            }
-        ],
-        "context_updates": {"salient_entities": [], "active_domain": "home_assistant"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection([json.dumps(plan), "Które światło mam włączyć?"])
-    agent = OrchestratorAgent(orchestrator_model="small", ollama_connection=ollama, owns_ollama_connection=False)
-    endpoint = FakeAgentChannel([TextMessage(text="włącz światło")])
-
-    with caplog.at_level(logging.WARNING, logger="ai_server.orchestrator"):
-        asyncio.run(run_agent(agent, agent_context(conversation_id="c1", attributes={"medium": "voice"}), endpoint))
-
-    assert "utterance caused clarification source=orchestrator conversation_id=c1 utterance='włącz światło'" in caplog.text
-
-
-def test_orchestrator_stores_dsa_clarification_and_resumes_same_domain(caplog) -> None:
-    initial_plan = {
-        "kind": "single_task",
-        "confidence": 0.9,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "home_assistant",
-                "command": _ha_command("turn_on", "włącz światło"),
-            }
-        ],
-        "context_updates": {"salient_entities": [], "active_domain": "home_assistant"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    resolved_task = {
-        "confidence": 0.92,
-        "task": {
-            "id": "t1",
-            "domain": "home_assistant",
-            "command": _ha_command("turn_on", "włącz światło w salonie"),
-            "depends_on": [],
-            "status": "ready",
-            "clarification_question": None,
-        },
-    }
-    ollama = FakeOllamaConnection(
-        [
-            json.dumps(initial_plan),
-            "Które światło mam włączyć?",
-            json.dumps(resolved_task),
-            "Włączyłem światło w salonie.",
-        ]
-    )
-    domain_agent = RecordingDomainAgent(
-        [
-            {
-                "status": "needs_clarification",
-                "text": "Które światło mam włączyć?",
-                "needs_clarification": True,
-                "clarification_question": "Które światło mam włączyć?",
-            },
-            {"status": "ok", "text": "Włączyłem światło w salonie."},
-        ]
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="small",
-        clarification_model="big",
-        domain_agents={"home_assistant": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    endpoint = FakeAgentChannel([TextMessage(text="włącz światło"), TextMessage(text="w salonie")])
-    conversation = agent_context(conversation_id="c1", attributes={"medium": "voice"})
-
-    with caplog.at_level(logging.WARNING, logger="ai_server.orchestrator"):
-        asyncio.run(run_agent(agent, conversation, endpoint))
-
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Które światło mam włączyć?"))) + list(
-        text_message_to_events(TextMessage(text="Włączyłem światło w salonie."))
-    )
-    assert [task["id"] for task in domain_agent.tasks] == ["t1", "t1"]
-    assert [request["model"] for request in ollama.requests] == ["small", "small", "big", "small"]
-    assert conversation.agent_state["orchestrator"]["pending_clarification"] is None
-    assert "utterance caused clarification source=dsa conversation_id=c1 utterance='włącz światło'" in caplog.text
-
-
-def test_orchestrator_pending_clarification_takes_priority_over_short_path() -> None:
-    resolved_task = {
-        "confidence": 0.92,
-        "task": {
-            "id": "t1",
-            "domain": "home_assistant",
-            "command": _ha_command("turn_on", "włącz światło w salonie"),
-            "depends_on": [],
-            "status": "ready",
-            "clarification_question": None,
-        },
-    }
-    ollama = FakeOllamaConnection([json.dumps(resolved_task), "Włączyłem światło w salonie."])
-    domain_agent = RecordingDomainAgent([{"status": "ok", "text": "Włączyłem światło w salonie."}])
-    agent = OrchestratorAgent(
-        orchestrator_model="small",
-        clarification_model="big",
-        domain_agents={"home_assistant": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    conversation = agent_context(conversation_id="c1", attributes={"medium": "voice"})
-    conversation.agent_state["orchestrator"] = {
-        "last_turns": [],
-        "salient_entities": [],
-        "active_domain": "home_assistant",
-        "pending_tasks": [],
-        "pending_clarification": {
-            "domain": "home_assistant",
-            "task": {
-                "id": "t1",
-                "domain": "home_assistant",
-                "command": _ha_command("turn_on", "włącz światło"),
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-            "task_result": {
-                "task_id": "t1",
-                "domain": "home_assistant",
-                "status": "needs_clarification",
-                "text": "Które światło mam włączyć?",
-                "needs_clarification": True,
-                "clarification_question": "Które światło mam włączyć?",
-            },
-            "clarification_question": "Które światło mam włączyć?",
-        },
-    }
-    endpoint = FakeAgentChannel([TextMessage(text="Która godzina?")])
-
-    asyncio.run(run_agent(agent, conversation, endpoint))
-
-    assert [request["model"] for request in ollama.requests] == ["big", "small"]
-    assert [task["domain"] for task in domain_agent.tasks] == ["home_assistant"]
-    assert endpoint.sent == list(text_message_to_events(TextMessage(text="Włączyłem światło w salonie.")))
-
-
-def test_orchestrator_clears_pending_clarification_on_thanks() -> None:
-    ollama = FakeOllamaConnection([])
-    domain_agent = RecordingDomainAgent()
-    agent = OrchestratorAgent(
-        orchestrator_model="small",
-        clarification_model="big",
-        domain_agents={"media_player": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    conversation = agent_context(conversation_id="c1", attributes={"medium": "voice", "area": "bedroom"})
-    conversation.agent_state["orchestrator"] = {
-        "last_turns": [{"user": "Przygłośnij muzykę.", "assistant": "W którym pokoju mam użyć głośnika?"}],
-        "salient_entities": [],
-        "active_domain": "media_player",
-        "pending_tasks": [],
-        "pending_clarification": {
-            "domain": "media_player",
-            "task": {
-                "id": "t1",
-                "domain": "media_player",
-                "command": {"intent": "volume_delta", "query": "Przygłośnij muzykę.", "volume_delta": 0.05},
-                "depends_on": [],
-                "status": "ready",
-                "clarification_question": None,
-            },
-            "task_result": {
-                "task_id": "t1",
-                "domain": "media_player",
-                "status": "needs_clarification",
-                "text": "W którym pokoju mam użyć głośnika?",
-                "needs_clarification": True,
-                "clarification_question": "W którym pokoju mam użyć głośnika?",
-            },
-            "clarification_question": "W którym pokoju mam użyć głośnika?",
-        },
-    }
-    endpoint = FakeAgentChannel([TextMessage(text="Dziękuję.")])
-
-    asyncio.run(run_agent(agent, conversation, endpoint))
-
-    assert ollama.requests == []
-    assert domain_agent.tasks == []
-    assert conversation.agent_state["orchestrator"]["pending_clarification"] is None
     assert endpoint.control_events == ["end_conversation"]
-    assert endpoint.sent == list(text_message_to_events(""))
-
-
-def test_orchestrator_drops_unanswered_clarification_when_conversation_ends() -> None:
-    initial_plan = {
-        "kind": "single_task",
-        "confidence": 0.9,
-        "tasks": [
-            {
-                "id": "t1",
-                "domain": "home_assistant",
-                "command": _ha_command("turn_on", "włącz światło"),
-            }
-        ],
-        "context_updates": {"salient_entities": [], "active_domain": "home_assistant"},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    second_plan = {
-        "kind": "chat",
-        "confidence": 0.9,
-        "tasks": [],
-        "context_updates": {"salient_entities": [], "active_domain": None},
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    ollama = FakeOllamaConnection(
-        [
-            json.dumps(initial_plan),
-            "Które światło mam włączyć?",
-            json.dumps(second_plan),
-            "Nowa rozmowa.",
-        ]
-    )
-    domain_agent = RecordingDomainAgent(
-        [
-            {
-                "status": "needs_clarification",
-                "text": "Które światło mam włączyć?",
-                "needs_clarification": True,
-                "clarification_question": "Które światło mam włączyć?",
-            },
-        ]
-    )
-    agent = OrchestratorAgent(
-        orchestrator_model="small",
-        clarification_model="big",
-        domain_agents={"home_assistant": domain_agent},
-        ollama_connection=ollama,
-        owns_ollama_connection=False,
-    )
-    conversation = agent_context(conversation_id="c1", attributes={"medium": "voice"})
-
-    asyncio.run(run_agent(agent, conversation, FakeAgentChannel([TextMessage(text="włącz światło")])))
-
-    assert conversation.agent_state["orchestrator"]["pending_clarification"] is None
-
-    next_conversation = agent_context(conversation_id="c2", attributes={"medium": "voice"})
-    asyncio.run(run_agent(agent, next_conversation, FakeAgentChannel([TextMessage(text="w salonie")])))
-
-    system_prompts = [request["messages"][0]["content"] for request in ollama.requests]
-    assert len(system_prompts) == 4
-    assert "You are an orchestration planner" in system_prompts[2]
-    assert "resolving a pending domain-agent clarification" not in "\n".join(system_prompts)
-    assert [task["id"] for task in domain_agent.tasks] == ["t1"]
-
-
-def _ha_command(intent: str, description: str, parameters=None):
-    return {
-        "selection": {"include": [{"domain": "climate", "scope": "single", "area": "salon"}], "exclude": []},
-        "operation": {"intent": intent, "description": description, "parameters": parameters or {}},
-    }
+    assert (
+        "planning output model=router outcome=request_failed prompt_tokens=None "
+        "completion_tokens=None total_tokens=None duration_ms="
+    ) in caplog.text
 
 
 class FakeOllamaConnection:
     def __init__(self, contents: list[str | dict | Exception]) -> None:
         self._contents = list(contents)
-        self.requests = []
+        self.requests: list[dict] = []
 
-    async def chat(self, payload: dict):
+    async def chat(self, payload: dict) -> dict:
         self.requests.append(payload)
         content = self._contents.pop(0)
         if isinstance(content, Exception):
@@ -1589,55 +601,51 @@ class RecordingDomainAgent:
         self,
         results: list[dict] | None = None,
         *,
-        known_utterances: dict[str, dict] | None = None,
-        planning_prompt: str = "For test_domain tasks.",
-        query_capabilities: dict | None = None,
-        query_capabilities_prompt: str = "",
+        resumed_result: dict | None = None,
+        known_utterances: tuple[str, ...] = (),
+        routing_summary: str = "Test routing ownership.",
     ) -> None:
-        self.tasks = []
+        self.tasks: list[dict] = []
+        self.resume_calls: list[dict] = []
         self._results = list(results or [{"status": "ok", "text": "Gotowe."}])
-        self._known_utterances = known_utterances or {}
-        self._planning_prompt = planning_prompt
-        self._query_capabilities = query_capabilities or {}
-        self._query_capabilities_prompt = query_capabilities_prompt
+        self._resumed_result = resumed_result or {
+            "status": "ok",
+            "text": "Gotowe.",
+        }
+        self._known_utterances = known_utterances
+        self._routing_summary = routing_summary
 
-    def known_utterances(self):
+    def known_utterances(self) -> tuple[str, ...]:
         return self._known_utterances
 
-    def planning_prompt(self):
-        return self._planning_prompt
+    def routing_summary(self) -> str:
+        return self._routing_summary
 
-    def query_capabilities(self):
-        return self._query_capabilities
-
-    def query_capabilities_prompt(self):
-        return self._query_capabilities_prompt
-
-    async def run_task(self, conversation, task, active_context):
+    async def run_task(self, conversation, task, active_context) -> dict:
         self.tasks.append(task)
         if len(self._results) > 1:
             return self._results.pop(0)
         return self._results[0]
 
+    async def resume_clarification(
+        self,
+        conversation,
+        task,
+        question,
+        answer,
+        active_context,
+        continuation,
+    ) -> dict:
+        self.resume_calls.append(
+            {
+                "task": task,
+                "question": question,
+                "answer": answer,
+                "active_context": active_context,
+                "continuation": continuation,
+            }
+        )
+        return self._resumed_result
+
     async def close(self) -> None:
         pass
-
-
-class FakeAreaInventoryProvider:
-    @property
-    def inventory(self) -> HomeAssistantInventory:
-        office = HomeAssistantArea(area_id="office", name="Office", aliases=("Biuro", "Pracownia"))
-        living_room = HomeAssistantArea(area_id="living_room", name="Living room", aliases=("Salon",))
-        return HomeAssistantInventory(
-            areas_by_id={
-                office.area_id: office,
-                living_room.area_id: living_room,
-            },
-            devices_by_id={},
-            devices_by_area={
-                office.area_id: (),
-                living_room.area_id: (),
-            },
-            area_lookup={},
-            device_lookup={},
-        )

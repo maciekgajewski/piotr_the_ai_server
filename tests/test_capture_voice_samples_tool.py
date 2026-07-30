@@ -77,8 +77,7 @@ cases:
       - druga fraza
   - id: dsa
     task:
-      command:
-        query: trzecia fraza
+      request: trzecia fraza
 """,
         encoding="utf-8",
     )

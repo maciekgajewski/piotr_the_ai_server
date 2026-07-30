@@ -4,7 +4,8 @@ from typing import Any
 from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, DEFAULT_DATA_DIR, ProcessingUpdatesConfig, ServerConfig
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent
 from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent
-from ai_server.domain_agents.interfaces import DomainAgent, DomainTask, QueryCapability
+from ai_server.domain_agents.interfaces import DomainAgent, DomainTask
+from ai_server.orchestrator.messages import JsonValue
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
 from ai_server.domain_agents.system_status import SystemStatusCollector, SystemStatusDomainAgent, SystemStatusOptions, SystemStatusStore
 from ai_server.domain_agents.weather import WeatherDomainAgent
@@ -130,26 +131,31 @@ class _UnsupportedConfiguredDomainAgent:
     def __init__(self, domain: str) -> None:
         self._domain = domain
 
-    def known_utterances(self) -> dict[str, DomainTask]:
-        return {}
+    def known_utterances(self) -> tuple[str, ...]:
+        return ()
 
-    def query_capabilities(self) -> dict[str, QueryCapability]:
-        return {}
-
-    def query_capabilities_prompt(self) -> str:
-        return ""
-
-    def planning_prompt(self) -> str:
-        return ""
+    def routing_summary(self) -> str:
+        return f"Configured domain named {self._domain}; implementation is not connected."
 
     async def run_task(self, conversation, task: DomainTask, active_context: dict[str, Any]) -> dict[str, Any]:
         return {
             "status": "unsupported_domain",
             "text": f"Domain agent is not implemented: {self._domain}",
             "needs_clarification": False,
-            "clarification_question": None,
             "entities": [],
         }
+
+    async def resume_clarification(
+        self,
+        conversation,
+        task: DomainTask,
+        question: str,
+        answer: str,
+        active_context: dict[str, Any],
+        continuation: JsonValue,
+    ) -> dict[str, Any]:
+        del question, answer, continuation
+        return await self.run_task(conversation, task, active_context)
 
     async def close(self) -> None:
         pass
@@ -352,4 +358,4 @@ def _threshold_float(thresholds: dict[str, Any], domain: str, key: str, default:
     return float(value)
 
 
-__all__ = ["DomainAgent", "DomainTask", "QueryCapability", "create_domain_agents"]
+__all__ = ["DomainAgent", "DomainTask", "create_domain_agents"]

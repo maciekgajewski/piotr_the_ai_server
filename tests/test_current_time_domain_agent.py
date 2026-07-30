@@ -8,6 +8,10 @@ from conftest import agent_context
 from ai_server.domain_agents.current_time import CurrentTimeDomainAgent, TimezoneResolver
 
 
+def _route(request: str) -> dict:
+    return {"id": "t1", "domain": "time", "request": request, "depends_on": []}
+
+
 def test_current_time_domain_agent_uses_configured_timezone_and_location(tmp_path: Path) -> None:
     agent = CurrentTimeDomainAgent(
         timezone="Europe/Warsaw",
@@ -20,7 +24,7 @@ def test_current_time_domain_agent_uses_configured_timezone_and_location(tmp_pat
     result = asyncio.run(
         agent.run_task(
             conversation,
-            {"id": "t1", "domain": "time", "command": {"query": "która jest godzina?"}},
+            _route("która jest godzina?"),
             {},
         )
     )
@@ -44,7 +48,7 @@ def test_current_time_domain_agent_resolves_jacksonville_from_query(tmp_path: Pa
     result = asyncio.run(
         agent.run_task(
             conversation,
-            {"id": "t1", "domain": "time", "command": {"query": "która godzina jest teraz w jacksonville"}},
+            _route("która godzina jest teraz w jacksonville"),
             {},
         )
     )
@@ -54,7 +58,7 @@ def test_current_time_domain_agent_resolves_jacksonville_from_query(tmp_path: Pa
     assert result["text"] == "Teraz w jacksonville jest ósma trzydzieści."
 
 
-def test_current_time_domain_agent_uses_geo_location_from_command(tmp_path: Path) -> None:
+def test_current_time_domain_agent_uses_named_location_from_request(tmp_path: Path) -> None:
     agent = CurrentTimeDomainAgent(
         timezone="Europe/Warsaw",
         location="Wrocław",
@@ -66,7 +70,7 @@ def test_current_time_domain_agent_uses_geo_location_from_command(tmp_path: Path
     result = asyncio.run(
         agent.run_task(
             conversation,
-            {"id": "t1", "domain": "time", "command": {"query": "która godzina jest teraz w Jacksonville", "geo_location": "Jacksonville"}},
+            _route("która godzina jest teraz w Jacksonville"),
             {},
         )
     )
@@ -76,7 +80,7 @@ def test_current_time_domain_agent_uses_geo_location_from_command(tmp_path: Path
     assert result["location"] == "Jacksonville"
 
 
-def test_current_time_domain_agent_uses_configured_timezone_when_model_copies_area_as_geo_location(tmp_path: Path) -> None:
+def test_current_time_domain_agent_does_not_treat_conversation_area_as_location(tmp_path: Path) -> None:
     resolver = FailingTimezoneResolver()
     agent = CurrentTimeDomainAgent(
         timezone="Europe/Warsaw",
@@ -90,7 +94,7 @@ def test_current_time_domain_agent_uses_configured_timezone_when_model_copies_ar
     result = asyncio.run(
         agent.run_task(
             conversation,
-            {"id": "t1", "domain": "time", "command": {"query": "Która godzina.", "geo_location": "office"}},
+            _route("Która godzina."),
             {},
         )
     )
@@ -115,7 +119,7 @@ def test_current_time_domain_agent_formats_full_hour_as_words(tmp_path: Path) ->
     result = asyncio.run(
         agent.run_task(
             conversation,
-            {"id": "t1", "domain": "time", "command": {"query": "Która godzina?"}},
+            _route("Która godzina?"),
             {},
         )
     )
@@ -124,7 +128,7 @@ def test_current_time_domain_agent_formats_full_hour_as_words(tmp_path: Path) ->
     assert result["text"] == "ósma zero zero"
 
 
-def test_current_time_domain_agent_trusts_command_geo_location_when_query_is_shortened(tmp_path: Path) -> None:
+def test_current_time_domain_agent_resolves_location_from_request_text(tmp_path: Path) -> None:
     resolver = MappingTimezoneResolver({"Jacksonville": "America/New_York"})
     agent = CurrentTimeDomainAgent(
         timezone="Europe/Warsaw",
@@ -138,7 +142,7 @@ def test_current_time_domain_agent_trusts_command_geo_location_when_query_is_sho
     result = asyncio.run(
         agent.run_task(
             conversation,
-            {"id": "t1", "domain": "time", "command": {"query": "która godzina jest teraz", "geo_location": "Jacksonville"}},
+            _route("która godzina jest teraz w Jacksonville"),
             {},
         )
     )
@@ -161,7 +165,7 @@ def test_current_time_domain_agent_handles_date_components(tmp_path: Path) -> No
     result = asyncio.run(
         agent.run_task(
             conversation,
-            {"id": "t1", "domain": "time", "command": {"query": "jaki jest dziś dzień tygodnia?"}},
+            _route("jaki jest dziś dzień tygodnia?"),
             {},
         )
     )

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from ai_server.domain_agents.interfaces import DomainTask
 from ai_server.utils.text import ascii_fold, normalize_text
 
@@ -34,23 +32,13 @@ def weather_task_from_utterance(user_input: str) -> DomainTask | None:
 
 
 def _weather_task(query: str, command: dict[str, str]) -> DomainTask:
+    del command
     return {
         "id": "t1",
         "domain": "weather",
-        "command": {"query": query, **command},
+        "request": query,
         "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
     }
-
-
-def fast_lane_command_from_task_command(command: dict[str, Any]) -> dict[str, str] | None:
-    query = command.get("query")
-    if not isinstance(query, str):
-        return None
-    if isinstance(command.get("location"), str) and command["location"].strip():
-        return None
-    return fast_lane_command_for_query(query)
 
 
 def fast_lane_command_for_query(query: str) -> dict[str, str] | None:

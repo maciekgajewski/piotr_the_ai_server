@@ -6,10 +6,8 @@ cases:
     task:
       id: t1
       domain: weather
-      command:
-        tool: get_weather_now
-        query: Jaka jest temperatura?
-        focus: temperature
+      request: Jaka jest temperatura?
+      depends_on: []
     expected_result:
       status: ok
       final_reply_mode: verbatim
@@ -20,8 +18,8 @@ cases:
     task:
       id: t1
       domain: weather
-      command:
-        query: o której dzisiaj zachód słońca.
+      request: o której dzisiaj zachód słońca.
+      depends_on: []
     expected_result:
       status: ok
       final_reply_mode: verbatim

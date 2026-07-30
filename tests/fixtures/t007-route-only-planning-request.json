@@ -1,0 +1,43 @@
+{
+  "model": "qwen3:14b",
+  "utterance": "Włącz światło w biurze, a potem puść muzykę w kuchni.",
+  "conversation": {
+    "user": "Maciek",
+    "area": "office",
+    "server_location": "Wrocław",
+    "server_timezone": "Europe/Warsaw"
+  },
+  "active_context": {
+    "last_turns": [],
+    "salient_entities": [],
+    "active_domain": null,
+    "pending_tasks": [],
+    "pending_clarification": null
+  },
+  "excluded_home_assistant_inventory": [
+    {
+      "area_id": "office",
+      "name": "Office",
+      "aliases": ["Biuro"]
+    },
+    {
+      "area_id": "kitchen",
+      "name": "Kitchen",
+      "aliases": ["Kuchnia"]
+    }
+  ],
+  "acceptance": {
+    "max_fixed_prompt_utf8_bytes": 4096,
+    "max_input_tokens": 1536
+  },
+  "recorded_evidence": {
+    "measured_at": "2026-07-30",
+    "model": "qwen3:14b",
+    "fixed_prompt_characters": 2320,
+    "fixed_prompt_utf8_bytes": 2320,
+    "dynamic_payload_characters": 306,
+    "dynamic_payload_utf8_bytes": 314,
+    "prompt_tokens": 583,
+    "measurement_completion_tokens": 1
+  }
+}

@@ -1,10 +1,10 @@
-# ESP32-S3-BOX-3 Tools
+# Piotr Tools
 
 ## Document status
 
 - **Authority:** Component reference and operational guide
 - **Audience:** Operators and agents using repository tools
-- **Read when:** Running Box3, audio, wake-word, TTS, STT, deployment, or model utilities
+- **Read when:** Running Box3, audio, wake-word, TTS, STT, deployment, prompt-measurement, or model utilities
 
 Small Piotr-side utilities for the ESPHome-flashed Box satellite.
 
@@ -58,6 +58,22 @@ tools/ollama-cloud-setup-test.sh --services-config config/services.env --model M
 ```
 
 See [../docs/ollama-cloud-models.md](../docs/ollama-cloud-models.md).
+
+## Measure the T-007 Route-Only Planning Request
+
+Builds the fixed prompt from all six configured DSA routing summaries and
+measures the checked-in representative request with the local `qwen3:14b`
+tokenizer. The command fails if the 1,536-input-token acceptance ceiling is
+exceeded.
+
+```bash
+tools/t007-measure-route-prompt.sh
+```
+
+The fixture is
+`tests/fixtures/t007-route-only-planning-request.json`. The measurement uses
+the planner's real input and context settings while limiting generation to one
+token, so it measures prompt evaluation without waiting for a full route.
 
 ## Deploy Ryszard Home Assistant Integration
 

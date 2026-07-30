@@ -6,20 +6,8 @@ cases:
     task:
       id: t1
       domain: home_assistant
-      command:
-        selection:
-          include:
-            - domain: climate
-              scope: single
-              area: Office
-          exclude: []
-        operation:
-          intent: turn_off
-          description: wyłącz klimatyzację w biurze
-          parameters: {}
+      request: wyłącz klimatyzację w biurze
       depends_on: []
-      status: ready
-      clarification_question: null
     expected_calls:
       - tool: modify_device
         arguments:
@@ -37,19 +25,8 @@ cases:
     task:
       id: t1
       domain: home_assistant
-      command:
-        selection:
-          include:
-            - domain: climate
-              scope: all
-          exclude: []
-        operation:
-          intent: turn_off
-          description: wyłącz wszystkie klimatyzacje
-          parameters: {}
+      request: wyłącz wszystkie klimatyzacje
       depends_on: []
-      status: ready
-      clarification_question: null
     expected_calls:
       - tool: modify_devices
         arguments:
@@ -76,20 +53,8 @@ cases:
     task:
       id: t1
       domain: home_assistant
-      command:
-        selection:
-          include:
-            - domain: climate
-              scope: all
-          exclude: []
-        operation:
-          intent: query_state
-          description: ile klimatyzatorów jest w domu?
-          parameters:
-            query_type: count
+      request: ile klimatyzatorów jest w domu?
       depends_on: []
-      status: ready
-      clarification_question: null
     confirmation:
       contains_all: ["3", klimatyz]
 
@@ -97,20 +62,8 @@ cases:
     task:
       id: t1
       domain: home_assistant
-      command:
-        selection:
-          include:
-            - domain: climate
-              scope: single
-              area: office
-          exclude: []
-        operation:
-          intent: turn_off
-          description: wyłącz klimatyzację w pracowni
-          parameters: {}
+      request: wyłącz klimatyzację w pracowni
       depends_on: []
-      status: ready
-      clarification_question: null
     expected_calls:
       - tool: modify_device
         arguments:
@@ -128,21 +81,8 @@ cases:
     task:
       id: t1
       domain: home_assistant
-      command:
-        selection:
-          include:
-            - domain: climate
-              scope: single
-              area: salon
-          exclude: []
-        operation:
-          intent: set_hvac_mode
-          description: włącz klimatyzator w salonie w trybie wentylacji
-          parameters:
-            hvac_mode: fan_only
+      request: włącz klimatyzator w salonie w trybie wentylacji
       depends_on: []
-      status: ready
-      clarification_question: null
     expected_calls:
       - tool: modify_device
         arguments:
@@ -160,21 +100,8 @@ cases:
     task:
       id: t1
       domain: home_assistant
-      command:
-        selection:
-          include:
-            - domain: climate
-              scope: single
-              area: Office
-          exclude: []
-        operation:
-          intent: set_temperature
-          description: ustaw klimę na 26 stopni
-          parameters:
-            temperature: 26
+      request: ustaw klimę na 26 stopni
       depends_on: []
-      status: ready
-      clarification_question: null
     expected_calls:
       - tool: modify_device
         arguments:
@@ -196,21 +123,8 @@ cases:
     task:
       id: t1
       domain: home_assistant
-      command:
-        selection:
-          include:
-            - domain: climate
-              scope: single
-              area: salon
-          exclude: []
-        operation:
-          intent: set_temperature
-          description: ustaw ją na 22 stopnie
-          parameters:
-            temperature: 22
+      request: ustaw ją na 22 stopnie
       depends_on: []
-      status: ready
-      clarification_question: null
     expected_calls:
       - tool: modify_device
         arguments:

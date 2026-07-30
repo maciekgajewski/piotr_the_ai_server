@@ -6,9 +6,8 @@ cases:
     task:
       id: t1
       domain: wikipedia
-      command:
-        topic: Albert Einstein
-        fact: birth year
+      request: W którym roku urodził się Albert Einstein?
+      depends_on: []
     expected_result:
       status: ok
       language: pl
@@ -20,9 +19,8 @@ cases:
     task:
       id: t1
       domain: wikipedia
-      command:
-        intent: where_is
-        topic: Jacksonville
+      request: Gdzie jest Jacksonville?
+      depends_on: []
     expected_result:
       status: ok
       language: en
@@ -34,8 +32,8 @@ cases:
     task:
       id: t1
       domain: wikipedia
-      command:
-        query: jakie są współrzędne Jacksonville
+      request: jakie są współrzędne Jacksonville
+      depends_on: []
     expected_result:
       status: ok
       language: en
@@ -47,8 +45,8 @@ cases:
     task:
       id: t1
       domain: wikipedia
-      command:
-        query: kim był John Henry?
+      request: kim był John Henry?
+      depends_on: []
     expected_result:
       status: ok
       language: en

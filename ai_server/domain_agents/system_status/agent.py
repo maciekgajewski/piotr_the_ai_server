@@ -5,20 +5,19 @@ import logging
 from typing import Any, Callable
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
-from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
+from ai_server.domain_agents.interfaces import DomainTask
 from ai_server.domain_agents.system_status.collector import SystemStatusCollector
 from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.ollama_connection import OLLAMA_BASE_URL
+from ai_server.orchestrator.messages import JsonValue
 from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
+from ai_server.utils.text import normalize_text
 
 
-PLANNING_PROMPT = """
-For system_status tasks:
-- Use system_status for explicit system-health questions and casual assistant check-ins such as "jak się masz?", "co u ciebie?", or "jak tam?".
-
-Command shape:
-{"intent": "quick_check|summary|full_report", "query": "original system status or casual check-in phrase"}
-"""
+ROUTING_SUMMARY = (
+    "AI server health, warnings, current system status, detailed health reports, "
+    "and casual assistant-health check-ins."
+)
 
 SYSTEM_STATUS_SYSTEM_PROMPT = """
 You are a system-status domain-specific agent for a Polish voice assistant.
@@ -41,26 +40,15 @@ Return only compact valid JSON with this shape:
 """
 
 
-def _task(intent: str, query: str) -> DomainTask:
-    return {
-        "id": "t1",
-        "domain": "system_status",
-        "command": {"intent": intent, "query": query},
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    }
-
-
-KNOWN_UTTERANCES: dict[str, DomainTask] = {
-    "Jak się masz?": _task("quick_check", "Jak się masz?"),
-    "Co u ciebie?": _task("quick_check", "Co u ciebie?"),
-    "Jak tam?": _task("quick_check", "Jak tam?"),
-    "Status systemu": _task("summary", "Status systemu"),
-    "Czy wszystko działa?": _task("summary", "Czy wszystko działa?"),
-    "Daj pełny raport": _task("full_report", "Daj pełny raport"),
-    "Pełny raport systemu": _task("full_report", "Pełny raport systemu"),
-}
+KNOWN_UTTERANCES = (
+    "Jak się masz?",
+    "Co u ciebie?",
+    "Jak tam?",
+    "Status systemu",
+    "Czy wszystko działa?",
+    "Daj pełny raport",
+    "Pełny raport systemu",
+)
 
 
 class SystemStatusDomainAgent:
@@ -99,24 +87,11 @@ class SystemStatusDomainAgent:
             self._started = True
             self._logger.info("system status collector ready")
 
-    def known_utterances(self) -> dict[str, DomainTask]:
+    def known_utterances(self) -> tuple[str, ...]:
         return KNOWN_UTTERANCES
 
-    def query_capabilities(self) -> dict[str, QueryCapability]:
-        return {
-            "system_health": QueryCapability(
-                name="AI server health snapshot",
-                description="Read the current collected system health, warnings, issues, and configured health baselines.",
-                intents=("quick_check", "summary", "full_report"),
-                command_template={"intent": "quick_check|summary|full_report", "query": "original system status question"},
-            )
-        }
-
-    def query_capabilities_prompt(self) -> str:
-        return ""
-
-    def planning_prompt(self) -> str:
-        return PLANNING_PROMPT
+    def routing_summary(self) -> str:
+        return ROUTING_SUMMARY
 
     async def run_task(
         self,
@@ -143,9 +118,7 @@ class SystemStatusDomainAgent:
             )
             snapshot = await self._collector.collect_once()
 
-        command = task.get("command", {})
-        command = command if isinstance(command, dict) else {}
-        intent = command.get("intent") if isinstance(command.get("intent"), str) else "summary"
+        intent = _intent_from_request(task["request"])
         issue_count = len(snapshot.get("issues", [])) if isinstance(snapshot.get("issues"), list) else 0
         task_id = task.get("id", "unknown")
         self._logger.info(
@@ -256,6 +229,19 @@ class SystemStatusDomainAgent:
         )
         return result
 
+    async def resume_clarification(
+        self,
+        conversation: AgentExecutionContext,
+        task: DomainTask,
+        question: str,
+        answer: str,
+        active_context: dict[str, Any],
+        continuation: JsonValue,
+    ) -> dict[str, Any]:
+        del question, continuation
+        resumed = {**task, "request": f"{task['request']}\nOdpowiedź użytkownika: {answer}"}
+        return await self.run_task(conversation, resumed, active_context)
+
     async def close(self) -> None:
         self._logger.info("closing system status DSA")
         await self._collector.close()
@@ -272,6 +258,15 @@ class SystemStatusDomainAgent:
         if selected_model == self._fallback_model:
             return self._model
         return self._fallback_model
+
+
+def _intent_from_request(request: str) -> str:
+    normalized = normalize_text(request).strip(" ?!.")
+    if "pełny raport" in normalized or "pelny raport" in normalized:
+        return "full_report"
+    if normalized in {"jak się masz", "co u ciebie", "jak tam"}:
+        return "quick_check"
+    return "summary"
 
 
 def _parse_domain_reply(content: str) -> dict[str, Any]:
@@ -315,17 +310,19 @@ def _fallback_result(snapshot: dict[str, Any]) -> dict[str, Any]:
     else:
         text = "Widzę ostrzeżenia w statusie systemu, ale nie mogę teraz przygotować pełnego raportu."
     issues = snapshot.get("issues", [])
-    return {
+    result = {
         "status": "ok",
         "text": text,
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [],
         "final_reply_mode": "verbatim",
         "health_status": status or "unknown",
         "issue_count": len(issues) if isinstance(issues, list) else 0,
-        "snapshot_collected_at": snapshot.get("collected_at"),
     }
+    collected_at = snapshot.get("collected_at")
+    if collected_at is not None:
+        result["snapshot_collected_at"] = collected_at
+    return result
 
 
 def _anonymous_user_refusal() -> dict[str, Any]:
@@ -333,10 +330,8 @@ def _anonymous_user_refusal() -> dict[str, Any]:
         "status": "failed",
         "text": "Nie mogę sprawdzić statusu systemu bez rozpoznanego użytkownika.",
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [],
         "final_reply_mode": "verbatim",
         "health_status": "unknown",
         "issue_count": 0,
-        "snapshot_collected_at": None,
     }

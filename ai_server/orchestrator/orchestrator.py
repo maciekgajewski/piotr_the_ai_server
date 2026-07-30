@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
-import re
+import math
 import time
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping
 
 from aiohttp import ClientSession
 
@@ -13,10 +13,13 @@ from ai_server.agent_loop.agent_callable_set import to_json_value
 from ai_server.config import ServerConfig
 from ai_server.conversations.agent_runtime import AgentChannel, ConversationAgent
 from ai_server.conversations.contexts import ConversationContext, ConversationMedium
-from ai_server.domain_agents import DomainAgent, DomainTask, QueryCapability
-from ai_server.home_assistant.interfaces import HomeAssistantInventory
+from ai_server.domain_agents import DomainAgent, DomainTask
 from ai_server.ollama_connection import OLLAMA_BASE_URL, OllamaConnection, OllamaError
-from ai_server.orchestrator.known_utterances import KnownUtteranceTasks, collect_known_utterance_tasks, known_utterance_task
+from ai_server.orchestrator.known_utterances import (
+    KnownUtteranceDomains,
+    collect_known_utterance_domains,
+    known_utterance_task,
+)
 from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 from ai_server.utils.processing import ProcessingUpdateCallback, ProcessingUpdateThrottle, await_with_processing_updates
 from ai_server.utils.text import normalize_text
@@ -36,35 +39,31 @@ FINAL_REPLY_OPTIONS = {
 }
 MAX_LAST_TURNS = 4
 PLANNING_CONFIDENCE_THRESHOLD = 0.7
-MERGEABLE_MEDIA_PLAYER_INTENTS = {"play_media", "start_last", "transfer_playback"}
+MAX_ROUTING_SUMMARY_BYTES = 512
+MAX_FIXED_PLANNING_PROMPT_BYTES = 4096
 
 PLANNING_SYSTEM_PROMPT_TEMPLATE = """
-You are an orchestration planner for a Polish voice assistant.
+You are a compact route-only planner for a Polish voice assistant.
 Return only compact valid JSON. No markdown. No explanations.
 
-Split the latest user utterance into domain tasks. Every utterance goes through you, even follow-ups.
+Route and split the latest user utterance. Tasks carry user request text, never commands.
 Use active_context as a hint, not a jail: route to a new domain when the utterance asks for one.
-Context naming:
-- conversation.area is the user's local room/area context, such as office or kitchen.
-- conversation.server_location is the server's geographic location, such as Wrocław.
-Never treat area as a geographic location.
+conversation.area is a local room; server_location is geographic. Never confuse them.
 
 Available task domains: {available_domains}
 Only create tasks for the available task domains. If no available domain fits the user utterance, return kind="chat" with tasks=[].
 
 Return this schema:
-{"kind":"single_task|multi_task|followup|clarification_answer|chat","confidence":0.0,"tasks":[{"id":"t1","domain":"available domain","command":{},"depends_on":[],"status":"ready|blocked","clarification_question":null}],"context_updates":{"salient_entities":[],"active_domain":null},"needs_clarification":false,"clarification_question":null}
-context_updates is top-level. tasks contains only task objects, never strings. confidence is 0.0..1.0.
-In command objects, omit optional fields when the user did not provide a concrete value; never output placeholder strings like "optional".
+{"kind":"single_task|multi_task|followup|clarification_answer|chat","confidence":0.0,"tasks":[{"id":"t1","domain":"available domain","request":"user task text","depends_on":[]}],"context_updates":{"salient_entities":[],"active_domain":null},"needs_clarification":false,"clarification_question":null}
 
-Read-only state and configuration queries:
-- Domains expose read-only query capabilities through their DomainAgent interface.
-- Use them for questions asking what is available, configured, active, playing, enabled, set, counted, listed, or currently true.
-- Do not imply modification; concrete query command shape and semantics are owned by the selected domain.
+Preserve the user's wording for one task. For a composite utterance, make faithful
+self-contained clause splits without inventing parameters. Keep multiple clauses for
+one domain in one task unless a real dependency requires separation. Dependencies may
+reference only earlier task ids. Ask clarification only when the domain cannot be
+selected or split; domain-specific missing details belong to the selected domain.
 
-{query_capabilities}
-
-{domain_prompts}
+Domain routing summaries:
+{routing_summaries}
 """
 
 FINAL_REPLY_SYSTEM_PROMPT = """
@@ -76,40 +75,6 @@ When a task result has final_reply_mode="verbatim", preserve that result's text 
 If a task is unsupported, say that capability is not connected yet.
 If clarification is needed, ask exactly the needed question, optionally after summarizing completed independent tasks.
 """
-
-CLARIFICATION_SYSTEM_PROMPT = """
-You are resolving a pending domain-agent clarification for a Polish voice assistant.
-Return only compact valid JSON. No markdown. No explanations.
-
-You receive:
-- the user's latest answer
-- the pending clarification question
-- the original task that asked for clarification
-- current conversation context
-
-Return schema:
-{
-  "confidence": 0.0,
-  "task": {
-    "id": "same id as original task",
-    "domain": "same domain as original task",
-    "command": {},
-    "depends_on": [],
-    "status": "ready|blocked",
-    "clarification_question": null
-  }
-}
-
-Use the latest answer to update the original task command for the same domain.
-If the answer still does not resolve the question, keep the same domain and return status="blocked" with a Polish clarification_question.
-"""
-
-
-class HomeAssistantInventoryProvider(Protocol):
-    @property
-    def inventory(self) -> HomeAssistantInventory | None:
-        raise NotImplementedError
-
 
 class OrchestratorAgent(ConversationAgent):
     def __init__(
@@ -123,18 +88,16 @@ class OrchestratorAgent(ConversationAgent):
         owns_ollama_connection: bool = True,
         server_config: ServerConfig = ServerConfig(),
         processing_update_interval_seconds: float = 5.0,
-        home_assistant_inventory_provider: HomeAssistantInventoryProvider | None = None,
     ) -> None:
         self._orchestrator_model = orchestrator_model
         self._clarification_model = clarification_model
         self._domain_agents = dict(domain_agents or {})
-        self._planning_system_prompt = _build_planning_system_prompt(self._domain_agents)
-        self._known_utterance_tasks = collect_known_utterance_tasks(self._domain_agents)
+        self._planning_system_prompt, self._routing_summary_bytes = _build_planning_system_prompt(self._domain_agents)
+        self._known_utterance_domains = collect_known_utterance_domains(self._domain_agents)
         self._ollama = ollama_connection or OllamaConnection(base_url=base_url, session=session)
         self._owns_ollama = owns_ollama_connection
         self._server_config = server_config
         self._processing_update_interval_seconds = processing_update_interval_seconds
-        self._home_assistant_inventory_provider = home_assistant_inventory_provider
         self._logger = logging.getLogger(f"{__name__}.OrchestratorAgent[{orchestrator_model}]")
 
     async def preload(self) -> None:
@@ -254,11 +217,9 @@ class OrchestratorAgent(ConversationAgent):
             _append_last_turn(state, user_input=user_input, assistant_reply=reply)
             return reply
 
-        area_context = _home_assistant_area_context(self._home_assistant_inventory_provider)
         plan = _short_path_plan(
             user_input,
-            known_utterance_tasks=self._known_utterance_tasks,
-            area_context=area_context,
+            known_utterance_domains=self._known_utterance_domains,
             active_context=active_context,
         )
         if plan is None:
@@ -266,7 +227,6 @@ class OrchestratorAgent(ConversationAgent):
                 user_input=user_input,
                 active_context=active_context,
                 conversation=conversation,
-                area_context=area_context,
             )
         else:
             self._logger.info(
@@ -282,17 +242,12 @@ class OrchestratorAgent(ConversationAgent):
             plan["confidence"],
             _tasks_summary(plan["tasks"]),
         )
-        _resolve_context_references(plan, active_context)
-        _canonicalize_plan_areas(plan, area_context)
-        _repair_media_player_replace_outputs(plan, user_input)
-        _merge_split_media_player_area_tasks(plan)
-
         task_results = await self._dispatch_ready_tasks(conversation, plan, active_context)
         self._log_clarification_causing_utterance(conversation, user_input, plan, task_results)
         _apply_context_updates(state, plan)
         _apply_task_context_updates(state, plan, task_results)
         _store_pending_tasks(state, plan)
-        _store_pending_clarification(state, plan, task_results)
+        _store_pending_clarification(state, plan, task_results, request=user_input)
 
         reply = await self._final_reply(
             conversation=conversation,
@@ -318,32 +273,63 @@ class OrchestratorAgent(ConversationAgent):
             state["pending_clarification"] = None
             raise ValueError("pending clarification must be an object")
 
-        clarification = await self._clarification_task(
-            user_input=user_input,
-            pending_clarification=pending_clarification,
-            active_context=active_context,
-            conversation=conversation,
-        )
-        task = clarification["task"]
-        self._logger.info(
-            "clarification resolved conversation_id=%s confidence=%s task=%s",
-            conversation.conversation_id,
-            clarification["confidence"],
-            _task_summary(task),
-        )
-        plan = {
-            "kind": "clarification_answer",
-            "confidence": clarification["confidence"],
-            "tasks": [task],
-            "context_updates": {},
-            "needs_clarification": False,
-            "clarification_question": None,
-        }
-        task_results = await self._dispatch_ready_tasks(conversation, plan, active_context)
+        owner = pending_clarification.get("owner")
+        if owner == "router":
+            original_request = pending_clarification.get("request")
+            question = pending_clarification.get("question")
+            if not isinstance(original_request, str) or not isinstance(question, str):
+                raise ValueError("router clarification state is invalid")
+            plan = await self._plan_message(
+                user_input=(
+                    f"{original_request}\n"
+                    f"Pytanie routera: {question}\n"
+                    f"Odpowiedź użytkownika: {user_input}"
+                ),
+                active_context=active_context,
+                conversation=conversation,
+            )
+            plan["kind"] = "clarification_answer"
+            task_results = await self._dispatch_ready_tasks(conversation, plan, active_context)
+        elif owner == "dsa":
+            task = pending_clarification.get("task")
+            question = pending_clarification.get("question")
+            domain = task.get("domain") if isinstance(task, dict) else None
+            domain_agent = self._domain_agents.get(domain) if isinstance(domain, str) else None
+            if domain_agent is None or not isinstance(task, dict) or not isinstance(question, str):
+                raise ValueError("DSA clarification state is invalid")
+            self._logger.info(
+                "resuming DSA clarification conversation_id=%s domain=%s task_id=%s",
+                conversation.conversation_id,
+                domain,
+                task.get("id"),
+            )
+            result = await domain_agent.resume_clarification(
+                conversation,
+                task,
+                question,
+                user_input,
+                active_context,
+                pending_clarification.get("continuation"),
+            )
+            if not isinstance(result, dict):
+                raise ValueError(f"domain agent {domain} returned non-object clarification result")
+            task_result = {"task_id": task["id"], "domain": domain, **_domain_result_json(result)}
+            plan = {
+                "kind": "clarification_answer",
+                "confidence": 1.0,
+                "tasks": [task],
+                "context_updates": {"salient_entities": [], "active_domain": domain},
+                "needs_clarification": False,
+                "clarification_question": None,
+            }
+            task_results = [task_result]
+        else:
+            raise ValueError("pending clarification owner is invalid")
         self._log_clarification_causing_utterance(conversation, user_input, plan, task_results)
+        _apply_context_updates(state, plan)
         _apply_task_context_updates(state, plan, task_results)
         _store_pending_tasks(state, plan)
-        _store_pending_clarification(state, plan, task_results)
+        _store_pending_clarification(state, plan, task_results, request=user_input)
 
         reply = await self._final_reply(
             conversation=conversation,
@@ -361,21 +347,16 @@ class OrchestratorAgent(ConversationAgent):
         user_input: str,
         active_context: dict[str, Any],
         conversation: AgentExecutionContext,
-        area_context: dict[str, Any] | None,
     ) -> dict[str, Any]:
         conversation_payload = {
-            "conversation_id": conversation.conversation_id,
             "user": conversation.user,
             "area": conversation.area,
-            "medium": conversation.medium.value,
             "server_location": self._server_config.location,
             "server_timezone": self._server_config.timezone,
         }
-        if area_context is not None:
-            conversation_payload["home_assistant_areas"] = area_context["areas"]
         prompt = {
             "utterance": user_input,
-            "conversation": conversation_payload,
+            "conversation": {key: value for key, value in conversation_payload.items() if value is not None},
             "active_context": active_context,
         }
         self._logger.info(
@@ -414,6 +395,18 @@ class OrchestratorAgent(ConversationAgent):
         prompt: dict[str, Any],
         processing_update_callback: ProcessingUpdateCallback | None,
     ) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        metrics_logged = False
+        dynamic_payload = json.dumps(prompt, ensure_ascii=False, separators=(",", ":"))
+        fixed_prompt_bytes = len(self._planning_system_prompt.encode("utf-8"))
+        dynamic_payload_bytes = len(dynamic_payload.encode("utf-8"))
+        self._logger.debug(
+            "planning prompt sizes model=%s fixed_prompt_bytes=%s dynamic_payload_bytes=%s routing_summary_bytes=%s",
+            model,
+            fixed_prompt_bytes,
+            dynamic_payload_bytes,
+            self._routing_summary_bytes,
+        )
         try:
             self._logger.info("planning request model=%s utterance=%r", model, prompt.get("utterance"))
             response = await await_with_processing_updates(
@@ -428,7 +421,7 @@ class OrchestratorAgent(ConversationAgent):
                         "options": PLANNING_OPTIONS,
                         "messages": [
                             {"role": "system", "content": self._planning_system_prompt},
-                            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                            {"role": "user", "content": dynamic_payload},
                         ],
                     }
                 ),
@@ -436,10 +429,28 @@ class OrchestratorAgent(ConversationAgent):
                 logger=self._logger,
                 interval_seconds=self._processing_update_interval_seconds,
             )
-            plan = _parse_plan(_assistant_content(response))
             prompt_tokens, completion_tokens, total_tokens = _response_token_counts(response)
+            duration_ms = _elapsed_ms(started_at)
+            try:
+                plan = _parse_plan(
+                    _assistant_content(response),
+                    frozenset(self._domain_agents),
+                )
+            except Exception:
+                self._logger.info(
+                    "planning output model=%s outcome=invalid prompt_tokens=%s completion_tokens=%s "
+                    "total_tokens=%s duration_ms=%s",
+                    model,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    duration_ms,
+                )
+                metrics_logged = True
+                raise
             self._logger.info(
-                "planning output model=%s kind=%s confidence=%s tasks=%s needs_clarification=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+                "planning output model=%s outcome=ok kind=%s confidence=%s tasks=%s needs_clarification=%s "
+                "prompt_tokens=%s completion_tokens=%s total_tokens=%s duration_ms=%s",
                 model,
                 plan["kind"],
                 plan["confidence"],
@@ -448,109 +459,22 @@ class OrchestratorAgent(ConversationAgent):
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
+                duration_ms,
             )
+            metrics_logged = True
             return plan
         except Exception:
+            if not metrics_logged:
+                self._logger.info(
+                    "planning output model=%s outcome=request_failed prompt_tokens=None "
+                    "completion_tokens=None total_tokens=None duration_ms=%s",
+                    model,
+                    _elapsed_ms(started_at),
+                )
             if model == self._orchestrator_model and self._clarification_model is not None and self._clarification_model != model:
                 self._logger.warning("planning with orchestrator model failed, retrying clarification_model", exc_info=True)
                 return await self._plan_message_with_model(self._clarification_model, prompt, processing_update_callback)
             raise
-
-    async def _clarification_task(
-        self,
-        *,
-        user_input: str,
-        pending_clarification: dict[str, Any],
-        active_context: dict[str, Any],
-        conversation: AgentExecutionContext,
-    ) -> dict[str, Any]:
-        model = self._clarification_model or self._orchestrator_model
-        self._logger.info(
-            "clarification request model=%s conversation_id=%s answer=%r pending=%s",
-            model,
-            conversation.conversation_id,
-            user_input,
-            _compact_json(pending_clarification),
-        )
-        prompt = {
-            "utterance": user_input,
-            "conversation": {
-                "conversation_id": conversation.conversation_id,
-                "user": conversation.user,
-                "area": conversation.area,
-                "medium": conversation.medium.value,
-                "reply_style": reply_style_instruction(conversation.medium),
-                "user_settings": conversation.user_settings,
-                "server_location": self._server_config.location,
-                "server_timezone": self._server_config.timezone,
-            },
-            "active_context": active_context,
-            "pending_clarification": pending_clarification,
-        }
-
-        try:
-            return await self._clarification_task_with_model(
-                model=model,
-                prompt=prompt,
-                pending_clarification=pending_clarification,
-                medium=conversation.medium,
-                processing_update_callback=conversation.processing_update_callback,
-            )
-        except Exception:
-            fallback_model = self._orchestrator_model
-            if model != fallback_model:
-                self._logger.warning(
-                    "clarification with clarification_model=%s failed, retrying orchestrator_model=%s",
-                    model,
-                    fallback_model,
-                    exc_info=True,
-                )
-                return await self._clarification_task_with_model(
-                    model=fallback_model,
-                    prompt=prompt,
-                    pending_clarification=pending_clarification,
-                    medium=conversation.medium,
-                    processing_update_callback=conversation.processing_update_callback,
-                )
-            raise
-
-    async def _clarification_task_with_model(
-        self,
-        *,
-        model: str,
-        prompt: dict[str, Any],
-        pending_clarification: dict[str, Any],
-        medium: ConversationMedium,
-        processing_update_callback: ProcessingUpdateCallback | None,
-    ) -> dict[str, Any]:
-        response = await await_with_processing_updates(
-            self._ollama.chat(
-                {
-                    "model": model,
-                    "raw": False,
-                    "think": False,
-                    "format": "json",
-                    "stream": False,
-                    "keep_alive": "1h",
-                    "options": PLANNING_OPTIONS,
-                    "messages": [
-                        {"role": "system", "content": system_prompt_with_reply_style(CLARIFICATION_SYSTEM_PROMPT, medium)},
-                        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-                    ],
-                }
-            ),
-            callback=processing_update_callback,
-            logger=self._logger,
-            interval_seconds=self._processing_update_interval_seconds,
-        )
-        clarification = _parse_clarification_task(_assistant_content(response), pending_clarification)
-        self._logger.info(
-            "clarification output model=%s confidence=%s task=%s",
-            model,
-            clarification["confidence"],
-            _task_summary(clarification["task"]),
-        )
-        return clarification
 
     async def _dispatch_ready_tasks(
         self,
@@ -561,12 +485,6 @@ class OrchestratorAgent(ConversationAgent):
         completed_task_ids: set[str] = set()
         results = []
         for task in plan["tasks"]:
-            if task.get("status") == "blocked":
-                result = _blocked_task_result(task)
-                self._logger.info("task blocked task=%s result=%s", _task_summary(task), _result_summary(result))
-                results.append(result)
-                continue
-
             missing_dependencies = [dependency for dependency in task["depends_on"] if dependency not in completed_task_ids]
             if missing_dependencies:
                 result = {
@@ -593,11 +511,20 @@ class OrchestratorAgent(ConversationAgent):
                 result = await domain_agent.run_task(conversation, task, active_context)
                 if not isinstance(result, dict):
                     raise ValueError(f"domain agent {task['domain']} returned non-object result")
-                result = {"task_id": task["id"], "domain": task["domain"], **to_json_value(result)}
+                result = {
+                    "task_id": task["id"],
+                    "domain": task["domain"],
+                    **_domain_result_json(result),
+                }
 
             self._logger.info("task result task_id=%s result=%s", task["id"], _result_summary(result))
             results.append(result)
-            if result.get("status") not in {"blocked", "needs_clarification", "unsupported_domain"}:
+            if result.get("status") not in {
+                "blocked",
+                "failed",
+                "needs_clarification",
+                "unsupported_domain",
+            }:
                 completed_task_ids.add(task["id"])
         return results
 
@@ -618,14 +545,9 @@ class OrchestratorAgent(ConversationAgent):
             if result.get("status") != "needs_clarification":
                 continue
             task = tasks_by_id.get(result.get("task_id"))
-            source = (
-                "orchestrator"
-                if task is not None and task.get("status") == "blocked"
-                else "dsa"
-            )
             self._logger.warning(
                 "utterance caused clarification source=%s conversation_id=%s utterance=%r task=%s result=%s",
-                source,
+                "dsa",
                 conversation.conversation_id,
                 user_input,
                 _task_summary(task) if task is not None else None,
@@ -741,16 +663,12 @@ def _elapsed_ms(started_at: float) -> int:
 def _short_path_plan(
     user_input: str,
     *,
-    known_utterance_tasks: KnownUtteranceTasks,
-    area_context: dict[str, Any] | None = None,
+    known_utterance_domains: KnownUtteranceDomains,
     active_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    if _should_plan_contextual_utterance(user_input, active_context):
-        return None
-    task = known_utterance_task(user_input, known_utterance_tasks)
+    del active_context
+    task = known_utterance_task(user_input, known_utterance_domains)
     if task is None:
-        return None
-    if area_context is not None and _task_has_explicit_area(task):
         return None
     return {
         "kind": "single_task",
@@ -760,208 +678,6 @@ def _short_path_plan(
         "needs_clarification": False,
         "clarification_question": None,
     }
-
-
-def _should_plan_contextual_utterance(user_input: str, active_context: dict[str, Any] | None) -> bool:
-    if active_context is None or not _contains_reference_pronoun(user_input):
-        return False
-    salient_entities = active_context.get("salient_entities")
-    return isinstance(salient_entities, list) and any(isinstance(entity, str) and entity for entity in salient_entities)
-
-
-def _task_has_explicit_area(task: dict[str, Any]) -> bool:
-    command = task.get("command")
-    if not isinstance(command, dict):
-        return False
-    if task.get("domain") == "media_player":
-        areas = command.get("areas")
-        return isinstance(areas, list) and any(isinstance(area, str) and area for area in areas)
-    if task.get("domain") != "home_assistant":
-        return False
-    selection = command.get("selection")
-    if not isinstance(selection, dict):
-        return False
-    for selectors_key in ("include", "exclude"):
-        selectors = selection.get(selectors_key, [])
-        if not isinstance(selectors, list):
-            continue
-        for selector in selectors:
-            if isinstance(selector, dict) and isinstance(selector.get("area"), str) and selector["area"]:
-                return True
-    return False
-
-
-def _home_assistant_area_context(provider: HomeAssistantInventoryProvider | None) -> dict[str, Any] | None:
-    if provider is None:
-        return None
-    inventory = provider.inventory
-    if inventory is None:
-        return None
-
-    areas = [
-        {
-            "area_id": area.area_id,
-            "name": area.name,
-            "aliases": list(area.aliases),
-        }
-        for area in sorted(inventory.areas_by_id.values(), key=lambda item: item.name.casefold())
-    ]
-    lookup = {}
-    for area in inventory.areas_by_id.values():
-        for value in (area.area_id, area.name, *area.aliases):
-            normalized = normalize_text(value)
-            if normalized:
-                lookup[normalized] = area.area_id
-    return {"areas": areas, "lookup": lookup, "ids": set(inventory.areas_by_id)}
-
-
-def _canonicalize_plan_areas(plan: dict[str, Any], area_context: dict[str, Any] | None) -> None:
-    if area_context is None:
-        return
-
-    for task in plan["tasks"]:
-        if task["domain"] == "home_assistant":
-            _canonicalize_home_assistant_task_areas(task, area_context)
-        elif task["domain"] == "media_player":
-            _canonicalize_media_player_task_areas(task, area_context)
-
-
-def _canonicalize_home_assistant_task_areas(task: dict[str, Any], area_context: dict[str, Any]) -> None:
-    command = task.get("command")
-    if not isinstance(command, dict):
-        return
-    selection = command.get("selection")
-    if not isinstance(selection, dict):
-        return
-
-    for selectors_key in ("include", "exclude"):
-        selectors = selection.get(selectors_key, [])
-        if not isinstance(selectors, list):
-            continue
-        for selector in selectors:
-            if not isinstance(selector, dict):
-                continue
-            area = selector.get("area")
-            if not isinstance(area, str) or not area:
-                continue
-            canonical_area = _canonical_area_id(area, area_context)
-            if canonical_area is None:
-                _block_unknown_area_task(task, area)
-                return
-            selector["area"] = canonical_area
-
-
-def _canonicalize_media_player_task_areas(task: dict[str, Any], area_context: dict[str, Any]) -> None:
-    command = task.get("command")
-    if not isinstance(command, dict):
-        return
-    areas = command.get("areas")
-    if areas is None:
-        return
-    if not isinstance(areas, list):
-        return
-
-    canonical_areas = []
-    for area in areas:
-        if not isinstance(area, str) or not area:
-            continue
-        canonical_area = _canonical_area_id(area, area_context)
-        if canonical_area is None:
-            _block_unknown_area_task(task, area)
-            return
-        if canonical_area not in canonical_areas:
-            canonical_areas.append(canonical_area)
-    if canonical_areas:
-        command["areas"] = canonical_areas
-    else:
-        command.pop("areas", None)
-
-
-def _repair_media_player_replace_outputs(plan: dict[str, Any], user_input: str) -> None:
-    normalized_input = normalize_text(user_input)
-    if any(marker in normalized_input for marker in ("tylko", "only", "wylacznie", "wyłącznie")):
-        return
-    for task in plan.get("tasks", []):
-        if not isinstance(task, dict) or task.get("domain") != "media_player":
-            continue
-        command = task.get("command")
-        if isinstance(command, dict):
-            command.pop("replace_outputs", None)
-
-
-def _merge_split_media_player_area_tasks(plan: dict[str, Any]) -> None:
-    tasks = plan.get("tasks")
-    if not isinstance(tasks, list) or len(tasks) < 2:
-        return
-
-    merged_tasks: list[dict[str, Any]] = []
-    merge_targets: dict[tuple[str, str, str, bool, bool], dict[str, Any]] = {}
-    changed = False
-    for task in tasks:
-        merge_key = _media_player_area_merge_key(task)
-        if merge_key is None:
-            merged_tasks.append(task)
-            continue
-        existing_task = merge_targets.get(merge_key)
-        if existing_task is None:
-            merge_targets[merge_key] = task
-            merged_tasks.append(task)
-            continue
-        _merge_media_player_areas(existing_task, task)
-        changed = True
-
-    if not changed:
-        return
-    plan["tasks"] = merged_tasks
-    if len(merged_tasks) == 1 and plan.get("kind") == "multi_task":
-        plan["kind"] = "single_task"
-
-
-def _media_player_area_merge_key(task: dict[str, Any]) -> tuple[str, str, str, bool, bool] | None:
-    if task.get("domain") != "media_player" or task.get("status") != "ready":
-        return None
-    depends_on = task.get("depends_on", [])
-    if depends_on:
-        return None
-    command = task.get("command")
-    if not isinstance(command, dict):
-        return None
-    intent = command.get("intent")
-    if intent not in MERGEABLE_MEDIA_PLAYER_INTENTS:
-        return None
-    areas = command.get("areas")
-    if not isinstance(areas, list) or not areas or any(not isinstance(area, str) or not area for area in areas):
-        return None
-    if command.get("volume_level") is not None or command.get("volume_delta") is not None:
-        return None
-    return (
-        intent,
-        normalize_text(command.get("query", "")) if isinstance(command.get("query", ""), str) else "",
-        normalize_text(command.get("media_type", "")) if isinstance(command.get("media_type", ""), str) else "",
-        command.get("all_speakers") is True,
-        command.get("replace_outputs") is True,
-    )
-
-
-def _merge_media_player_areas(existing_task: dict[str, Any], next_task: dict[str, Any]) -> None:
-    existing_command = existing_task["command"]
-    next_command = next_task["command"]
-    areas = existing_command.setdefault("areas", [])
-    assert isinstance(areas, list)
-    for area in next_command.get("areas", []):
-        if area not in areas:
-            areas.append(area)
-
-
-def _canonical_area_id(area: str, area_context: dict[str, Any]) -> str | None:
-    if area in area_context["ids"]:
-        return area
-    return area_context["lookup"].get(normalize_text(area))
-
-
-def _block_unknown_area_task(task: dict[str, Any], area: str) -> None:
-    task["status"] = "blocked"
-    task["clarification_question"] = f"Nie znam pokoju „{area}”. O który pokój chodzi?"
 
 
 def _single_verbatim_reply(task_results: list[dict[str, Any]]) -> str | None:
@@ -989,63 +705,46 @@ def _task_summary(task: dict[str, Any]) -> str:
         {
             "id": task.get("id"),
             "domain": task.get("domain"),
-            "status": task.get("status"),
-            "command": task.get("command"),
-            "clarification_question": task.get("clarification_question"),
+            "request": task.get("request"),
+            "depends_on": task.get("depends_on"),
         }
     )
 
 
 def _tasks_summary(tasks: list[dict[str, Any]]) -> str:
-    return _compact_json([{"id": task.get("id"), "domain": task.get("domain"), "status": task.get("status")} for task in tasks])
+    return _compact_json([{"id": task.get("id"), "domain": task.get("domain")} for task in tasks])
 
 
-def _build_planning_system_prompt(domain_agents: Mapping[str, DomainAgent]) -> str:
-    domain_prompts: list[str] = []
-    available_domains: list[str] = []
-    query_capabilities: list[str] = []
-    for domain, domain_agent in domain_agents.items():
-        planning_prompt = domain_agent.planning_prompt().strip()
-        if not planning_prompt:
-            continue
-        available_domains.append(domain)
-        domain_prompts.append(planning_prompt)
-        query_capability_prompt = _format_domain_query_capabilities(domain, domain_agent)
-        if query_capability_prompt:
-            query_capabilities.append(query_capability_prompt)
+def _build_planning_system_prompt(
+    domain_agents: Mapping[str, DomainAgent],
+) -> tuple[str, dict[str, int]]:
+    summaries: list[str] = []
+    summary_bytes: dict[str, int] = {}
+    for domain in sorted(domain_agents):
+        summary = domain_agents[domain].routing_summary().strip()
+        if not summary:
+            raise ValueError(f"routing summary for {domain} must be non-empty")
+        size = len(summary.encode("utf-8"))
+        if size > MAX_ROUTING_SUMMARY_BYTES:
+            raise ValueError(
+                f"routing summary for {domain} exceeds {MAX_ROUTING_SUMMARY_BYTES} UTF-8 bytes: {size}"
+            )
+        summary_bytes[domain] = size
+        summaries.append(f"- {domain}: {summary}")
 
-    available_domains_text = ", ".join(available_domains) if available_domains else "none"
-    domain_prompts_text = "\n\n".join(domain_prompts)
-    query_capabilities_text = "\n\n".join(query_capabilities) if query_capabilities else "No loaded domain declares read-only query capabilities."
-    return (
-        PLANNING_SYSTEM_PROMPT_TEMPLATE.replace("{available_domains}", available_domains_text)
-        .replace("{query_capabilities}", query_capabilities_text)
-        .replace("{domain_prompts}", domain_prompts_text)
+    available_domains = ", ".join(sorted(domain_agents)) if domain_agents else "none"
+    prompt = (
+        PLANNING_SYSTEM_PROMPT_TEMPLATE.replace("{available_domains}", available_domains)
+        .replace("{routing_summaries}", "\n".join(summaries) if summaries else "- none")
         .strip()
     )
-
-
-def _format_domain_query_capabilities(domain: str, domain_agent: DomainAgent) -> str:
-    capabilities = domain_agent.query_capabilities()
-    prompt_notes = domain_agent.query_capabilities_prompt().strip()
-    if not capabilities and not prompt_notes:
-        return ""
-
-    lines = [f"{domain} read-only queries:"]
-    for capability_id, capability in capabilities.items():
-        lines.extend(_format_query_capability(capability_id, capability))
-    if prompt_notes:
-        lines.append(prompt_notes)
-    return "\n".join(lines)
-
-
-def _format_query_capability(capability_id: str, capability: QueryCapability) -> list[str]:
-    line = f"- {capability_id}: {capability.description}"
-    if capability.intents:
-        line = f"{line}; intents={','.join(capability.intents)}"
-    if capability.command_template:
-        line = f"{line}; command={_compact_json(capability.command_template, max_length=240)}"
-    return [line]
+    prompt_bytes = len(prompt.encode("utf-8"))
+    if prompt_bytes > MAX_FIXED_PLANNING_PROMPT_BYTES:
+        raise ValueError(
+            f"fixed route-only planning prompt exceeds {MAX_FIXED_PLANNING_PROMPT_BYTES} UTF-8 bytes: "
+            f"{prompt_bytes}; routing_summary_bytes={summary_bytes}"
+        )
+    return prompt, summary_bytes
 
 
 def _response_token_counts(response: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
@@ -1100,424 +799,141 @@ def _assistant_content(response: dict[str, Any]) -> str:
     return content
 
 
-def _parse_plan(content: str) -> dict[str, Any]:
+def _parse_plan(content: str, available_domains: frozenset[str]) -> dict[str, Any]:
     try:
         raw_plan = json.loads(content)
     except json.JSONDecodeError as exc:
-        raw_plan = _repair_malformed_plan(content)
-        if raw_plan is None:
-            raise ValueError(f"orchestrator plan must be valid JSON. Got: {content}") from exc
-    if isinstance(raw_plan, str):
-        repaired_plan = _repair_malformed_plan(raw_plan)
-        if repaired_plan is not None:
-            raw_plan = repaired_plan
-    return _validate_plan(raw_plan)
+        raise ValueError(f"orchestrator plan must be valid JSON. Got: {content}") from exc
+    return _validate_plan(raw_plan, available_domains)
 
 
-def _parse_clarification_task(content: str, pending_clarification: dict[str, Any]) -> dict[str, Any]:
-    try:
-        raw_response = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"orchestrator clarification response must be valid JSON. Got: {content}") from exc
-    if not isinstance(raw_response, dict):
-        raise ValueError("orchestrator clarification response must be a JSON object")
-
-    confidence = raw_response.get("confidence")
-    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
-        raise ValueError("orchestrator clarification confidence must be a number between 0.0 and 1.0")
-
-    task = _validate_task(raw_response.get("task"), 0)
-    pending_domain = pending_clarification.get("domain")
-    if isinstance(pending_domain, str) and task["domain"] != pending_domain:
-        raise ValueError("orchestrator clarification task domain must match pending clarification domain")
-    pending_task = pending_clarification.get("task")
-    if isinstance(pending_task, dict):
-        pending_task_id = pending_task.get("id")
-        if isinstance(pending_task_id, str) and task["id"] != pending_task_id:
-            raise ValueError("orchestrator clarification task id must match pending clarification task id")
-
-    return {
-        "confidence": float(confidence),
-        "task": task,
-    }
-
-
-def _repair_malformed_plan(content: str) -> dict[str, Any] | None:
-    candidate = _unquote_jsonish_content(content.strip())
-    kind_match = re.search(r'"kind"\s*:\s*"([^"]+)"', candidate)
-    tasks_match = re.search(r'"tasks"\s*:\s*\[', candidate)
-    confidence = _decode_named_float(candidate, "confidence")
-    if kind_match is None or tasks_match is None or confidence is None:
-        return None
-
-    tasks = _decode_leading_task_objects(candidate, tasks_match.end())
-    if not tasks:
-        return None
-
-    context_updates = _decode_named_object(candidate, "context_updates") or {}
-    return {
-        "kind": kind_match.group(1),
-        "confidence": confidence,
-        "tasks": tasks,
-        "context_updates": context_updates,
-        "needs_clarification": _decode_named_bool(candidate, "needs_clarification", False),
-        "clarification_question": _decode_named_string_or_null(candidate, "clarification_question"),
-    }
-
-
-def _unquote_jsonish_content(content: str) -> str:
-    if not content.startswith('"'):
-        return content
-    try:
-        decoded = json.loads(content)
-    except json.JSONDecodeError:
-        decoded = content[1:-1] if content.endswith('"') else content[1:]
-        decoded = decoded.replace(r"\"", '"').replace(r"\\", "\\")
-    return decoded if isinstance(decoded, str) else content
-
-
-def _decode_leading_task_objects(content: str, start: int) -> list[Any]:
-    decoder = json.JSONDecoder()
-    tasks: list[Any] = []
-    position = start
-    while position < len(content):
-        while position < len(content) and content[position] in " \t\r\n,":
-            position += 1
-        if position >= len(content) or content[position] == "]":
-            break
-        if content[position] != "{":
-            break
-        try:
-            task, position = decoder.raw_decode(content, position)
-        except json.JSONDecodeError:
-            break
-        tasks.append(task)
-    return tasks
-
-
-def _decode_named_object(content: str, name: str) -> dict[str, Any] | None:
-    match = re.search(rf'"{re.escape(name)}"\s*:\s*{{', content)
-    if match is None:
-        return None
-    try:
-        value, _ = json.JSONDecoder().raw_decode(content, match.end() - 1)
-    except json.JSONDecodeError:
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def _decode_named_bool(content: str, name: str, default: bool) -> bool:
-    match = re.search(rf'"{re.escape(name)}"\s*:\s*(true|false)', content)
-    if match is None:
-        return default
-    return match.group(1) == "true"
-
-
-def _decode_named_float(content: str, name: str) -> float | None:
-    match = re.search(rf'"{re.escape(name)}"\s*:\s*([0-9]+(?:\.[0-9]+)?)', content)
-    if match is None:
-        return None
-    try:
-        return float(match.group(1))
-    except ValueError:
-        return None
-
-
-def _decode_named_string_or_null(content: str, name: str) -> str | None:
-    match = re.search(rf'"{re.escape(name)}"\s*:\s*(null|"([^"]*)")', content)
-    if match is None or match.group(1) == "null":
-        return None
-    return match.group(2)
-
-
-def _validate_plan(raw_plan: Any) -> dict[str, Any]:
+def _validate_plan(raw_plan: Any, available_domains: frozenset[str]) -> dict[str, Any]:
     if not isinstance(raw_plan, dict):
         raise ValueError("orchestrator plan must be a JSON object")
+    expected_keys = {
+        "kind",
+        "confidence",
+        "tasks",
+        "context_updates",
+        "needs_clarification",
+        "clarification_question",
+    }
+    if set(raw_plan) != expected_keys:
+        raise ValueError(
+            f"orchestrator plan fields must be exactly {sorted(expected_keys)}"
+        )
 
     kind = raw_plan.get("kind")
-    if not isinstance(kind, str) or not kind:
-        raise ValueError("orchestrator plan kind must be a non-empty string")
+    valid_kinds = {
+        "single_task",
+        "multi_task",
+        "followup",
+        "clarification_answer",
+        "chat",
+    }
+    if kind not in valid_kinds:
+        raise ValueError("orchestrator plan kind is invalid")
 
     confidence = raw_plan.get("confidence")
     if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
         raise ValueError("orchestrator plan confidence must be a number between 0.0 and 1.0")
 
-    tasks = raw_plan.get("tasks", [])
+    tasks = raw_plan.get("tasks")
     if not isinstance(tasks, list):
         raise ValueError("orchestrator plan tasks must be a list")
+    validated_tasks: list[DomainTask] = []
+    earlier_ids: set[str] = set()
+    for index, task in enumerate(tasks):
+        validated_task = _validate_task(
+            task,
+            index,
+            available_domains=available_domains,
+            earlier_ids=earlier_ids,
+        )
+        if validated_task["id"] in earlier_ids:
+            raise ValueError(f"orchestrator task id is duplicated: {validated_task['id']}")
+        earlier_ids.add(validated_task["id"])
+        validated_tasks.append(validated_task)
 
-    tasks = _repair_tasks(tasks, raw_plan)
-    validated_tasks = [_validate_task(task, index) for index, task in enumerate(tasks)]
-    context_updates = raw_plan.get("context_updates", {})
-    if context_updates is None:
-        context_updates = {}
+    context_updates = raw_plan.get("context_updates")
     if not isinstance(context_updates, dict):
         raise ValueError("orchestrator plan context_updates must be an object")
+    if set(context_updates) != {"salient_entities", "active_domain"}:
+        raise ValueError("orchestrator plan context_updates has invented or missing fields")
+    salient_entities = context_updates.get("salient_entities")
+    if not isinstance(salient_entities, list) or any(not isinstance(item, str) for item in salient_entities):
+        raise ValueError("orchestrator plan context_updates.salient_entities must be a list of strings")
+    active_domain = context_updates.get("active_domain")
+    if active_domain is not None and active_domain not in available_domains:
+        raise ValueError("orchestrator plan context_updates.active_domain must be an available domain or null")
 
-    needs_clarification = raw_plan.get("needs_clarification", False)
+    needs_clarification = raw_plan.get("needs_clarification")
     if not isinstance(needs_clarification, bool):
         raise ValueError("orchestrator plan needs_clarification must be a boolean")
 
     clarification_question = raw_plan.get("clarification_question")
     if clarification_question is not None and not isinstance(clarification_question, str):
         raise ValueError("orchestrator plan clarification_question must be a string or null")
+    if needs_clarification and not clarification_question:
+        raise ValueError("orchestrator plan clarification_question is required when clarification is needed")
 
     return {
         "kind": kind,
         "confidence": float(confidence),
         "tasks": validated_tasks,
-        "context_updates": to_json_value(context_updates),
+        "context_updates": {
+            "salient_entities": salient_entities,
+            "active_domain": active_domain,
+        },
         "needs_clarification": needs_clarification,
         "clarification_question": clarification_question,
     }
 
 
-def _repair_tasks(tasks: list[Any], raw_plan: dict[str, Any]) -> list[Any]:
-    repaired_tasks = []
-    for task in tasks:
-        if isinstance(task, dict):
-            repaired_tasks.append(task)
-            continue
-        if isinstance(task, str):
-            _repair_embedded_plan_fragment(task, raw_plan)
-    return repaired_tasks
-
-
-def _repair_embedded_plan_fragment(fragment: str, raw_plan: dict[str, Any]) -> None:
-    stripped_fragment = fragment.strip().strip(",")
-    if stripped_fragment.startswith(("confidence", "context_updates", "needs_clarification", "clarification_question")):
-        stripped_fragment = '{"' + stripped_fragment + "}"
-    elif not stripped_fragment.startswith("{"):
-        stripped_fragment = "{" + stripped_fragment + "}"
-    try:
-        parsed_fragment = json.loads(stripped_fragment)
-    except json.JSONDecodeError:
-        return
-    if not isinstance(parsed_fragment, dict):
-        return
-    context_updates = parsed_fragment.get("context_updates")
-    if isinstance(context_updates, dict) and not isinstance(raw_plan.get("context_updates"), dict):
-        raw_plan["context_updates"] = context_updates
-    for key in ("confidence", "needs_clarification", "clarification_question"):
-        if key in parsed_fragment and key not in raw_plan:
-            raw_plan[key] = parsed_fragment[key]
-
-
-def _validate_task(raw_task: Any, index: int) -> DomainTask:
+def _validate_task(
+    raw_task: Any,
+    index: int,
+    *,
+    available_domains: frozenset[str],
+    earlier_ids: set[str],
+) -> DomainTask:
     if not isinstance(raw_task, dict):
         raise ValueError(f"orchestrator task #{index + 1} must be an object")
+    expected_keys = {"id", "domain", "request", "depends_on"}
+    if set(raw_task) != expected_keys:
+        raise ValueError(
+            f"orchestrator task #{index + 1} fields must be exactly {sorted(expected_keys)}"
+        )
 
     task_id = raw_task.get("id")
     if not isinstance(task_id, str) or not task_id:
         raise ValueError(f"orchestrator task #{index + 1} id must be a non-empty string")
 
     domain = raw_task.get("domain")
-    if not isinstance(domain, str) or not domain:
-        raise ValueError(f"orchestrator task {task_id} domain must be a non-empty string")
+    if not isinstance(domain, str) or domain not in available_domains:
+        raise ValueError(f"orchestrator task {task_id} domain must be an available domain")
 
-    command = raw_task.get("command", {})
-    if command is None:
-        command = {}
-    if not isinstance(command, dict):
-        raise ValueError(f"orchestrator task {task_id} command must be an object")
-    if domain == "home_assistant":
-        command = _validate_home_assistant_command(command, task_id)
-    elif domain == "media_player":
-        command = _validate_media_player_command(command, task_id)
-    else:
-        command = to_json_value(command)
+    request = raw_task.get("request")
+    if not isinstance(request, str) or not request.strip():
+        raise ValueError(f"orchestrator task {task_id} request must be a non-empty string")
 
-    depends_on = raw_task.get("depends_on", [])
-    if depends_on is None:
-        depends_on = []
+    depends_on = raw_task.get("depends_on")
     if not isinstance(depends_on, list) or any(not isinstance(item, str) for item in depends_on):
         raise ValueError(f"orchestrator task {task_id} depends_on must be a list of strings")
-
-    status = raw_task.get("status", "ready")
-    if status not in {"ready", "blocked"}:
-        raise ValueError(f"orchestrator task {task_id} status must be ready or blocked")
-
-    clarification_question = raw_task.get("clarification_question")
-    if clarification_question is not None and not isinstance(clarification_question, str):
-        raise ValueError(f"orchestrator task {task_id} clarification_question must be a string or null")
+    for dependency in depends_on:
+        if dependency == task_id:
+            raise ValueError(f"orchestrator task {task_id} cannot depend on itself")
+        if dependency not in earlier_ids:
+            raise ValueError(
+                f"orchestrator task {task_id} dependency must name an earlier task: {dependency}"
+            )
 
     return {
         "id": task_id,
         "domain": domain,
-        "command": command,
+        "request": request,
         "depends_on": depends_on,
-        "status": status,
-        "clarification_question": clarification_question,
     }
-
-
-def _validate_home_assistant_command(command: dict[str, Any], task_id: str) -> dict[str, Any]:
-    selection = command.get("selection")
-    if not isinstance(selection, dict):
-        raise ValueError(f"orchestrator task {task_id} home_assistant selection must be an object")
-
-    include = _validate_selector_list(selection.get("include", []), task_id, "include")
-    exclude = _validate_selector_list(selection.get("exclude", []), task_id, "exclude")
-
-    operation = command.get("operation")
-    if not isinstance(operation, dict):
-        raise ValueError(f"orchestrator task {task_id} home_assistant operation must be an object")
-
-    intent = operation.get("intent")
-    if not isinstance(intent, str) or not intent:
-        raise ValueError(f"orchestrator task {task_id} home_assistant operation.intent must be a non-empty string")
-
-    description = operation.get("description")
-    if not isinstance(description, str) or not description:
-        raise ValueError(f"orchestrator task {task_id} home_assistant operation.description must be a non-empty string")
-
-    parameters = operation.get("parameters", {})
-    if parameters is None:
-        parameters = {}
-    if not isinstance(parameters, dict):
-        raise ValueError(f"orchestrator task {task_id} home_assistant operation.parameters must be an object")
-
-    return {
-        "selection": {
-            "include": include,
-            "exclude": exclude,
-        },
-        "operation": {
-            "intent": intent,
-            "description": description,
-            "parameters": to_json_value(parameters),
-        },
-    }
-
-
-def _validate_media_player_command(command: dict[str, Any], task_id: str) -> dict[str, Any]:
-    intent = command.get("intent")
-    if not isinstance(intent, str) or not intent:
-        raise ValueError(f"orchestrator task {task_id} media_player intent must be a non-empty string")
-
-    validated: dict[str, Any] = {"intent": intent}
-    for key in ("query", "media_type"):
-        value = command.get(key, "")
-        if value is None:
-            value = ""
-        if not isinstance(value, str):
-            raise ValueError(f"orchestrator task {task_id} media_player {key} must be a string")
-        if value:
-            validated[key] = value
-
-    areas = command.get("areas", [])
-    if areas is None:
-        areas = []
-    if isinstance(areas, str):
-        areas = [areas]
-    if not isinstance(areas, list) or any(not isinstance(area, str) for area in areas):
-        raise ValueError(f"orchestrator task {task_id} media_player areas must be a list of strings")
-    if areas:
-        validated["areas"] = areas
-
-    all_speakers = command.get("all_speakers", False)
-    if not isinstance(all_speakers, bool):
-        raise ValueError(f"orchestrator task {task_id} media_player all_speakers must be a boolean")
-    if all_speakers:
-        validated["all_speakers"] = True
-
-    replace_outputs = command.get("replace_outputs", False)
-    if not isinstance(replace_outputs, bool):
-        raise ValueError(f"orchestrator task {task_id} media_player replace_outputs must be a boolean")
-    if replace_outputs:
-        validated["replace_outputs"] = True
-
-    for key in ("volume_level", "volume_delta"):
-        value = command.get(key)
-        if value is None:
-            continue
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise ValueError(f"orchestrator task {task_id} media_player {key} must be a number")
-        validated[key] = float(value)
-    return validated
-
-
-def _validate_selector_list(raw_selectors: Any, task_id: str, field: str) -> list[dict[str, Any]]:
-    if raw_selectors is None:
-        return []
-    if not isinstance(raw_selectors, list):
-        raise ValueError(f"orchestrator task {task_id} home_assistant selection.{field} must be a list")
-
-    selectors = []
-    for index, raw_selector in enumerate(raw_selectors):
-        if not isinstance(raw_selector, dict):
-            raise ValueError(
-                f"orchestrator task {task_id} home_assistant selection.{field}[{index}] must be an object"
-            )
-        selector = {
-            key: value
-            for key, value in to_json_value(raw_selector).items()
-            if value is not None
-        }
-        for key, value in selector.items():
-            if key in {"domain", "scope", "name", "area"} and not isinstance(value, str):
-                raise ValueError(
-                    f"orchestrator task {task_id} home_assistant selection.{field}[{index}].{key} must be a string"
-                )
-        selectors.append(selector)
-    return selectors
-
-
-def _resolve_context_references(plan: dict[str, Any], active_context: dict[str, Any]) -> None:
-    salient_entities = active_context.get("salient_entities", [])
-    if not isinstance(salient_entities, list):
-        return
-    reference = next((entity for entity in salient_entities if isinstance(entity, str) and "." in entity), None)
-    if reference is None:
-        return
-
-    selector = _selector_from_reference(reference)
-    if selector is None:
-        return
-
-    for task in plan["tasks"]:
-        if task["domain"] != "home_assistant":
-            continue
-        command = task.get("command")
-        if not isinstance(command, dict):
-            continue
-        operation = command.get("operation")
-        if not isinstance(operation, dict):
-            continue
-        description = operation.get("description", "")
-        if not isinstance(description, str) or not _contains_reference_pronoun(description):
-            continue
-        selection = command.get("selection")
-        if not isinstance(selection, dict):
-            continue
-        selection["include"] = [selector]
-        context_updates = plan.get("context_updates")
-        if isinstance(context_updates, dict):
-            context_updates["salient_entities"] = [reference]
-            context_updates["active_domain"] = "home_assistant"
-
-
-def _selector_from_reference(reference: str) -> dict[str, str] | None:
-    domain, target = reference.split(".", 1)
-    if not domain or not target:
-        return None
-    selector = {
-        "domain": domain,
-        "scope": "single",
-    }
-    if "." in target:
-        selector["name"] = reference
-    else:
-        selector["area"] = target
-    return selector
-
-
-def _contains_reference_pronoun(text: str) -> bool:
-    normalized_text = f" {text.casefold()} "
-    return any(
-        f" {pronoun} " in normalized_text
-        for pronoun in ("ją", "ja", "je", "go", "jego", "jej", "it", "them", "this", "that")
-    )
 
 
 def _cancels_pending_clarification(user_input: str) -> bool:
@@ -1535,6 +951,39 @@ def _cancels_pending_clarification(user_input: str) -> bool:
         "stop",
         "nie",
     }
+
+
+def _domain_result_json(result: dict[str, Any]) -> dict[str, Any]:
+    has_continuation = "continuation" in result
+    continuation = result.get("continuation")
+    normalized = to_json_value(result)
+    if not isinstance(normalized, dict):
+        raise ValueError("domain result must be a JSON object")
+    if has_continuation:
+        normalized["continuation"] = _validate_opaque_json(continuation)
+    return normalized
+
+
+def _validate_opaque_json(value: Any) -> Any:
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("DSA continuation numbers must be finite")
+        return value
+    if isinstance(value, list):
+        for item in value:
+            _validate_opaque_json(item)
+        return value
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("DSA continuation object keys must be strings")
+            _validate_opaque_json(item)
+        return value
+    raise ValueError("DSA continuation must be JSON-serializable")
 
 
 def _orchestrator_state(conversation: AgentExecutionContext) -> dict[str, Any]:
@@ -1576,61 +1025,36 @@ def _apply_context_updates(state: dict[str, Any], plan: dict[str, Any]) -> None:
 
 
 def _apply_task_context_updates(state: dict[str, Any], plan: dict[str, Any], task_results: list[dict[str, Any]]) -> None:
-    successful_task_ids = {
-        result["task_id"]
-        for result in task_results
-        if isinstance(result.get("task_id"), str)
-        and result.get("status") not in {"blocked", "needs_clarification", "unsupported_domain", "failed"}
-    }
     salient_entities = list(state.get("salient_entities", [])) if isinstance(state.get("salient_entities"), list) else []
-    for task in plan["tasks"]:
-        if task["id"] not in successful_task_ids:
+    active_domain = state.get("active_domain")
+    for result in task_results:
+        if result.get("status") in {"blocked", "needs_clarification", "unsupported_domain", "failed"}:
             continue
-        if task["domain"] != "home_assistant":
-            continue
-        for reference in _home_assistant_task_references(task):
-            if reference not in salient_entities:
-                salient_entities.insert(0, reference)
+        entities = result.get("entities")
+        if isinstance(entities, list):
+            for reference in entities:
+                if isinstance(reference, str) and reference and reference not in salient_entities:
+                    salient_entities.insert(0, reference)
+        if isinstance(result.get("domain"), str):
+            active_domain = result["domain"]
     if salient_entities:
         state["salient_entities"] = salient_entities[:8]
-        state["active_domain"] = "home_assistant"
-
-
-def _home_assistant_task_references(task: dict[str, Any]) -> list[str]:
-    command = task.get("command")
-    if not isinstance(command, dict):
-        return []
-    selection = command.get("selection")
-    if not isinstance(selection, dict):
-        return []
-    include = selection.get("include", [])
-    if not isinstance(include, list):
-        return []
-
-    references = []
-    for selector in include:
-        if not isinstance(selector, dict):
-            continue
-        domain = selector.get("domain")
-        area = selector.get("area")
-        name = selector.get("name")
-        if isinstance(domain, str) and domain and isinstance(area, str) and area:
-            references.append(f"{domain}.{area}")
-            continue
-        if isinstance(domain, str) and domain and isinstance(name, str) and name:
-            references.append(f"{domain}.{name}")
-            continue
-        if isinstance(name, str) and name:
-            references.append(name)
-    return references
+    if isinstance(active_domain, str):
+        state["active_domain"] = active_domain
 
 
 def _store_pending_tasks(state: dict[str, Any], plan: dict[str, Any]) -> None:
-    pending_tasks = [task for task in plan["tasks"] if task.get("status") == "blocked"]
-    state["pending_tasks"] = pending_tasks
+    del plan
+    state["pending_tasks"] = []
 
 
-def _store_pending_clarification(state: dict[str, Any], plan: dict[str, Any], task_results: list[dict[str, Any]]) -> None:
+def _store_pending_clarification(
+    state: dict[str, Any],
+    plan: dict[str, Any],
+    task_results: list[dict[str, Any]],
+    *,
+    request: str,
+) -> None:
     tasks_by_id = {
         task["id"]: task
         for task in plan["tasks"]
@@ -1639,25 +1063,38 @@ def _store_pending_clarification(state: dict[str, Any], plan: dict[str, Any], ta
     for result in task_results:
         if result.get("status") != "needs_clarification":
             continue
-        task_id = result.get("task_id")
-        task = tasks_by_id.get(task_id)
+        task = tasks_by_id.get(result.get("task_id"))
         if task is None:
             continue
-        clarification_question = result.get("clarification_question")
-        if clarification_question is not None and not isinstance(clarification_question, str):
-            clarification_question = None
-        if clarification_question is None and isinstance(result.get("text"), str):
-            clarification_question = result["text"]
-        state["pending_clarification"] = {
-            "domain": task["domain"],
+        question = result.get("clarification_question")
+        if not isinstance(question, str) or not question:
+            question = result.get("text")
+        if not isinstance(question, str) or not question:
+            raise ValueError("DSA clarification result must include a question")
+        has_continuation = "continuation" in result
+        continuation = _validate_opaque_json(result.get("continuation"))
+        pending_clarification: dict[str, Any] = {
+            "owner": "dsa",
             "task": to_json_value(task),
-            "task_result": to_json_value(result),
-            "clarification_question": clarification_question,
+            "question": question,
+        }
+        if has_continuation:
+            pending_clarification["continuation"] = continuation
+        state["pending_clarification"] = pending_clarification
+        return
+
+    if plan.get("needs_clarification"):
+        question = plan.get("clarification_question")
+        if not isinstance(question, str) or not question:
+            raise ValueError("router clarification plan must include a question")
+        state["pending_clarification"] = {
+            "owner": "router",
+            "request": request,
+            "question": question,
         }
         return
 
-    if plan.get("kind") == "clarification_answer":
-        state["pending_clarification"] = None
+    state["pending_clarification"] = None
 
 
 def _append_last_turn(state: dict[str, Any], *, user_input: str, assistant_reply: str) -> None:
@@ -1666,12 +1103,3 @@ def _append_last_turn(state: dict[str, Any], *, user_input: str, assistant_reply
         last_turns = []
     last_turns.append({"user": user_input, "assistant": assistant_reply})
     state["last_turns"] = last_turns[-MAX_LAST_TURNS:]
-
-
-def _blocked_task_result(task: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "task_id": task["id"],
-        "domain": task["domain"],
-        "status": "needs_clarification",
-        "clarification_question": task.get("clarification_question"),
-    }

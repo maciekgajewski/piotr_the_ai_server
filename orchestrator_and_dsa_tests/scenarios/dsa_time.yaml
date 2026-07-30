@@ -6,8 +6,8 @@ cases:
     task:
       id: t1
       domain: time
-      command:
-        query: Która godzina?
+      request: Która godzina?
+      depends_on: []
     expected_result:
       status: ok
       timezone: Europe/Warsaw
@@ -20,9 +20,8 @@ cases:
     task:
       id: t1
       domain: time
-      command:
-        query: która godzina jest teraz w Jacksonville
-        geo_location: Jacksonville
+      request: która godzina jest teraz w Jacksonville
+      depends_on: []
     expected_result:
       status: ok
       timezone: America/New_York
@@ -35,9 +34,8 @@ cases:
     task:
       id: t1
       domain: time
-      command:
-        query: jaki jest dzień tygodnia?
-        intent: day_of_week
+      request: jaki jest dzień tygodnia?
+      depends_on: []
     expected_result:
       status: ok
       components:

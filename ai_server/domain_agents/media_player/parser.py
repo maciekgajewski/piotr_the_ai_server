@@ -57,6 +57,8 @@ START_LAST_QUERIES = {
     "grajh muzyke",
     "wlacz muzyke",
     "włącz muzykę",
+    "wznow muzyke",
+    "wznów muzykę",
     "dajcie tu jakas muzyczke",
     "dajcie tu jakąś muzyczkę",
 }
@@ -102,6 +104,7 @@ def parse_media_command(command: dict[str, Any], *, force_simple: bool = False) 
         ascii_query,
         allow_destination_prepositions=intent == "transfer_playback" or current_media_reference,
     )
+    areas = tuple(_canonical_area(area) for area in areas)
     media_type = _normalize_media_type(_string_or_empty(command.get("media_type"))) or _media_type_from_query(ascii_query)
     query_volume_level = _volume_level_from_query(ascii_query)
     volume_level = _volume_level_from_command(command)
@@ -152,25 +155,21 @@ def media_task_from_utterance(user_input: str) -> DomainTask | None:
     parsed = parse_media_command({"query": user_input})
     if not parsed.simple:
         return None
-    command = _command_from_parsed(parsed, user_input)
     return {
         "id": "t1",
         "domain": "media_player",
-        "command": command,
+        "request": user_input,
         "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
     }
 
 
 def known_media_task(intent: str, query: str) -> DomainTask:
+    del intent
     return {
         "id": "t1",
         "domain": "media_player",
-        "command": {"intent": intent, "query": query},
+        "request": query,
         "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
     }
 
 
@@ -326,6 +325,27 @@ def _areas_from_query(query: str, ascii_query: str, *, allow_destination_preposi
         return ()
     parts = re.split(r"\s+i\s+|,| oraz ", raw_area)
     return tuple(part.strip() for part in parts if part.strip())
+
+
+def _canonical_area(area: str) -> str:
+    normalized = ascii_fold(normalize_text(area))
+    normalized = re.sub(r"^(?:w|we|in)\s+", "", normalized)
+    aliases = {
+        "salon": "living room",
+        "salonie": "living room",
+        "salonu": "living room",
+        "biuro": "office",
+        "biurze": "office",
+        "pracownia": "office",
+        "pracowni": "office",
+        "kuchnia": "kitchen",
+        "kuchni": "kitchen",
+        "lazienka": "bathroom",
+        "lazience": "bathroom",
+        "sypialnia": "bedroom",
+        "sypialni": "bedroom",
+    }
+    return aliases.get(normalized, area)
 
 
 def _has_all_speakers_marker(ascii_query: str) -> bool:

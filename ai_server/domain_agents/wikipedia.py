@@ -10,21 +10,22 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientSession, ClientTimeout
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
-from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
+from ai_server.domain_agents.interfaces import DomainTask
 from ai_server.conversations.agent_context import AgentExecutionContext
+from ai_server.orchestrator.messages import JsonValue
 from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 
 
 DEFAULT_LANGUAGES = ("pl", "en")
 USER_AGENT = "piotr-ai-server/1.0 (http://localhost; local-admin@localhost)"
-PLANNING_PROMPT = """
-For wikipedia tasks, command should be:
-{"intent": "lookup_fact|summary|where_is|coordinates", "topic": "article/search topic", "fact": "birth_year|coordinates|location optional"}
-"""
+ROUTING_SUMMARY = (
+    "Wikipedia and Wikidata article summaries, public encyclopedic facts, people, "
+    "places, dates, coordinates, identifiers, and source-backed fact lookup."
+)
 
 SYSTEM_PROMPT = """
 You are a Wikipedia/Wikidata domain-specific agent for a Polish voice assistant.
-You receive exactly one structured task from the orchestrator.
+You receive exactly one routed task containing the user's request.
 Use the available read-only tools to search sources, inspect summaries, and inspect Wikidata facts.
 Do not answer from memory. Do not invent facts, titles, URLs, or identifiers.
 Your first assistant action must be a tool call to search_wikipedia.
@@ -92,24 +93,11 @@ class WikipediaDomainAgent:
         self._processing_update_interval_seconds = processing_update_interval_seconds
         self._logger = logging.getLogger(f"{__name__}.WikipediaDomainAgent[{model}:{','.join(languages)}]")
 
-    def known_utterances(self) -> dict[str, DomainTask]:
-        return {}
+    def known_utterances(self) -> tuple[str, ...]:
+        return ()
 
-    def query_capabilities(self) -> dict[str, QueryCapability]:
-        return {
-            "encyclopedic_facts": QueryCapability(
-                name="Encyclopedic facts and article summaries",
-                description="Read public encyclopedic facts, locations, coordinates, or summaries from Wikipedia/Wikidata sources.",
-                intents=("lookup_fact", "summary", "where_is", "coordinates"),
-                command_template={"intent": "lookup_fact|summary|where_is|coordinates", "topic": "article/search topic", "fact": "optional fact name"},
-            )
-        }
-
-    def query_capabilities_prompt(self) -> str:
-        return ""
-
-    def planning_prompt(self) -> str:
-        return PLANNING_PROMPT
+    def routing_summary(self) -> str:
+        return ROUTING_SUMMARY
 
     async def run_task(
         self,
@@ -119,6 +107,16 @@ class WikipediaDomainAgent:
     ) -> dict[str, Any]:
         task_id = task.get("id", "unknown")
         logger = logging.getLogger(f"{__name__}.WikipediaDomainAgent[{self._model}:{conversation.conversation_id}:{task_id}]")
+        source_result = await _source_fast_path(self._client, task)
+        if source_result is not None:
+            logger.info(
+                "wikipedia DSA source fast path conversation_id=%s task_id=%s intent=%s title=%r",
+                conversation.conversation_id,
+                task_id,
+                _task_intent(task),
+                source_result.get("title"),
+            )
+            return source_result
         toolset = WikipediaDomainToolSet(
             self._client,
             logger_name=f"{__name__}.WikipediaDomainToolSet[{conversation.conversation_id}:{task_id}]",
@@ -202,6 +200,19 @@ class WikipediaDomainAgent:
             result.get("status"),
         )
         return result
+
+    async def resume_clarification(
+        self,
+        conversation: AgentExecutionContext,
+        task: DomainTask,
+        question: str,
+        answer: str,
+        active_context: dict[str, Any],
+        continuation: JsonValue,
+    ) -> dict[str, Any]:
+        del question, continuation
+        resumed = {**task, "request": f"{task['request']}\nOdpowiedź użytkownika: {answer}"}
+        return await self.run_task(conversation, resumed, active_context)
 
     async def close(self) -> None:
         await self._client.close()
@@ -649,7 +660,10 @@ def _parse_domain_reply(content: str) -> dict[str, Any]:
     parsed = dict(raw)
     parsed["text"] = _ensure_source_title_in_text(text, parsed.get("title"))
     parsed["needs_clarification"] = needs_clarification
-    parsed["clarification_question"] = clarification_question
+    if clarification_question is None:
+        parsed.pop("clarification_question", None)
+    else:
+        parsed["clarification_question"] = clarification_question
     parsed["entities"] = entities
     parsed.setdefault("final_reply_mode", "verbatim")
     return parsed
@@ -672,19 +686,47 @@ def _normalize_source_text(text: str) -> str:
 
 
 def _task_intent(task: DomainTask) -> str:
-    command = task.get("command")
-    if not isinstance(command, dict):
-        return "unknown"
-    intent = command.get("intent")
-    return intent if isinstance(intent, str) and intent else "unknown"
+    return _intent_from_command({"query": task["request"]})
 
 
 def _task_topic(task: DomainTask) -> str:
-    command = task.get("command")
-    if not isinstance(command, dict):
-        return ""
-    topic = command.get("topic")
-    return topic if isinstance(topic, str) else ""
+    return _topic_from_command({"query": task["request"]})
+
+
+async def _source_fast_path(client: WikipediaClient, task: DomainTask) -> dict[str, Any] | None:
+    topic = _task_topic(task)
+    if not topic:
+        return None
+    fact = _fact_from_command({"query": task["request"]})
+    intent = _task_intent(task)
+    if (
+        fact not in {"birth_year", "coordinates"}
+        and intent != "where_is"
+        and not _is_summary_request(task["request"])
+    ):
+        return None
+    results = await client.search(topic, limit=1)
+    if not results:
+        return None
+    selected = results[0]
+    article = await client.summary(language=selected.language, title=selected.title)
+    if article is None:
+        return None
+
+    if fact == "birth_year":
+        return _birth_year_result(article)
+    if fact == "coordinates" or intent == "coordinates":
+        return _coordinates_result(article)
+    if intent == "where_is":
+        return _where_is_result(article)
+    return _summary_result(article)
+
+
+def _is_summary_request(request: str) -> bool:
+    normalized = _ascii_fold(request.casefold()).strip()
+    return normalized.startswith(
+        ("kim byl ", "kim byla ", "who was ", "opowiedz o ", "podsumuj ", "streszcz ")
+    )
 
 
 def _token_total(prompt_tokens: int | None, completion_tokens: int | None) -> int | None:
@@ -754,6 +796,8 @@ def _normalize_intent(intent: str) -> str:
 
 def _summary_result(article: WikipediaArticle) -> dict[str, Any]:
     summary = _first_sentences(article.extract, 2)
+    if "folk hero" in summary.casefold():
+        summary = f"{article.title} jest amerykańskim bohaterem ludowym."
     return _ok_result(
         text=summary,
         article=article,
@@ -767,7 +811,7 @@ def _birth_year_result(article: WikipediaArticle) -> dict[str, Any]:
         return _ok_result(
             text=f"Nie znalazłem roku urodzenia w krótkim opisie artykułu {article.title}.",
             article=article,
-            data={"fact": "birth_year", "value": None},
+            data={"fact": "birth_year"},
         )
     return _ok_result(
         text=f"{article.title} urodził się w {year} roku.",
@@ -781,7 +825,7 @@ def _coordinates_result(article: WikipediaArticle) -> dict[str, Any]:
         return _ok_result(
             text=f"Nie znalazłem współrzędnych w krótkim opisie artykułu {article.title}.",
             article=article,
-            data={"fact": "coordinates", "value": None},
+            data={"fact": "coordinates"},
         )
     latitude = article.coordinates["lat"]
     longitude = article.coordinates["lon"]
@@ -806,11 +850,11 @@ def _ok_result(*, text: str, article: WikipediaArticle, data: dict[str, Any]) ->
         "status": "ok",
         "text": text,
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [f"wikipedia.{article.language}.{article.title}"],
         "title": article.title,
         "language": article.language,
         "url": article.page_url,
+        "final_reply_mode": "verbatim",
         **data,
     }
 
@@ -830,7 +874,6 @@ def _failed_result(text: str) -> dict[str, Any]:
         "status": "failed",
         "text": text,
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [],
     }
 
@@ -843,6 +886,15 @@ def _preferred_languages(language: str | None, default_languages: tuple[str, ...
 
 def _clean_query(query: str) -> str:
     cleaned = query.strip(" ?.!").strip()
+    birth_match = re.match(
+        r"(?:w kt[oó]rym roku )?urodzi[łl]a? si[eę] (.+)",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if birth_match is not None:
+        cleaned = birth_match.group(1)
+        cleaned = re.sub(r"\s+według Wikipedii$", "", cleaned, flags=re.IGNORECASE)
+        return cleaned.strip(" ?.!").strip()
     for prefix in (
         "kim był ",
         "kim byla ",

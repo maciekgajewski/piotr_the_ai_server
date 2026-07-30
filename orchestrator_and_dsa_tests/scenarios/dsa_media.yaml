@@ -6,9 +6,8 @@ cases:
     task:
       id: t1
       domain: media_player
-      command:
-        intent: start_last
-        query: Spotify!
+      request: Spotify!
+      depends_on: []
     expected_result:
       status: ok
     expected_calls:
@@ -35,9 +34,8 @@ cases:
     task:
       id: t1
       domain: media_player
-      command:
-        intent: play_media
-        query: Włącz hip-hop na Spotify.
+      request: Włącz hip-hop na Spotify.
+      depends_on: []
     expected_result:
       status: ok
     expected_calls:
@@ -63,11 +61,8 @@ cases:
     task:
       id: t1
       domain: media_player
-      command:
-        intent: play_media
-        query: Muzyka do pracy
-        media_type: playlist
-        all_speakers: true
+      request: Graj playlistę Muzyka do pracy w całym domu
+      depends_on: []
     expected_result:
       status: ok
     expected_calls:
@@ -101,10 +96,8 @@ cases:
     task:
       id: t1
       domain: media_player
-      command:
-        intent: start_last
-        query: Włącz muzykę w biurze i w łazience.
-        areas: [office, bathroom]
+      request: Włącz muzykę w biurze i w łazience.
+      depends_on: []
     expected_result:
       status: ok
     expected_calls:
@@ -140,10 +133,8 @@ cases:
     task:
       id: t1
       domain: media_player
-      command:
-        intent: volume_delta
-        query: Daj głośniej
-        volume_delta: 0.05
+      request: Daj głośniej
+      depends_on: []
     expected_result:
       status: ok
     expected_calls:
@@ -163,10 +154,8 @@ cases:
     task:
       id: t1
       domain: media_player
-      command:
-        intent: set_volume
-        query: Ścisz muzykę.
-        volume_level: 0.5
+      request: Ścisz muzykę.
+      depends_on: []
     expected_result:
       status: ok
     expected_calls:
@@ -186,9 +175,8 @@ cases:
     task:
       id: t1
       domain: media_player
-      command:
-        intent: volume_delta
-        query: Troszkę ciszej.
+      request: Troszkę ciszej.
+      depends_on: []
     expected_result:
       status: ok
     expected_calls:
@@ -208,10 +196,8 @@ cases:
     task:
       id: t1
       domain: media_player
-      command:
-        intent: set_volume
-        query: Ustaw głośność na 10.
-        volume_level: 10.0
+      request: Ustaw głośność na 10.
+      depends_on: []
     expected_result:
       status: ok
     expected_calls:

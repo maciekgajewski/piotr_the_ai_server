@@ -9,7 +9,7 @@ from typing import Annotated, Any, Callable
 from aiohttp import ClientSession
 
 from ai_server.agent_loop import AgentCallableSet, AgentLoop, AgentLoopConfig, AgentLoopOllamaConnection
-from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
+from ai_server.domain_agents.interfaces import DomainTask
 from ai_server.domain_agents.weather.astronomy import (
     AstronomySnapshot,
     IPGeolocationAstronomyClient,
@@ -28,31 +28,24 @@ from ai_server.domain_agents.weather.interfaces import (
     WeatherNowRequest,
     WeatherProvider,
 )
-from ai_server.domain_agents.weather.fast_lane import fast_lane_command_from_task_command, known_weather_utterances
+from ai_server.domain_agents.weather.fast_lane import fast_lane_command_for_query, known_weather_utterances
 from ai_server.domain_agents.weather.local_cache import WeatherLocalCache
 from ai_server.domain_agents.weather.messages import WEATHER_AGENT_SYSTEM_PROMPT
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
 from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.ollama_connection import OLLAMA_BASE_URL
+from ai_server.orchestrator.messages import JsonValue
 from ai_server.utils import JsonFileStore
 from ai_server.utils.conversation_style import reply_style_instruction, system_prompt_with_reply_style
 from ai_server.utils.polish_numbers import polish_cardinal, polish_decimal
 from ai_server.utils.text import ascii_fold, normalize_text
 
 
-PLANNING_PROMPT = """
-For weather tasks:
-- Only route the utterance to the weather domain. The weather agent owns parsing current versus forecast,
-  astronomy facts, forecast horizon, location, and focus.
-- Do not include weather tool names, locations, horizons, granularities, astronomy fields, or focus fields.
-- Questions phrased as "o której/kiedy zachodzi słońce", "o której/kiedy wschodzi słońce",
-  "zachód słońca", "wschód słońca", "faza księżyca", or "kiedy wschodzi/zachodzi księżyc"
-  are weather astronomy questions, not current-time questions.
-
-Command shape:
-{"query": "original weather question"}
-"""
+ROUTING_SUMMARY = (
+    "Current weather, forecasts, temperature, precipitation, wind, sunrise, sunset, "
+    "moonrise, moonset, moon phase, and day-length facts for the default or named place."
+)
 
 
 class WeatherDomainAgent:
@@ -112,28 +105,11 @@ class WeatherDomainAgent:
             self._logger.info("weather astronomy support ready")
         self._started = True
 
-    def known_utterances(self) -> dict[str, DomainTask]:
-        return known_weather_utterances()
+    def known_utterances(self) -> tuple[str, ...]:
+        return tuple(known_weather_utterances())
 
-    def query_capabilities(self) -> dict[str, QueryCapability]:
-        return {
-            "weather_state": QueryCapability(
-                name="Current weather, forecast, and sky facts",
-                description=(
-                    "Read current weather, forecasts, sunrise, sunset, moonrise, moonset, moon phase, "
-                    "or day-length facts for the default location or an explicitly named place."
-                ),
-                command_template={
-                    "query": "original weather question",
-                },
-            )
-        }
-
-    def query_capabilities_prompt(self) -> str:
-        return ""
-
-    def planning_prompt(self) -> str:
-        return PLANNING_PROMPT
+    def routing_summary(self) -> str:
+        return ROUTING_SUMMARY
 
     async def run_task(
         self,
@@ -141,12 +117,11 @@ class WeatherDomainAgent:
         task: DomainTask,
         active_context: dict[str, Any],
     ) -> dict[str, Any]:
-        command = task.get("command", {})
-        command = command if isinstance(command, dict) else {}
+        command = {"query": task["request"]}
         logger = logging.getLogger(
             f"{__name__}.WeatherDomainAgent[{self._model}:{conversation.conversation_id}:{task.get('id', 'unknown')}]"
         )
-        fast_command = fast_lane_command_from_task_command(command)
+        fast_command = fast_lane_command_for_query(task["request"])
         if fast_command is not None:
             logger.info(
                 "weather DSA using fast-lane conversation_id=%s task_id=%s tool=%s",
@@ -258,6 +233,19 @@ class WeatherDomainAgent:
             result.get("status"),
         )
         return result
+
+    async def resume_clarification(
+        self,
+        conversation: AgentExecutionContext,
+        task: DomainTask,
+        question: str,
+        answer: str,
+        active_context: dict[str, Any],
+        continuation: JsonValue,
+    ) -> dict[str, Any]:
+        del question, continuation
+        resumed = {**task, "request": f"{task['request']}\nOdpowiedź użytkownika: {answer}"}
+        return await self.run_task(conversation, resumed, active_context)
 
     async def close(self) -> None:
         if self._local_weather_cache is not None:
@@ -510,7 +498,6 @@ def _ok_result(
         "status": "ok",
         "text": text,
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": entities,
         "final_reply_mode": final_reply_mode,
         "data": data,
@@ -565,7 +552,6 @@ def _not_found_result(location: str) -> dict[str, Any]:
         "status": "not_found",
         "text": f"Nie znalazłem danych pogodowych dla lokalizacji: {location}.",
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [],
     }
 
@@ -575,7 +561,6 @@ def _failed_result(text: str) -> dict[str, Any]:
         "status": "failed",
         "text": text,
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [],
     }
 
@@ -603,7 +588,6 @@ def _tool_failed(text: str) -> dict[str, Any]:
         "status": "failed",
         "text": text,
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [],
     }
 
@@ -634,21 +618,17 @@ def _parse_domain_reply(content: str) -> dict[str, Any]:
     parsed = dict(raw)
     parsed["text"] = _sanitize_reply_text(text)
     parsed["needs_clarification"] = needs_clarification
-    parsed["clarification_question"] = clarification_question
+    if clarification_question is None:
+        parsed.pop("clarification_question", None)
+    else:
+        parsed["clarification_question"] = clarification_question
     parsed["entities"] = entities
     parsed.setdefault("final_reply_mode", "verbatim")
     return parsed
 
 
 def _task_intent(task: DomainTask) -> str:
-    command = task.get("command")
-    if not isinstance(command, dict):
-        return "unknown"
-    intent = command.get("intent")
-    if isinstance(intent, str) and intent:
-        return intent
-    tool = command.get("tool")
-    return tool if isinstance(tool, str) and tool else "unknown"
+    return "weather_request"
 
 
 def _token_total(prompt_tokens: int | None, completion_tokens: int | None) -> int | None:
@@ -679,27 +659,16 @@ def _number_match_to_words(match: re.Match[str]) -> str:
 
 
 def _minimal_task_for_agent_loop(task: DomainTask) -> DomainTask:
-    command = task.get("command")
-    query = command.get("query") if isinstance(command, dict) else None
     return {
-        "id": task.get("id"),
-        "domain": task.get("domain"),
-        "command": {"query": query} if isinstance(query, str) else {},
-        "depends_on": task.get("depends_on", []),
-        "status": task.get("status", "ready"),
-        "clarification_question": task.get("clarification_question"),
+        "id": task["id"],
+        "domain": task["domain"],
+        "request": task["request"],
+        "depends_on": task["depends_on"],
     }
 
 
 def _astronomy_query_from_task(task: DomainTask) -> str | None:
-    command = task.get("command")
-    if not isinstance(command, dict):
-        return None
-    if isinstance(command.get("location"), str) and command["location"].strip():
-        return None
-    query = command.get("query")
-    if not isinstance(query, str) or not query.strip():
-        return None
+    query = task["request"]
     if astronomy_focus_from_query(query) is None:
         return None
     return query

@@ -7,7 +7,7 @@ from ai_server.agent.assistant import AssistantAgent
 from ai_server.agent.echo import EchoAgent
 from ai_server.agent.interrogator import InterrogatorAgent
 from ai_server.agent.polite_reply import PoliteReplyAgent
-from ai_server.orchestrator import OrchestratorAgent
+from ai_server.orchestrator.orchestrator import OrchestratorAgent
 
 from ai_server.config import AgentConfig, DEFAULT_CACHE_DIR, DEFAULT_DATA_DIR, ProcessingUpdatesConfig, ServerConfig
 from ai_server.conversations.interfaces import Agent
@@ -112,7 +112,6 @@ async def create_agent(
             owns_ollama_connection=False,
             server_config=server_config,
             processing_update_interval_seconds=processing_updates.interval_seconds,
-            home_assistant_inventory_provider=home_assistant_connection,
         )
         try:
             logger.info("Preloading orchestrator agent orchestrator_model=%s", orchestrator_model)

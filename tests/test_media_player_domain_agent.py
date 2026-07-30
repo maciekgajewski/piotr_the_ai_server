@@ -5,7 +5,11 @@ import logging
 from conftest import agent_context
 from ai_server.domain_agents.media_player import MediaPlayerDomainAgent
 from ai_server.domain_agents.media_player.parser import media_task_from_utterance, parse_media_command
-from ai_server.orchestrator.known_utterances import collect_known_utterance_tasks, known_utterance_task
+from ai_server.orchestrator.known_utterances import collect_known_utterance_domains, known_utterance_task
+
+
+def _route(request: str) -> dict:
+    return {"id": "t1", "domain": "media_player", "request": request, "depends_on": []}
 
 
 def test_media_known_utterance_routes_to_media_player() -> None:
@@ -14,10 +18,9 @@ def test_media_known_utterance_routes_to_media_player() -> None:
         connection=FakeMediaConnection(),
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = known_utterance_task("Spotify!", collect_known_utterance_tasks({"media_player": agent}))
+    task = known_utterance_task("Spotify!", collect_known_utterance_domains({"media_player": agent}))
 
-    assert task["domain"] == "media_player"
-    assert task["command"] == {"intent": "start_last", "query": "Spotify!"}
+    assert task == _route("Spotify!")
 
 
 def test_media_known_utterance_routes_volume_up_phrase_to_media_player() -> None:
@@ -26,14 +29,9 @@ def test_media_known_utterance_routes_volume_up_phrase_to_media_player() -> None
         connection=FakeMediaConnection(),
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = known_utterance_task("Przygłośnij Muzykę", collect_known_utterance_tasks({"media_player": agent}))
+    task = known_utterance_task("Przygłośnij Muzykę", collect_known_utterance_domains({"media_player": agent}))
 
-    assert task["domain"] == "media_player"
-    assert task["command"] == {
-        "intent": "volume_delta",
-        "query": "Przygłośnij Muzykę",
-        "volume_delta": 0.05,
-    }
+    assert task == _route("Przygłośnij Muzykę")
 
 
 def test_media_known_utterance_routes_volume_down_phrase_to_media_player() -> None:
@@ -42,14 +40,9 @@ def test_media_known_utterance_routes_volume_down_phrase_to_media_player() -> No
         connection=FakeMediaConnection(),
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = known_utterance_task("Ścisz Muzykę", collect_known_utterance_tasks({"media_player": agent}))
+    task = known_utterance_task("Ścisz Muzykę", collect_known_utterance_domains({"media_player": agent}))
 
-    assert task["domain"] == "media_player"
-    assert task["command"] == {
-        "intent": "volume_delta",
-        "query": "Ścisz Muzykę",
-        "volume_delta": -0.05,
-    }
+    assert task == _route("Ścisz Muzykę")
 
 
 def test_media_known_utterance_routes_tiny_volume_phrases_to_media_player() -> None:
@@ -58,7 +51,7 @@ def test_media_known_utterance_routes_tiny_volume_phrases_to_media_player() -> N
         connection=FakeMediaConnection(),
         ollama_connection=FakeOllamaConnection([]),
     )
-    known_utterances = collect_known_utterance_tasks({"media_player": agent})
+    known_utterances = collect_known_utterance_domains({"media_player": agent})
 
     expectations = {
         "Odrobinkę głośniej": 0.02,
@@ -68,20 +61,15 @@ def test_media_known_utterance_routes_tiny_volume_phrases_to_media_player() -> N
         "Troszeczkę głośniej": 0.02,
         "Troszeczkęciszej": -0.02,
     }
-    for utterance, expected_delta in expectations.items():
+    for utterance in expectations:
         task = known_utterance_task(utterance, known_utterances)
-        assert task["domain"] == "media_player"
-        assert task["command"]["intent"] == "volume_delta"
-        assert task["command"]["query"] == utterance
-        assert task["command"]["volume_delta"] == expected_delta
+        assert task == _route(utterance)
 
 
 def test_media_simple_short_path_parses_volume_up() -> None:
     task = media_task_from_utterance("Daj głośniej")
 
-    assert task["domain"] == "media_player"
-    assert task["command"]["intent"] == "volume_delta"
-    assert task["command"]["volume_delta"] == 0.05
+    assert task == _route("Daj głośniej")
 
 
 def test_media_parser_infers_volume_delta_details_from_query() -> None:
@@ -118,24 +106,11 @@ def test_media_simple_short_path_routes_transfer_phrases() -> None:
     multi_room = media_task_from_utterance("Graj muzykę w sypialni i łazience")
 
     assert transfer is not None
-    assert transfer["command"] == {
-        "intent": "transfer_playback",
-        "query": "Przenieś muzykę do Salonu",
-        "areas": ["Salonu"],
-    }
+    assert transfer == _route("Przenieś muzykę do Salonu")
     assert only is not None
-    assert only["command"] == {
-        "intent": "transfer_playback",
-        "query": "Graj muzykę tylko w biurze",
-        "areas": ["biurze"],
-        "replace_outputs": True,
-    }
+    assert only == _route("Graj muzykę tylko w biurze")
     assert multi_room is not None
-    assert multi_room["command"] == {
-        "intent": "start_last",
-        "query": "Graj muzykę w sypialni i łazience",
-        "areas": ["sypialni", "łazience"],
-    }
+    assert multi_room == _route("Graj muzykę w sypialni i łazience")
 
 
 def test_media_parser_extracts_query_area_and_all_speakers() -> None:
@@ -144,6 +119,10 @@ def test_media_parser_extracts_query_area_and_all_speakers() -> None:
     only_office = parse_media_command({"query": "Play music only in office"})
     transfer = parse_media_command({"query": "Przenieś muzykę do Salonu"})
     multi_room = parse_media_command({"query": "Graj muzykę w sypialni i łazience"})
+    repeated_preposition = parse_media_command({"query": "Włącz muzykę w biurze i w łazience."})
+    aliased_multi_room = parse_media_command(
+        {"query": "Graj muzykę do pracy w salonie, w łazience i w pracowni"}
+    )
     current_music = parse_media_command(
         {
             "intent": "play_media",
@@ -154,7 +133,7 @@ def test_media_parser_extracts_query_area_and_all_speakers() -> None:
 
     assert room.intent == "play_media"
     assert room.query == "soft jazz"
-    assert room.areas == ("łazience",)
+    assert room.areas == ("bathroom",)
     assert all_speakers.query == "Liked Songs"
     assert all_speakers.media_type == "playlist"
     assert all_speakers.all_speakers
@@ -162,9 +141,11 @@ def test_media_parser_extracts_query_area_and_all_speakers() -> None:
     assert only_office.areas == ("office",)
     assert only_office.replace_outputs
     assert transfer.intent == "transfer_playback"
-    assert transfer.areas == ("Salonu",)
+    assert transfer.areas == ("living room",)
     assert multi_room.intent == "start_last"
-    assert multi_room.areas == ("sypialni", "łazience")
+    assert multi_room.areas == ("bedroom", "bathroom")
+    assert repeated_preposition.areas == ("office", "bathroom")
+    assert aliased_multi_room.areas == ("living room", "bathroom", "office")
     assert current_music.intent == "transfer_playback"
     assert current_music.query == "Graj tę muzykę na wszystkich głośnikach w domu."
     assert current_music.all_speakers
@@ -180,8 +161,7 @@ def test_media_parser_handles_provider_phrase_and_stop_suffix() -> None:
     assert stop.intent == "stop"
     assert stop.simple
     assert turn_off is not None
-    assert turn_off["domain"] == "media_player"
-    assert turn_off["command"]["intent"] == "stop"
+    assert turn_off == _route("Wyłącz muzykę.")
 
 
 def test_media_parser_handles_tok_fm_radio_and_whole_home() -> None:
@@ -209,11 +189,7 @@ def test_media_domain_agent_start_last_uses_default_music_when_queue_and_memory_
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Spotify!"},
-    }
+    task = _route("Spotify!")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -234,11 +210,7 @@ def test_media_domain_agent_start_last_uses_conversation_user_media_settings() -
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Spotify!"},
-    }
+    task = _route("Spotify!")
     conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
@@ -268,11 +240,7 @@ def test_media_domain_agent_start_last_is_noop_when_target_is_already_playing() 
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Spotify!"},
-    }
+    task = _route("Spotify!")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -292,11 +260,7 @@ def test_media_domain_agent_executes_simple_volume_without_llm() -> None:
         connection=connection,
         ollama_connection=ollama,
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "volume_delta", "query": "Daj głośniej", "volume_delta": 0.05},
-    }
+    task = _route("Daj głośniej")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -316,11 +280,7 @@ def test_media_domain_agent_keeps_volume_on_direct_entity_when_ma_duplicate_exis
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "volume_delta", "query": "Daj głośniej", "volume_delta": 0.05},
-    }
+    task = _route("Daj głośniej")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -338,11 +298,7 @@ def test_media_domain_agent_interprets_planner_percent_volume_level() -> None:
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "set_volume", "query": "Ustaw głośność na 10.", "volume_level": 10.0},
-    }
+    task = _route("Ustaw głośność na 10.")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -361,11 +317,7 @@ def test_media_domain_agent_does_not_clarify_when_current_area_has_no_speaker() 
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "volume_delta", "query": "Przygłośnij muzykę", "volume_delta": 0.05},
-    }
+    task = _route("Przygłośnij muzykę")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "bedroom"}), task, {}))
 
@@ -373,13 +325,72 @@ def test_media_domain_agent_does_not_clarify_when_current_area_has_no_speaker() 
         "status": "failed",
         "text": "Nie znalazłem głośnika w tym pokoju.",
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [],
     }
     assert connection.calls == [
         ("list_media_players", {"area_name": "bedroom", "music_assistant_only": False, "speakers_only": True}),
         ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
     ]
+
+
+def test_media_unknown_named_area_clarifies_and_resumes_in_same_dsa() -> None:
+    connection = FakeMediaConnection(player_state="idle")
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_connection=FakeOllamaConnection([]),
+    )
+    conversation = agent_context(
+        "c1",
+        {"medium": "voice", "area": "office"},
+    )
+    task = _route("Włącz muzykę w garażu")
+
+    first = asyncio.run(
+        agent.run_task(
+            conversation,
+            task,
+            {"salient_entities": ["media_player.living_room"]},
+        )
+    )
+
+    assert first["status"] == "needs_clarification"
+    assert not any(call[0].startswith("media_player_") for call in connection.calls)
+    result = asyncio.run(
+        agent.resume_clarification(
+            conversation,
+            task,
+            first["clarification_question"],
+            "w biurze",
+            {},
+            None,
+        )
+    )
+    assert result["status"] == "ok"
+    assert any(call[0] == "music_assistant_play_media" for call in connection.calls)
+
+
+def test_media_named_area_inventory_failure_is_not_a_clarification() -> None:
+    connection = FakeMediaConnection(
+        area_errors={"office": {"error": "home_assistant_inventory_not_ready"}}
+    )
+    agent = MediaPlayerDomainAgent(
+        model="qwen3:4b-instruct",
+        connection=connection,
+        ollama_connection=FakeOllamaConnection([]),
+    )
+
+    result = asyncio.run(
+        agent.run_task(
+            agent_context("c1", {"medium": "voice", "area": "bedroom"}),
+            _route("Włącz muzykę w biurze"),
+            {},
+        )
+    )
+
+    assert result["status"] == "failed"
+    assert result["needs_clarification"] is False
+    assert "Home Assistant" in result["text"]
 
 
 def test_media_domain_agent_uses_llm_for_complex_command() -> None:
@@ -400,11 +411,7 @@ def test_media_domain_agent_uses_llm_for_complex_command() -> None:
         connection=connection,
         ollama_connection=ollama,
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"query": "zapuść coś do kolacji w salonie"},
-    }
+    task = _route("zapuść coś do kolacji w salonie")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -426,11 +433,7 @@ def test_media_domain_agent_falls_back_to_raw_play_media_when_search_config_entr
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "play_media", "query": "Włącz hip-hop na Spotify."},
-    }
+    task = _route("Włącz hip-hop na Spotify.")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -450,11 +453,7 @@ def test_media_domain_agent_prefers_ma_duplicate_for_play_media() -> None:
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "play_media", "query": "Włącz hip-hop na Spotify."},
-    }
+    task = _route("Włącz hip-hop na Spotify.")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -474,11 +473,7 @@ def test_media_domain_agent_uses_conversation_user_liked_songs_without_searching
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "play_media", "query": "Graj moje ulubione"},
-    }
+    task = _route("Graj moje ulubione")
     conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
@@ -506,11 +501,7 @@ def test_media_domain_agent_answers_configuration_query_without_service_calls() 
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "query_configuration", "query": "jaka jest moja domyślna muzyka?"},
-    }
+    task = _route("jaka jest moja domyślna muzyka?")
     conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
@@ -523,7 +514,6 @@ def test_media_domain_agent_answers_configuration_query_without_service_calls() 
         "status": "ok",
         "text": "Mam zapisaną konfigurację mediów: domyślna muzyka: moje ulubione, polubione utwory: Liked Songs macson_g.",
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [],
         "final_reply_mode": "verbatim",
     }
@@ -537,11 +527,7 @@ def test_media_domain_agent_resolves_user_playlist_alias() -> None:
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "play_media", "query": "Muzyka do pracy"},
-    }
+    task = _route("Graj muzykę do pracy")
     conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
@@ -587,11 +573,7 @@ def test_media_domain_agent_tries_next_search_candidate_when_playlist_is_unplaya
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "play_media", "query": "Muzyka do pracy", "all_speakers": True},
-    }
+    task = _route("Graj muzykę do pracy")
     conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
@@ -603,7 +585,7 @@ def test_media_domain_agent_tries_next_search_candidate_when_playlist_is_unplaya
     assert result["status"] == "ok"
     assert result["text"] == "Włączam Post Rock - Focus."
     assert connection.calls == [
-        ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
+        ("list_media_players", {"area_name": "office", "music_assistant_only": False, "speakers_only": True}),
         ("music_assistant_search", {"name": "Post Rock Focus", "media_type": "playlist", "limit": 5}),
         ("music_assistant_play_media", {"entity_ids": ["media_player.office_2"], "media_id": "library://playlist/13", "media_type": "playlist"}),
         (
@@ -618,7 +600,7 @@ def test_media_domain_agent_tries_next_search_candidate_when_playlist_is_unplaya
     ]
 
 
-def test_media_domain_agent_uses_llm_to_resolve_inflected_playlist_alias() -> None:
+def test_media_domain_agent_resolves_inflected_playlist_alias_deterministically() -> None:
     connection = FakeMediaConnection(include_ma_duplicate=True)
     ollama = FakeOllamaConnection(
         [
@@ -634,11 +616,7 @@ def test_media_domain_agent_uses_llm_to_resolve_inflected_playlist_alias() -> No
         connection=connection,
         ollama_connection=ollama,
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "play_media", "query": "Graj muzykę do pracy w całym domu.", "all_speakers": True},
-    }
+    task = _route("Graj muzykę do pracy w całym domu.")
     conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
@@ -648,12 +626,7 @@ def test_media_domain_agent_uses_llm_to_resolve_inflected_playlist_alias() -> No
     result = asyncio.run(agent.run_task(conversation, task, {}))
 
     assert result["status"] == "ok"
-    assert len(ollama.requests) == 1
-    resolver_payload = json.loads(ollama.requests[0]["messages"][1]["content"])
-    assert resolver_payload["query"] == "muzykę do pracy"
-    assert resolver_payload["aliases"] == [
-        {"alias": "Muzyka do pracy", "target": "Post Rock Focus", "media_type": "playlist"}
-    ]
+    assert ollama.requests == []
     assert connection.calls == [
         ("list_media_players", {"area_name": "", "music_assistant_only": False, "speakers_only": True}),
         ("music_assistant_search", {"name": "Post Rock Focus", "media_type": "playlist", "limit": 5}),
@@ -681,11 +654,7 @@ def test_media_domain_agent_groups_whole_home_named_media_before_playback() -> N
         connection=connection,
         ollama_connection=ollama,
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "play_media", "query": "Graj muzykę do pracy w całym domu.", "all_speakers": True},
-    }
+    task = _route("Graj muzykę do pracy w całym domu.")
     conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
@@ -735,11 +704,7 @@ def test_media_domain_agent_warns_when_alias_resolver_exhausts_budget(caplog) ->
         connection=connection,
         ollama_connection=ollama,
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "play_media", "query": "Graj muzykę do pracy w całym domu.", "all_speakers": True},
-    }
+    task = _route("Graj playlistę do pracy w całym domu.")
     conversation = agent_context(
         "c1",
         {"medium": "voice", "area": "office", "user": "Maciek"},
@@ -768,15 +733,12 @@ def test_media_domain_agent_start_last_uses_in_memory_recent_media() -> None:
         ollama_connection=FakeOllamaConnection([]),
     )
     conversation = agent_context("c1", {"medium": "voice", "area": "office", "user": "Maciek"})
-    play_task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "play_media", "query": "soft jazz", "media_type": "playlist"},
-    }
+    play_task = _route("Graj soft jazz")
     start_last_task = {
         "id": "t2",
         "domain": "media_player",
-        "command": {"intent": "start_last", "query": "play music"},
+        "request": "play music",
+        "depends_on": [],
     }
 
     play_result = asyncio.run(agent.run_task(conversation, play_task, {}))
@@ -828,16 +790,7 @@ def test_media_domain_agent_relocates_current_queue_for_only_request() -> None:
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {
-            "intent": "transfer_playback",
-            "query": "Graj muzykę tylko w office",
-            "areas": ["office"],
-            "replace_outputs": True,
-        },
-    }
+    task = _route("Graj muzykę tylko w office")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -885,11 +838,7 @@ def test_media_domain_agent_start_last_with_explicit_target_transfers_active_que
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Graj muzykę w całym domu", "all_speakers": True},
-    }
+    task = _route("Graj muzykę w całym domu")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -958,15 +907,7 @@ def test_media_domain_agent_relocates_current_music_reference_instead_of_searchi
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {
-            "intent": "play_media",
-            "query": "Graj tę muzykę na wszystkich głośnikach w domu.",
-            "all_speakers": True,
-        },
-    }
+    task = _route("Graj tę muzykę na wszystkich głośnikach w domu.")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -1023,11 +964,7 @@ def test_media_domain_agent_adds_requested_room_to_current_outputs() -> None:
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
-    }
+    task = _route("Graj muzykę w salonie")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -1076,11 +1013,7 @@ def test_media_domain_agent_treats_join_timeout_as_success_when_state_changed() 
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
-    }
+    task = _route("Graj muzykę w salonie")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -1130,11 +1063,7 @@ def test_media_domain_agent_falls_back_to_transfer_when_join_is_unavailable() ->
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
-    }
+    task = _route("Graj muzykę w salonie")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -1164,11 +1093,7 @@ def test_media_domain_agent_start_last_with_explicit_target_resumes_when_nothing
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Graj muzykę w salonie", "areas": ["living room"]},
-    }
+    task = _route("Graj muzykę w salonie")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -1211,11 +1136,7 @@ def test_media_domain_agent_start_last_resumes_queue_instead_of_replaying_curren
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "start_last", "query": "Wznów muzykę", "areas": ["office"]},
-    }
+    task = _route("Wznów muzykę")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -1236,15 +1157,7 @@ def test_media_domain_agent_start_last_groups_multiple_targets_and_resumes_idle_
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {
-            "intent": "start_last",
-            "query": "Włącz muzykę w biurze i w łazience.",
-            "areas": ["office", "bathroom"],
-        },
-    }
+    task = _route("Włącz muzykę w office i bathroom.")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -1272,11 +1185,7 @@ def test_media_domain_agent_plays_tok_fm_radio_from_music_assistant_search() -> 
         connection=connection,
         ollama_connection=FakeOllamaConnection([]),
     )
-    task = {
-        "id": "t1",
-        "domain": "media_player",
-        "command": {"intent": "play_media", "query": "Włącz TOK FM w całym domu"},
-    }
+    task = _route("Włącz TOK FM w całym domu")
 
     result = asyncio.run(agent.run_task(agent_context("c1", {"medium": "voice", "area": "office"}), task, {}))
 
@@ -1301,6 +1210,7 @@ class FakeMediaConnection:
         join_result: dict | None = None,
         unjoin_result: dict | None = None,
         join_applies: bool = False,
+        area_errors: dict[str, dict] | None = None,
     ) -> None:
         self.calls = []
         self.player_state = player_state
@@ -1312,6 +1222,7 @@ class FakeMediaConnection:
         self.join_result = join_result
         self.unjoin_result = unjoin_result
         self.join_applies = join_applies
+        self.area_errors = area_errors or {}
 
     async def list_media_players(self, *, area_name: str = "", music_assistant_only: bool = True, speakers_only: bool = True):
         self.calls.append(
@@ -1322,6 +1233,10 @@ class FakeMediaConnection:
         )
         if not area_name and self.global_players is not None:
             return self.global_players
+        if area_name in self.area_errors:
+            return self.area_errors[area_name]
+        if area_name == "garażu":
+            return {"error": "unknown_area", "area": area_name}
         if area_name == "bedroom":
             return []
         area_entities = {

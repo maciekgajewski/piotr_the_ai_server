@@ -11,22 +11,16 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiohttp import ClientSession, ClientTimeout
 
-from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
+from ai_server.domain_agents.interfaces import DomainTask
+from ai_server.orchestrator.messages import JsonValue
 from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.utils.text import normalize_text
 
 
-PLANNING_PROMPT = """
-For time tasks:
-- Include geo_location or timezone only when the user explicitly asks for a geographic place or timezone.
-- For named cities or places such as Jacksonville, set geo_location and omit timezone.
-- For plain questions like "która godzina?", omit geo_location and timezone; the time agent already knows server_location and server_timezone.
-- Never copy conversation.area into time.geo_location.
-- Omit unknown fields instead of writing placeholder strings like "optional".
-
-Command shape:
-{"query": "original time question", "geo_location": "geographic place when named", "timezone": "IANA timezone only when explicitly named"}
-"""
+ROUTING_SUMMARY = (
+    "Current time, date, weekday, and timezone questions for the server location "
+    "or an explicitly named geographic place or timezone."
+)
 
 DEFAULT_TIMEZONE = "UTC"
 KNOWN_LOCATION_TIMEZONES = {
@@ -135,30 +129,11 @@ class CurrentTimeDomainAgent:
         )
         self._logger = logging.getLogger(f"{__name__}.CurrentTimeDomainAgent[{self._timezone}:{location or 'no-location'}]")
 
-    def known_utterances(self) -> dict[str, DomainTask]:
-        return {
-            "Która godzina?": _known_task("time", {"query": "Która godzina?"}),
-        }
+    def known_utterances(self) -> tuple[str, ...]:
+        return ("Która godzina?",)
 
-    def query_capabilities(self) -> dict[str, QueryCapability]:
-        return {
-            "current_time": QueryCapability(
-                name="Current time and date",
-                description="Read the current time/date for the local server timezone or an explicitly named place/timezone.",
-                intents=("current_time", "current_date"),
-                command_template={
-                    "query": "original time/date question",
-                    "geo_location": "geographic place when named",
-                    "timezone": "IANA timezone only when explicitly named",
-                },
-            )
-        }
-
-    def query_capabilities_prompt(self) -> str:
-        return ""
-
-    def planning_prompt(self) -> str:
-        return PLANNING_PROMPT
+    def routing_summary(self) -> str:
+        return ROUTING_SUMMARY
 
     async def run_task(
         self,
@@ -167,11 +142,10 @@ class CurrentTimeDomainAgent:
         active_context: dict[str, Any],
     ) -> dict[str, Any]:
         del active_context
-        command = task.get("command", {})
-        command = command if isinstance(command, dict) else {}
-        query = _string_or_empty(command.get("query"))
-        target_timezone = _string_or_empty(command.get("timezone"))
-        command_location = _string_or_empty(command.get("geo_location"))
+        query = task["request"]
+        command: dict[str, Any] = {"query": query}
+        target_timezone = _extract_timezone(query)
+        command_location = ""
         query_location = _extract_location(query)
         target_location = command_location if _command_geo_location(command_location, conversation) else query_location
 
@@ -219,7 +193,6 @@ class CurrentTimeDomainAgent:
             "status": "ok",
             "text": text,
             "needs_clarification": False,
-            "clarification_question": None,
             "entities": [f"timezone.{timezone}"],
             "timezone": timezone,
             "location": target_location or None,
@@ -238,7 +211,20 @@ class CurrentTimeDomainAgent:
         }
         if response_kind == "current_time":
             result["final_reply_mode"] = "verbatim"
-        return result
+        return {key: value for key, value in result.items() if value is not None}
+
+    async def resume_clarification(
+        self,
+        conversation: AgentExecutionContext,
+        task: DomainTask,
+        question: str,
+        answer: str,
+        active_context: dict[str, Any],
+        continuation: JsonValue,
+    ) -> dict[str, Any]:
+        del question, continuation
+        resumed = {**task, "request": f"{task['request']}\nOdpowiedź użytkownika: {answer}"}
+        return await self.run_task(conversation, resumed, active_context)
 
     async def close(self) -> None:
         await self._timezone_resolver.close()
@@ -406,17 +392,6 @@ def _unknown_timezone_result(location: str) -> dict[str, Any]:
     }
 
 
-def _known_task(domain: str, command: dict[str, Any]) -> DomainTask:
-    return {
-        "id": "t1",
-        "domain": domain,
-        "command": command,
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    }
-
-
 def _display_location(location: str) -> str:
     normalized_location = normalize_text(location)
     if normalized_location in {"wroclaw", "wrocław", "wroclawiu", "wrocławiu"}:
@@ -442,6 +417,11 @@ def _extract_location(query: str) -> str:
             if location:
                 return location
     return ""
+
+
+def _extract_timezone(query: str) -> str:
+    match = re.search(r"\b[A-Za-z_]+/[A-Za-z_+-]+\b", query)
+    return match.group(0) if match is not None else ""
 
 
 def _command_geo_location(command_location: str, conversation: AgentExecutionContext) -> bool:

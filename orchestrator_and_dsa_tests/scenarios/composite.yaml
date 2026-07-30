@@ -7,14 +7,8 @@ cases:
       - wyłącz klimatyzację
     expected_tasks:
       - domain: home_assistant
-        command:
-          selection:
-            include:
-              - domain: climate
-                scope: single
-                area: office
-          operation:
-            intent: turn_off
+        request:
+          $nonempty: true
     expected_calls:
       - tool: modify_device
         arguments:
@@ -33,9 +27,8 @@ cases:
       - Która godzina?
     expected_tasks:
       - domain: time
-        command:
-          query:
-            $any: ["Która godzina?", "Która godzina", "która godzina?"]
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [dziesiąta, czterdzieści, sześć]
 
@@ -44,9 +37,8 @@ cases:
       - W którym roku urodził się Albert Einstein według Wikipedii?
     expected_tasks:
       - domain: wikipedia
-        command:
-          topic:
-            $any: [Albert Einstein, Einstein]
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [Einstein, "1879"]
 
@@ -55,9 +47,8 @@ cases:
       - Spotify!
     expected_tasks:
       - domain: media_player
-        command:
-          intent: start_last
-          query: Spotify!
+        request:
+          $nonempty: true
     expected_calls:
       - tool: list_media_players
         arguments:
@@ -83,10 +74,8 @@ cases:
       - Graj muzykę rockową
     expected_tasks:
       - domain: media_player
-        command:
-          intent: play_media
-          query:
-            $any: [Graj muzykę rockową, muzykę rockową, rockową, rock]
+        request:
+          $nonempty: true
     expected_calls:
       - tool: list_media_players
         arguments:
@@ -111,10 +100,8 @@ cases:
       - Graj moje ulubione
     expected_tasks:
       - domain: media_player
-        command:
-          intent: play_media
-          query:
-            $any: [Graj moje ulubione, Liked Songs]
+        request:
+          $nonempty: true
     expected_calls:
       - tool: list_media_players
         arguments:
@@ -134,12 +121,8 @@ cases:
       - Graj muzykę do pracy w salonie, w łazience i w pracowni
     expected_tasks:
       - domain: media_player
-        command:
-          intent: play_media
-          query:
-            $any: [Muzyka do pracy, muzyka do pracy]
-          media_type: playlist
-          areas: [living_room, bathroom, office]
+        request:
+          $nonempty: true
     expected_calls:
       - tool: list_media_players
         arguments:
@@ -182,12 +165,11 @@ cases:
       - wyłącz klimę w biurze i powiedz która godzina jest teraz w Jacksonville
     expected_tasks:
       - domain: home_assistant
-        command:
-          operation:
-            intent: turn_off
+        request:
+          $nonempty: true
       - domain: time
-        command:
-          geo_location: Jacksonville
+        request:
+          $nonempty: true
     expected_calls:
       - tool: modify_device
         arguments:
@@ -206,14 +188,8 @@ cases:
       - wyłącz klimatyzację w pracowni
     expected_tasks:
       - domain: home_assistant
-        command:
-          selection:
-            include:
-              - domain: climate
-                scope: single
-                area: office
-          operation:
-            intent: turn_off
+        request:
+          $nonempty: true
     expected_calls:
       - tool: modify_device
         arguments:
@@ -232,13 +208,11 @@ cases:
       - włącz klimę w salonie i sprawdź w Wikipedii rok urodzenia Einsteina
     expected_tasks:
       - domain: home_assistant
-        command:
-          operation:
-            intent: turn_on
+        request:
+          $nonempty: true
       - domain: wikipedia
-        command:
-          topic:
-            $any: [Albert Einstein, Einstein]
+        request:
+          $nonempty: true
     expected_calls:
       - tool: modify_device
         arguments:
@@ -252,18 +226,11 @@ cases:
       - Na 22 stopnie
     expected_tasks:
       - domain: home_assistant
+        request:
+          $nonempty: true
       - domain: home_assistant
-        command:
-          selection:
-            include:
-              - domain: climate
-                scope: single
-                area:
-                  $any: [salon, living_room]
-          operation:
-            intent: set_temperature
-            parameters:
-              temperature: 22
+        request:
+          $nonempty: true
     expected_calls:
       - tool: modify_device
         arguments:
@@ -277,7 +244,4 @@ cases:
     expected_replies:
       - contains_all: [temperatur]
       - contains_all: ["22"]
-    expected_planning_context:
-      - message_index: 1
-        salient_entities:
-          - climate.living_room
+    expected_planning_requests: 1

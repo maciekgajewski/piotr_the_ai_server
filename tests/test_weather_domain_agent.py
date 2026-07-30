@@ -31,8 +31,12 @@ from ai_server.domain_agents.weather.formatting import format_current_weather
 from ai_server.domain_agents.weather.local_cache import LOCAL_FORECAST_REQUESTS, WeatherLocalCache
 from ai_server.domain_agents.weather.providers.imgw import ImgwWeatherProvider, _station_slug
 from ai_server.domain_agents.weather.providers.open_meteo import OpenMeteoWeatherProvider
-from ai_server.orchestrator.known_utterances import collect_known_utterance_tasks, known_utterance_task
+from ai_server.orchestrator.known_utterances import collect_known_utterance_domains, known_utterance_task
 from ai_server.utils import JsonFileStore
+
+
+def _route(request: str) -> dict:
+    return {"id": "t1", "domain": "weather", "request": request, "depends_on": []}
 
 
 def test_weather_planning_contract_routes_minimal_tasks(tmp_path: Path) -> None:
@@ -43,38 +47,21 @@ def test_weather_planning_contract_routes_minimal_tasks(tmp_path: Path) -> None:
         providers=[],
     )
 
-    assert agent.query_capabilities()["weather_state"].command_template == {
-        "query": "original weather question",
-    }
-    assert '{"query": "original weather question"}' in agent.planning_prompt()
-    assert "get_weather_forecast" not in agent.planning_prompt()
-    assert '"location"' not in agent.planning_prompt()
+    assert "weather" in agent.routing_summary().casefold()
+    assert "forecast" in agent.routing_summary().casefold()
+    assert "tool" not in agent.routing_summary().casefold()
 
 
 def test_weather_fast_lane_creates_current_temperature_task() -> None:
     task = weather_task_from_utterance("Jaka jest temperatura?")
 
-    assert task == {
-        "id": "t1",
-        "domain": "weather",
-        "command": {
-            "tool": "get_weather_now",
-            "query": "Jaka jest temperatura?",
-            "focus": "temperature",
-        },
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
-    }
+    assert task == _route("Jaka jest temperatura?")
 
 
 def test_weather_fast_lane_creates_weekend_forecast_task() -> None:
     task = weather_task_from_utterance("Jaka pogoda w ten weekend?")
 
-    assert task["command"]["tool"] == "get_weather_forecast"
-    assert task["command"]["horizon"] == "weekend"
-    assert task["command"]["granularity"] == "daily"
-    assert task["command"]["query"] == "Jaka pogoda w ten weekend?"
+    assert task == _route("Jaka pogoda w ten weekend?")
 
 
 @pytest.mark.parametrize(
@@ -91,41 +78,18 @@ def test_weather_fast_lane_avoids_ambiguous_or_location_queries(utterance: str) 
 
 
 @pytest.mark.parametrize(
-    ("utterance", "expected_command"),
+    "utterance",
     [
-        ("Pogoda?", {"tool": "get_weather_now", "query": "Pogoda?"}),
-        ("jaka jest pogoda", {"tool": "get_weather_now", "query": "jaka jest pogoda"}),
-        (
-            "jaka dziś pogoda",
-            {"tool": "get_weather_forecast", "query": "jaka dziś pogoda", "horizon": "today", "granularity": "daily"},
-        ),
-        (
-            "jaka jutro pogoda",
-            {"tool": "get_weather_forecast", "query": "jaka jutro pogoda", "horizon": "tomorrow", "granularity": "daily"},
-        ),
-        (
-            "jaka pogoda na weekend",
-            {
-                "tool": "get_weather_forecast",
-                "query": "jaka pogoda na weekend",
-                "horizon": "weekend",
-                "granularity": "daily",
-            },
-        ),
-        (
-            "jaka pogoda w ten weekend",
-            {
-                "tool": "get_weather_forecast",
-                "query": "jaka pogoda w ten weekend",
-                "horizon": "weekend",
-                "granularity": "daily",
-            },
-        ),
+        "Pogoda?",
+        "jaka jest pogoda",
+        "jaka dziś pogoda",
+        "jaka jutro pogoda",
+        "jaka pogoda na weekend",
+        "jaka pogoda w ten weekend",
     ],
 )
-def test_weather_known_utterances_are_explicit_rich_tasks(
+def test_weather_known_utterances_are_route_only_tasks(
     utterance: str,
-    expected_command: dict[str, str],
     tmp_path: Path,
 ) -> None:
     agent = WeatherDomainAgent(
@@ -134,10 +98,9 @@ def test_weather_known_utterances_are_explicit_rich_tasks(
         cache_dir=tmp_path,
         providers=[],
     )
-    task = known_utterance_task(utterance, collect_known_utterance_tasks({"weather": agent}))
+    task = known_utterance_task(utterance, collect_known_utterance_domains({"weather": agent}))
 
-    assert task["domain"] == "weather"
-    assert task["command"] == expected_command
+    assert task == _route(utterance)
 
 
 def test_imgw_provider_resolves_wroclaw_strachowice_alias() -> None:
@@ -447,7 +410,7 @@ def test_weather_domain_agent_fast_lane_uses_local_cache() -> None:
     result = asyncio.run(
         agent.run_task(
             agent_context(conversation_id="c1", attributes={"medium": "voice"}),
-            {"id": "t1", "domain": "weather", "command": {"tool": "get_weather_now", "query": "Pogoda?"}},
+            _route("Pogoda?"),
             {},
         )
     )
@@ -472,7 +435,7 @@ def test_weather_domain_agent_fast_lane_returns_astronomy_without_agent_loop() -
     result = asyncio.run(
         agent.run_task(
             agent_context(conversation_id="c1", attributes={"medium": "voice"}),
-            {"id": "t1", "domain": "weather", "command": {"query": "o której dzisiaj zachód słońca."}},
+            _route("o której dzisiaj zachód słońca."),
             {},
         )
     )
@@ -513,7 +476,7 @@ def test_weather_domain_agent_formats_simple_current_weather() -> None:
     result = asyncio.run(
         agent.run_task(
             agent_context(conversation_id="c1", attributes={"medium": "voice"}),
-            {"id": "t1", "domain": "weather", "command": {"tool": "get_weather_now", "query": "Pogoda?"}},
+            _route("Pogoda?"),
             {},
         )
     )
@@ -556,17 +519,7 @@ def test_weather_domain_agent_runs_agent_loop_for_non_fast_lane_query() -> None:
     result = asyncio.run(
         agent.run_task(
             agent_context(conversation_id="c1", attributes={"medium": "voice"}),
-            {
-                "id": "t1",
-                "domain": "weather",
-                "command": {
-                    "tool": "get_weather_now",
-                    "query": "Czy dziś wieczorem będzie deszcz?",
-                    "location": "Europe/Warsaw",
-                    "horizon": "tomorrow",
-                    "focus": "temperature",
-                },
-            },
+            _route("Czy dziś wieczorem będzie deszcz?"),
             {"active_domain": "weather"},
         )
     )
@@ -580,7 +533,7 @@ def test_weather_domain_agent_runs_agent_loop_for_non_fast_lane_query() -> None:
     assert loop_factory.config.fallback_backoff_seconds == 120
     assert isinstance(loop_factory.tools, WeatherDomainToolSet)
     payload = json.loads(loop_factory.loop.user_message)
-    assert payload["task"]["command"] == {"query": "Czy dziś wieczorem będzie deszcz?"}
+    assert payload["task"] == _route("Czy dziś wieczorem będzie deszcz?")
     assert payload["conversation"]["server_location"] == "Wrocław"
 
 
@@ -609,7 +562,7 @@ def test_weather_domain_agent_removes_celsius_degree_symbol_from_agent_loop_repl
     result = asyncio.run(
         agent.run_task(
             agent_context(conversation_id="c1", attributes={"medium": "voice"}),
-            {"id": "t1", "domain": "weather", "command": {"query": "Jaka pogoda w Gdańsku?"}},
+            _route("Jaka pogoda w Gdańsku?"),
             {},
         )
     )
@@ -633,7 +586,7 @@ def test_weather_domain_agent_rejects_non_json_agent_loop_reply() -> None:
     result = asyncio.run(
         agent.run_task(
             agent_context(conversation_id="c1", attributes={"medium": "voice"}),
-            {"id": "t1", "domain": "weather", "command": {"query": "Czy brać parasol?"}},
+            _route("Czy brać parasol?"),
             {},
         )
     )

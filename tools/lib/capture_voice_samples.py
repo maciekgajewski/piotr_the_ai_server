@@ -266,11 +266,11 @@ def load_example_phrases(scenarios_dir: Path = SCENARIOS_DIR) -> list[str]:
             messages = case.get("messages", [])
             if isinstance(messages, list):
                 phrases.extend(_strings(messages))
-            command = ((case.get("task") or {}).get("command") or {})
-            if isinstance(command, dict):
-                query = command.get("query")
-                if isinstance(query, str) and query.strip():
-                    phrases.append(query.strip())
+            task = case.get("task") or {}
+            if isinstance(task, dict):
+                request = task.get("request")
+                if isinstance(request, str) and request.strip():
+                    phrases.append(request.strip())
     return phrases
 
 

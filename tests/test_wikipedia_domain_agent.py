@@ -15,6 +15,10 @@ from ai_server.domain_agents.wikipedia import (
 )
 
 
+def _route(request: str) -> dict:
+    return {"id": "t1", "domain": "wikipedia", "request": request, "depends_on": []}
+
+
 def test_wikipedia_domain_agent_runs_agent_loop_and_parses_json_reply() -> None:
     client = FakeWikipediaClient()
     loop_factory = FakeLoopFactory(
@@ -46,7 +50,7 @@ def test_wikipedia_domain_agent_runs_agent_loop_and_parses_json_reply() -> None:
     result = asyncio.run(
         agent.run_task(
             conversation,
-            {"id": "t1", "domain": "wikipedia", "command": {"topic": "Albert Einstein", "fact": "birth year"}},
+            _route("W którym roku urodził się Albert Einstein?"),
             {},
         )
     )
@@ -61,7 +65,7 @@ def test_wikipedia_domain_agent_runs_agent_loop_and_parses_json_reply() -> None:
     assert loop_factory.config.fallback_backoff_seconds == 120
     assert isinstance(loop_factory.tools, WikipediaDomainToolSet)
     payload = json.loads(loop_factory.loop.user_message)
-    assert payload["task"]["command"]["topic"] == "Albert Einstein"
+    assert payload["task"] == _route("W którym roku urodził się Albert Einstein?")
 
 
 def test_wikipedia_domain_agent_preserves_source_title_terms_in_reply_text() -> None:
@@ -95,7 +99,7 @@ def test_wikipedia_domain_agent_rejects_non_json_agent_reply() -> None:
     result = asyncio.run(
         agent.run_task(
             conversation,
-            {"id": "t1", "domain": "wikipedia", "command": {"topic": "Albert Einstein"}},
+            _route("Opowiedz o Albercie Einsteinie."),
             {},
         )
     )
@@ -262,13 +266,45 @@ def test_wikipedia_domain_agent_asks_for_missing_topic_from_model() -> None:
     result = asyncio.run(
         agent.run_task(
             conversation,
-            {"id": "t1", "domain": "wikipedia", "command": {}},
+            _route("Sprawdź w Wikipedii."),
             {},
         )
     )
 
     assert result["status"] == "needs_clarification"
     assert result["clarification_question"] == "Czego mam poszukać w Wikipedii?"
+
+
+def test_wikipedia_general_property_query_reaches_wikidata_tool() -> None:
+    article = WikipediaArticle(
+        language="pl",
+        title="Szwajcaria",
+        extract="Szwajcaria jest państwem w Europie.",
+        description="państwo w Europie",
+        page_url="https://pl.wikipedia.org/wiki/Szwajcaria",
+        wikibase_item="Q39",
+    )
+    client = FakeWikipediaClient(article)
+    loop_factory = PropertyFactLoopFactory()
+    agent = WikipediaDomainAgent(
+        model="qwen3:4b",
+        ollama_url="http://ollama:11434",
+        client=client,
+        loop_factory=loop_factory.factory,
+        ollama_connection=FakeOllamaConnection(),
+    )
+
+    result = asyncio.run(
+        agent.run_task(
+            agent_context(conversation_id="conversation-1", attributes={"medium": "voice"}),
+            _route("Jakie jest nominalne GDP Szwajcarii?"),
+            {},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert "+824734000000" in result["text"]
+    assert any(call[0] == "wikidata_claims_by_property_query" for call in client.calls)
 
 
 def test_wikipedia_client_defaults_to_polish_then_english() -> None:
@@ -424,6 +460,51 @@ class FakeLoop:
     async def send_user_message(self, message: str) -> AgentReply:
         self.user_message = message
         return AgentReply(reply_text=self._reply_text, end_conversation=False)
+
+
+class PropertyFactLoopFactory:
+    def __init__(self) -> None:
+        self.tools = None
+
+    def factory(self, config, system_prompt, tools, ollama_connection, **kwargs):
+        del config, system_prompt, ollama_connection, kwargs
+        self.tools = tools
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        pass
+
+    async def send_user_message(self, message: str) -> AgentReply:
+        del message
+        search = await self.tools.search_wikipedia("Szwajcaria", limit=1)
+        candidate = search["results"][0]
+        summary = await self.tools.get_wikipedia_summary(
+            candidate["title"],
+            candidate["language"],
+        )
+        claims = await self.tools.find_wikidata_claims(
+            summary["article"]["wikibase_item"],
+            "GDP",
+            language="en",
+        )
+        amount = claims["result"]["claims"][0]["values"][0]["value"]["amount"]
+        return AgentReply(
+            reply_text=json.dumps(
+                {
+                    "status": "ok",
+                    "text": f"Nominalne GDP Szwajcarii wynosi {amount}.",
+                    "needs_clarification": False,
+                    "entities": ["wikipedia.pl.Szwajcaria"],
+                    "title": "Szwajcaria",
+                    "language": "pl",
+                },
+                ensure_ascii=False,
+            ),
+            end_conversation=False,
+        )
 
 
 class FakeOllamaConnection:

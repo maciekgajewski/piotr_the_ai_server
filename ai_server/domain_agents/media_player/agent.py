@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any
 
-from ai_server.domain_agents.interfaces import DomainTask, QueryCapability
+from ai_server.domain_agents.interfaces import DomainTask
 from ai_server.domain_agents.media_player.formatting import (
     format_now_playing,
     format_playing_media,
@@ -29,38 +29,15 @@ from ai_server.domain_agents.media_player.parser import (
 from ai_server.home_assistant import HomeAssistantConnection
 from ai_server.conversations.agent_context import AgentExecutionContext
 from ai_server.ollama_connection import OLLAMA_BASE_URL, OllamaConnection
+from ai_server.orchestrator.messages import JsonValue
 from ai_server.utils.conversation_style import reply_style_instruction
 from ai_server.utils.processing import ProcessingUpdateCallback, await_with_processing_updates
 
 
-PLANNING_PROMPT = """
-For media_player tasks:
-- For music commands without a named room, omit areas; the media player agent will use conversation.area.
-- For named rooms in media_player areas, output canonical area_id values from conversation.home_assistant_areas when it is present, not the user's inflected phrase.
-- For one media request naming multiple rooms, create one media_player task with all named rooms in areas; do not split one media request into one task per room.
-- Use all_speakers=true only when the user explicitly asks for all speakers/everywhere/whole house/wszystkie głośniki.
-- Use replace_outputs=true only when the user explicitly asks for only that room/player, e.g. "only in the office" or "tylko w biurze".
-- Use intent="transfer_playback" when the user asks to move/transfer currently playing music, e.g. "Przenieś muzykę do salonu", or asks to play generic music only in a specific room, e.g. "Graj muzykę tylko w biurze".
-- Use intent="transfer_playback" for references to the currently playing music plus output targeting, e.g. "Graj tę muzykę na wszystkich głośnikach"; do not treat "tę muzykę" or "obecną muzykę" as a media search query.
-- Use intent="play_media" for a named query or playlist-like request with room targets, e.g. "Graj muzykę do pracy w salonie i łazience"; do not use transfer_playback unless the user asks to move current music or says only/tylko.
-- For relative volume change requests such as "głośniej", "ciszej", "ścisz", "przygłośnij", "odrobinkę", "troszkę", or "troszeczkę", use intent="volume_delta", preserve the original phrase in query, and omit volume_delta unless the user gives an explicit numeric delta; the media_player agent infers the exact step.
-- Use intent="set_volume" only when the user asks for an absolute volume level such as "ustaw głośność na 10".
-- For playlist-like requests, named playlist aliases, or "muzyka do ..." requests such as "muzyka do pracy", set media_type="playlist".
-- For "moje ulubione", use query="Liked Songs" and media_type="playlist".
-- For "TOK FM", use domain="media_player", query="TOK FM", and media_type="radio".
-
-Command shape:
-{
-  "intent": "start_last|stop|volume_delta|set_volume|play_media|now_playing|transfer_playback",
-  "query": "original user phrase or media search text",
-  "media_type": "track|album|playlist|radio|artist optional",
-  "areas": ["optional named rooms"],
-  "all_speakers": false,
-  "replace_outputs": false,
-  "volume_level": 0.0,
-  "volume_delta": 0.0
-}
-"""
+ROUTING_SUMMARY = (
+    "Music and media playback, stop/resume, volume, speaker or room targeting, "
+    "playback transfer, what is playing, and the user's media defaults or aliases."
+)
 
 MEDIA_QUERY_RESOLUTION_NUM_PREDICT = 512
 
@@ -99,72 +76,20 @@ class MediaPlayerDomainAgent:
         self._recent_media_by_user: dict[str, MediaSearchItem] = {}
         self._logger = logging.getLogger(f"{__name__}.MediaPlayerDomainAgent[{model}]")
 
-    def known_utterances(self) -> dict[str, DomainTask]:
-        return {
-            "Spotify!": _known_task("start_last", "Spotify!"),
-            "Graj muzykę": _known_task("start_last", "Graj muzykę"),
-            "Grajh muzykę": _known_task("start_last", "Grajh muzykę"),
-            "Włącz muzykę": _known_task("start_last", "Włącz muzykę"),
-            "Dajcie tu jakąś muzyczkę": _known_task("start_last", "Dajcie tu jakąś muzyczkę"),
-            "Cisza": _known_task("stop", "Cisza"),
-            "Cicho": _known_task("stop", "Cicho"),
-            "Zatrzymaj muzykę": _known_task("stop", "Zatrzymaj muzykę"),
-            "Wyłącz muzykę": _known_task("stop", "Wyłącz muzykę"),
-            "Co to teraz gra?": _known_task("now_playing", "Co to teraz gra?"),
-            "Co to za muzyka?": _known_task("now_playing", "Co to za muzyka?"),
-            "Kto to gra?": _known_task("now_playing", "Kto to gra?"),
-            "Daj głośniej": _known_task("volume_delta", "Daj głośniej", volume_delta=DEFAULT_VOLUME_DELTA),
-            "Przygłośnij muzykę": _known_task("volume_delta", "Przygłośnij muzykę", volume_delta=DEFAULT_VOLUME_DELTA),
-            "Ścisz muzykę": _known_task("volume_delta", "Ścisz muzykę", volume_delta=-DEFAULT_VOLUME_DELTA),
-            "Odrobinkę głośniej": _known_task("volume_delta", "Odrobinkę głośniej", volume_delta=TINY_VOLUME_DELTA),
-            "Odrobinkę ciszej": _known_task("volume_delta", "Odrobinkę ciszej", volume_delta=-TINY_VOLUME_DELTA),
-            "Troszkę głośniej": _known_task("volume_delta", "Troszkę głośniej", volume_delta=TINY_VOLUME_DELTA),
-            "Troszkę ciszej": _known_task("volume_delta", "Troszkę ciszej", volume_delta=-TINY_VOLUME_DELTA),
-            "Troszeczkę głośniej": _known_task("volume_delta", "Troszeczkę głośniej", volume_delta=TINY_VOLUME_DELTA),
-            "Troszeczkęciszej": _known_task("volume_delta", "Troszeczkęciszej", volume_delta=-TINY_VOLUME_DELTA),
-            "Graj muzykę rockową": _known_task("play_media", "muzykę rockową"),
-            "Graj moje ulubione": _known_task("play_media", "Liked Songs", media_type="playlist"),
-            "Włącz TOK FM w całym domu": _known_task(
-                "play_media",
-                "Włącz TOK FM w całym domu",
-                media_type="radio",
-                all_speakers=True,
-            ),
-        }
-
-    def query_capabilities(self) -> dict[str, QueryCapability]:
-        return {
-            "playback_state": QueryCapability(
-                name="Playback and output state",
-                description="Read what is currently playing and which speakers/areas are active without changing playback.",
-                intents=("now_playing",),
-                command_template={
-                    "intent": "now_playing",
-                    "query": "original playback-state question",
-                    "areas": ["optional named rooms"],
-                    "all_speakers": False,
-                },
-            ),
-            "media_configuration": QueryCapability(
-                name="User media defaults and aliases",
-                description="Read configured default music, liked songs, playlist aliases, and other media preferences for the current user.",
-                intents=("query_configuration",),
-                command_template={
-                    "intent": "query_configuration",
-                    "query": "original media configuration question",
-                    "configuration_scope": "defaults|aliases|liked_songs optional",
-                },
-            ),
-        }
-
-    def query_capabilities_prompt(self) -> str:
+    def known_utterances(self) -> tuple[str, ...]:
         return (
-            "- For media playback state questions such as what is playing, use intent=now_playing.\n"
-            "- For questions about configured media defaults, liked songs, or playlist aliases, use intent=query_configuration."
+            "Spotify!", "Graj muzykę", "Grajh muzykę", "Włącz muzykę",
+            "Dajcie tu jakąś muzyczkę", "Cisza", "Cicho", "Zatrzymaj muzykę",
+            "Wyłącz muzykę", "Co to teraz gra?", "Co to za muzyka?", "Kto to gra?",
+            "Daj głośniej", "Przygłośnij muzykę", "Ścisz muzykę",
+            "Odrobinkę głośniej", "Odrobinkę ciszej", "Troszkę głośniej",
+            "Troszkę ciszej", "Troszeczkę głośniej", "Troszeczkęciszej",
+            "Graj muzykę rockową", "Graj moje ulubione", "Włącz TOK FM w całym domu",
+            "Graj muzykę do pracy w salonie, w łazience i w pracowni",
         )
 
-    def planning_prompt(self) -> str:
-        return PLANNING_PROMPT
+    def routing_summary(self) -> str:
+        return ROUTING_SUMMARY
 
     async def run_task(
         self,
@@ -172,8 +97,7 @@ class MediaPlayerDomainAgent:
         task: DomainTask,
         active_context: dict[str, Any],
     ) -> dict[str, Any]:
-        command = task.get("command", {})
-        command = command if isinstance(command, dict) else {}
+        command = _command_from_routed_request(task["request"])
         parsed = parse_media_command(command)
         logger = logging.getLogger(
             f"{__name__}.MediaPlayerDomainAgent[{self._model}:{conversation.conversation_id}:{task.get('id', 'unknown')}]"
@@ -218,6 +142,19 @@ class MediaPlayerDomainAgent:
         if parsed.intent == "transfer_playback":
             return await self._transfer_playback(conversation, parsed)
         return _clarification_result("Jaką muzykę albo który głośnik mam obsłużyć?")
+
+    async def resume_clarification(
+        self,
+        conversation: AgentExecutionContext,
+        task: DomainTask,
+        question: str,
+        answer: str,
+        active_context: dict[str, Any],
+        continuation: JsonValue,
+    ) -> dict[str, Any]:
+        del question, continuation
+        resumed = {**task, "request": f"{task['request']}\nOdpowiedź użytkownika: {answer}"}
+        return await self.run_task(conversation, resumed, active_context)
 
     async def close(self) -> None:
         if self._owns_ollama:
@@ -566,7 +503,11 @@ class MediaPlayerDomainAgent:
             for area in parsed.areas:
                 result = await self._list_speaker_players(area_name=area)
                 if isinstance(result, dict):
-                    return _failed_result(f"Nie znam pokoju: {area}.")
+                    if result.get("error") in {"unknown_area", "ambiguous_area"}:
+                        return _clarification_result(
+                            f"Nie znam pokoju: {area}. Który pokój masz na myśli?"
+                        )
+                    return _failed_result("Nie mogę teraz odczytać głośników z Home Assistant.")
                 targets.extend(_targets_from_player_mappings(result))
             if targets:
                 return _dedupe_targets(targets)
@@ -1105,6 +1046,29 @@ def _target_ids_text(targets: list[MediaTarget]) -> str:
     return _entity_ids_text([target.entity_id for target in targets])
 
 
+def _command_from_routed_request(request: str) -> dict[str, Any]:
+    command: dict[str, Any] = {"query": request}
+    normalized = ascii_fold(request.casefold())
+    configuration_markers = (
+        "domyslna muzyka",
+        "domyslne media",
+        "media default",
+        "media configuration",
+        "aliasy medi",
+        "media aliases",
+        "jakie mam alias",
+        "jak mam ustawione",
+    )
+    if any(marker in normalized for marker in configuration_markers):
+        command["intent"] = "query_configuration"
+        if "alias" in normalized:
+            command["configuration_scope"] = "aliases"
+    elif any(marker in normalized for marker in ("jak mam zapisane polubione", "liked songs configuration")):
+        command["intent"] = "query_configuration"
+        command["configuration_scope"] = "liked_songs"
+    return command
+
+
 def _entity_ids_text(entity_ids: list[str]) -> str:
     return ",".join(entity_ids)
 
@@ -1445,7 +1409,9 @@ def _queue_mapping(response: Any, entity_id: str) -> dict[str, Any] | None:
 
 
 def _normalize_media_lookup(value: str) -> str:
-    return ascii_fold(value).casefold().strip()
+    normalized = ascii_fold(value).casefold().strip()
+    normalized = normalized.replace("muzyke", "muzyka")
+    return " ".join(normalized.split())
 
 
 def _player_state(players: list[dict[str, Any]], entity_id: str) -> str:
@@ -1533,7 +1499,6 @@ def _ok_result(text: str, targets: list[MediaTarget]) -> dict[str, Any]:
         "status": "ok",
         "text": text,
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [f"media_player.{target.area_id}" for target in targets],
         "final_reply_mode": "verbatim",
     }
@@ -1544,7 +1509,6 @@ def _ok_text_result(text: str) -> dict[str, Any]:
         "status": "ok",
         "text": text,
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [],
         "final_reply_mode": "verbatim",
     }
@@ -1555,20 +1519,7 @@ def _failed_result(text: str) -> dict[str, Any]:
         "status": "failed",
         "text": text,
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [],
-    }
-
-
-def _known_task(intent: str, query: str, **command_options: Any) -> DomainTask:
-    command = {"intent": intent, "query": query, **command_options}
-    return {
-        "id": "t1",
-        "domain": "media_player",
-        "command": command,
-        "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
     }
 
 

@@ -4,64 +4,41 @@ import json
 import pytest
 
 from conftest import agent_context
-from ai_server.domain_agents.home_assistant import HomeAssistantDomainAgent, HomeAssistantDomainToolSet, _parse_domain_reply
+from ai_server.domain_agents.home_assistant import (
+    HomeAssistantDomainAgent,
+    _deterministic_command,
+    _parse_domain_reply,
+)
 
 
-def test_home_assistant_domain_agent_runs_one_agent_loop_task() -> None:
+def _route(request: str) -> dict:
+    return {
+        "id": "t1",
+        "domain": "home_assistant",
+        "request": request,
+        "depends_on": [],
+    }
+
+
+def test_home_assistant_domain_agent_resolves_context_reference_deterministically() -> None:
     FakeHomeAssistantConnection.calls = []
-    fake_loop = FakeAgentLoop(
-        {
-            "status": "ok",
-            "text": "Ustawiłem klimatyzację w salonie na 22 stopni.",
-            "needs_clarification": False,
-            "clarification_question": None,
-            "entities": ["climate.salon"],
-        }
-    )
     agent = HomeAssistantDomainAgent(
         model="qwen3:4b-instruct",
         ollama_url="http://ollama:11434",
         connection=FakeHomeAssistantConnection(),
-        loop_factory=fake_loop.factory,
     )
     conversation = agent_context(conversation_id="conversation-1", attributes={"medium": "voice", "area": "office", "user": "maciek"})
     task = {
         "id": "t1",
         "domain": "home_assistant",
-        "command": {
-            "selection": {
-                "include": [{"domain": "climate", "scope": "single", "area": "salon"}],
-                "exclude": [],
-            },
-            "operation": {
-                "intent": "set_temperature",
-                "description": "ustaw ją na 22 stopnie",
-                "parameters": {"temperature": 22},
-            },
-        },
+        "request": "ustaw ją na 22 stopnie",
         "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
     }
 
     result = asyncio.run(agent.run_task(conversation, task, {"salient_entities": ["climate.salon"]}))
 
     assert result["status"] == "ok"
     assert result["entities"] == ["climate.living_room"]
-    assert fake_loop.config.model == "qwen3:4b-instruct"
-    assert fake_loop.config.ollama_url == "http://ollama:11434"
-    assert fake_loop.config.fallback_model is None
-    assert isinstance(fake_loop.tools, HomeAssistantDomainToolSet)
-    assert "Current area: office" in fake_loop.system_prompt
-    assert "Reply style for conversation.medium=voice" in fake_loop.system_prompt
-    payload = json.loads(fake_loop.messages[0])
-    assert payload["task"] == task
-    assert payload["conversation"]["medium"] == "voice"
-    assert "numbers and dates as Polish words" in payload["conversation"]["reply_style"]
-    assert "active_context" not in payload
-    assert "execution_hints" in payload
-    assert fake_loop.tools._tools._current_user_message == "ustaw ją na 22 stopnie"
-    assert fake_loop.tools._tools._current_area == "office"
     assert FakeHomeAssistantConnection.calls == [
         ("find_devices", {"query": "", "device_type": "climate", "area_name": "salon"}),
         ("list_modifiable_properties", {"device": "Living room air conditioner"}),
@@ -69,9 +46,55 @@ def test_home_assistant_domain_agent_runs_one_agent_loop_task() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "wyłącz światło w biurze",
+        "ustaw światło na 50 procent",
+        "włącz wentylator w salonie",
+        "turn off the light in the office",
+        "turn on the fan in the living room",
+        "turn off the switch in the office",
+    ],
+)
+def test_climate_context_does_not_hijack_explicit_other_device_types(
+    request_text: str,
+) -> None:
+    command = _deterministic_command(
+        request_text,
+        conversation_area="office",
+        active_context={"salient_entities": ["climate.salon"]},
+    )
+
+    assert command is None
+
+
+def test_climate_followup_does_not_skip_more_salient_other_device() -> None:
+    command = _deterministic_command(
+        "wyłącz ją",
+        conversation_area="office",
+        active_context={
+            "salient_entities": ["light.office", "climate.salon"],
+        },
+    )
+
+    assert command is None
+
+
 def test_home_assistant_domain_agent_normalizes_hvac_mode_alias_before_availability_check() -> None:
     FakeHomeAssistantConnection.calls = []
-    fake_loop = FakeAgentLoop({})
+    command = {
+        "selection": {
+            "include": [{"domain": "climate", "scope": "single", "area": "office"}],
+            "exclude": [],
+        },
+        "operation": {
+            "intent": "set_hvac_mode",
+            "description": "włącz klimatyzator w tryb wentylacji",
+            "parameters": {"hvac_mode": "ventilate"},
+        },
+    }
+    fake_loop = FakeAgentLoop({}, command)
     agent = HomeAssistantDomainAgent(
         model="qwen3:4b-instruct",
         ollama_url="http://ollama:11434",
@@ -82,36 +105,35 @@ def test_home_assistant_domain_agent_normalizes_hvac_mode_alias_before_availabil
     task = {
         "id": "t1",
         "domain": "home_assistant",
-        "command": {
-            "selection": {
-                "include": [{"domain": "climate", "scope": "single", "area": "office"}],
-                "exclude": [],
-            },
-            "operation": {
-                "intent": "set_hvac_mode",
-                "description": "włącz klimatyzator w tryb wentylacji",
-                "parameters": {"hvac_mode": "ventilate"},
-            },
-        },
+        "request": "włącz klimatyzator w tryb wentylacji",
         "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
     }
 
     result = asyncio.run(agent.run_task(conversation, task, {}))
 
     assert result["status"] == "ok"
-    assert result["text"] == "Ustawiłem klimatyzację w salonie w trybie wentylacji."
+    assert result["text"] == "Ustawiłem klimatyzację w biurze w trybie wentylacji."
     assert FakeHomeAssistantConnection.calls == [
         ("find_devices", {"query": "", "device_type": "climate", "area_name": "office"}),
-        ("list_modifiable_properties", {"device": "Living room air conditioner"}),
-        ("modify_device", {"device": "Living room air conditioner", "property_name": "hvac_mode", "value": "fan_only"}),
+        ("list_modifiable_properties", {"device": "Study air conditioner"}),
+        ("modify_device", {"device": "Study air conditioner", "property_name": "hvac_mode", "value": "fan_only"}),
     ]
 
 
 def test_home_assistant_domain_agent_answers_global_device_count_query_without_modification() -> None:
     FakeHomeAssistantConnection.calls = []
-    fake_loop = FakeAgentLoop({})
+    command = {
+        "selection": {
+            "include": [{"domain": "climate", "scope": "all"}],
+            "exclude": [],
+        },
+        "operation": {
+            "intent": "query_state",
+            "description": "ile klimatyzatorów jest w domu?",
+            "parameters": {"query_type": "count"},
+        },
+    }
+    fake_loop = FakeAgentLoop({}, command)
     agent = HomeAssistantDomainAgent(
         model="qwen3:4b-instruct",
         ollama_url="http://ollama:11434",
@@ -122,20 +144,8 @@ def test_home_assistant_domain_agent_answers_global_device_count_query_without_m
     task = {
         "id": "t1",
         "domain": "home_assistant",
-        "command": {
-            "selection": {
-                "include": [{"domain": "climate", "scope": "all"}],
-                "exclude": [],
-            },
-            "operation": {
-                "intent": "query_state",
-                "description": "ile klimatyzatorów jest w domu?",
-                "parameters": {"query_type": "count"},
-            },
-        },
+        "request": "ile klimatyzatorów jest w domu?",
         "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
     }
 
     result = asyncio.run(agent.run_task(conversation, task, {}))
@@ -147,6 +157,168 @@ def test_home_assistant_domain_agent_answers_global_device_count_query_without_m
     assert FakeHomeAssistantConnection.calls == [
         ("find_devices", {"query": "", "device_type": "climate", "area_name": ""}),
     ]
+
+
+def test_home_assistant_unknown_named_area_never_falls_back_to_context() -> None:
+    FakeHomeAssistantConnection.calls = []
+    agent = HomeAssistantDomainAgent(
+        model="qwen3:4b-instruct",
+        ollama_url="http://ollama:11434",
+        connection=FakeHomeAssistantConnection(),
+    )
+    conversation = agent_context(
+        conversation_id="conversation-1",
+        attributes={"medium": "voice", "area": "office"},
+    )
+
+    result = asyncio.run(
+        agent.run_task(
+            conversation,
+            _route("wyłącz klimatyzację w garażu"),
+            {"salient_entities": ["climate.salon"]},
+        )
+    )
+
+    assert result["status"] == "needs_clarification"
+    assert "gara" in result["clarification_question"]
+    assert FakeHomeAssistantConnection.calls == [
+        ("find_devices", {"query": "", "device_type": "climate", "area_name": "garazu"}),
+    ]
+    resumed = asyncio.run(
+        agent.resume_clarification(
+            conversation,
+            _route("wyłącz klimatyzację w garażu"),
+            result["clarification_question"],
+            "w biurze",
+            {"salient_entities": ["climate.salon"]},
+            None,
+        )
+    )
+    assert resumed["status"] == "ok"
+    assert FakeHomeAssistantConnection.calls[-3] == (
+        "find_devices",
+        {"query": "", "device_type": "climate", "area_name": "office"},
+    )
+    assert FakeHomeAssistantConnection.calls[-1] == (
+        "modify_device",
+        {
+            "device": "Study air conditioner",
+            "property_name": "hvac_mode",
+            "value": "off",
+        },
+    )
+
+
+def test_home_assistant_short_temperature_clarification_answer_completes() -> None:
+    FakeHomeAssistantConnection.calls = []
+    agent = HomeAssistantDomainAgent(
+        model="qwen3:4b-instruct",
+        ollama_url="http://ollama:11434",
+        connection=FakeHomeAssistantConnection(),
+    )
+    conversation = agent_context(
+        conversation_id="conversation-1",
+        attributes={"medium": "voice", "area": "office"},
+    )
+    task = _route("Ustaw klimatyzację w salonie")
+    first = asyncio.run(agent.run_task(conversation, task, {}))
+
+    assert first["status"] == "needs_clarification"
+    result = asyncio.run(
+        agent.resume_clarification(
+            conversation,
+            task,
+            first["clarification_question"],
+            "22",
+            {},
+            None,
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert FakeHomeAssistantConnection.calls[-3:] == [
+        ("find_devices", {"query": "", "device_type": "climate", "area_name": "living_room"}),
+        ("list_modifiable_properties", {"device": "Living room air conditioner"}),
+        (
+            "modify_device",
+            {
+                "device": "Living room air conditioner",
+                "property_name": "target_temperature",
+                "value": 22,
+            },
+        ),
+    ]
+
+
+def test_home_assistant_model_reply_without_tool_returns_controlled_failure() -> None:
+    fake_loop = FakeNoToolAgentLoop()
+    agent = HomeAssistantDomainAgent(
+        model="qwen3:4b-instruct",
+        ollama_url="http://ollama:11434",
+        connection=FakeHomeAssistantConnection(),
+        loop_factory=fake_loop.factory,
+    )
+
+    result = asyncio.run(
+        agent.run_task(
+            agent_context(conversation_id="conversation-1", attributes={"medium": "voice"}),
+            _route("zmień urządzenie"),
+            {},
+        )
+    )
+
+    assert result == {
+        "status": "failed",
+        "text": "Nie mogę teraz wykonać polecenia Home Assistant.",
+        "needs_clarification": False,
+        "entities": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("request_text", "property_name", "value"),
+    [
+        ("włącz klimatyzator w trybie chłodzenia", "hvac_mode", "cool"),
+        ("wyłącz klimatyzację w tej chwili", "hvac_mode", "off"),
+        ("ustaw klimatyzację w trybie auto", "hvac_mode", "auto"),
+    ],
+)
+def test_home_assistant_non_area_w_phrases_use_current_area(
+    request_text: str,
+    property_name: str,
+    value: str,
+) -> None:
+    FakeHomeAssistantConnection.calls = []
+    agent = HomeAssistantDomainAgent(
+        model="qwen3:4b-instruct",
+        ollama_url="http://ollama:11434",
+        connection=FakeHomeAssistantConnection(),
+    )
+
+    result = asyncio.run(
+        agent.run_task(
+            agent_context(
+                conversation_id="conversation-1",
+                attributes={"medium": "voice", "area": "office"},
+            ),
+            _route(request_text),
+            {},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert FakeHomeAssistantConnection.calls[0] == (
+        "find_devices",
+        {"query": "", "device_type": "climate", "area_name": "office"},
+    )
+    assert FakeHomeAssistantConnection.calls[-1] == (
+        "modify_device",
+        {
+            "device": "Study air conditioner",
+            "property_name": property_name,
+            "value": value,
+        },
+    )
 
 
 @pytest.mark.parametrize(
@@ -172,6 +344,8 @@ class FakeHomeAssistantConnection:
 
     async def find_devices(self, query: str = "", device_type: str = "", area_name: str = ""):
         self.calls.append(("find_devices", {"query": query, "device_type": device_type, "area_name": area_name}))
+        if area_name == "garazu":
+            return {"error": "unknown_area", "area": area_name}
         if device_type == "climate" and area_name == "":
             return [
                 {
@@ -196,6 +370,16 @@ class FakeHomeAssistantConnection:
                     "area_name": "Bedroom",
                 },
             ]
+        if device_type == "climate" and area_name == "office":
+            return [
+                {
+                    "device_id": "study_ac",
+                    "name": "Study air conditioner",
+                    "type": "climate",
+                    "area_id": "office",
+                    "area_name": "Office",
+                }
+            ]
         return [
             {
                 "device_id": "living_room_ac",
@@ -218,7 +402,7 @@ class FakeHomeAssistantConnection:
                 "property_name": "hvac_mode",
                 "domain": "climate",
                 "value_type": "string",
-                "allowed_values": ["off", "cool", "fan_only"],
+                "allowed_values": ["off", "cool", "fan_only", "auto"],
                 "value_aliases": {
                     "fan_only": ["wentylacja", "tryb wentylacji", "nawiew", "wiatrak", "fan", "ventilate", "ventilation"]
                 },
@@ -239,8 +423,9 @@ class FakeHomeAssistantConnection:
 
 
 class FakeAgentLoop:
-    def __init__(self, reply: dict) -> None:
+    def __init__(self, reply: dict, command: dict | None = None) -> None:
         self.reply = reply
+        self.command = command or {}
         self.config = None
         self.system_prompt = None
         self.tools = None
@@ -261,8 +446,27 @@ class FakeAgentLoop:
 
     async def send_user_message(self, message: str):
         self.messages.append(message)
-        result = await self.tools.call_tool("execute_home_assistant_task", {})
+        result = await self.tools.call_tool(
+            "execute_home_assistant_task",
+            {"command": self.command},
+        )
         return FakeAgentReply(json.dumps(result, ensure_ascii=False), False)
+
+
+class FakeNoToolAgentLoop:
+    def factory(self, **kwargs):
+        del kwargs
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        pass
+
+    async def send_user_message(self, message: str):
+        del message
+        return FakeAgentReply('{"status":"ok","text":"Gotowe."}', False)
 
 
 class FakeAgentReply:

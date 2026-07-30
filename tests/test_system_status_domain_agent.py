@@ -13,7 +13,7 @@ from ai_server.domain_agents.system_status import (
     SystemStatusOptions,
     SystemStatusStore,
 )
-from ai_server.orchestrator.known_utterances import collect_known_utterance_tasks, known_utterance_task
+from ai_server.orchestrator.known_utterances import collect_known_utterance_domains, known_utterance_task
 from ai_server.utils import JsonFileStore
 
 
@@ -108,10 +108,11 @@ def test_system_status_domain_agent_known_utterances_route_to_status(tmp_path):
         auto_start=False,
     )
 
-    task = known_utterance_task("Jak się masz?", collect_known_utterance_tasks({"system_status": agent}))
+    task = known_utterance_task("Jak się masz?", collect_known_utterance_domains({"system_status": agent}))
 
     assert task["domain"] == "system_status"
-    assert task["command"] == {"intent": "quick_check", "query": "Jak się masz?"}
+    assert task["request"] == "Jak się masz?"
+    assert set(task) == {"id", "domain", "request", "depends_on"}
 
 
 def test_system_status_domain_agent_refuses_anonymous_user(tmp_path):
@@ -131,12 +132,10 @@ def test_system_status_domain_agent_refuses_anonymous_user(tmp_path):
         "status": "failed",
         "text": "Nie mogę sprawdzić statusu systemu bez rozpoznanego użytkownika.",
         "needs_clarification": False,
-        "clarification_question": None,
         "entities": [],
         "final_reply_mode": "verbatim",
         "health_status": "unknown",
         "issue_count": 0,
-        "snapshot_collected_at": None,
     }
     assert not collector.started
     assert loop_factory.loop is None
@@ -350,13 +349,16 @@ def _green_snapshot():
 
 
 def _task(intent: str):
+    request = {
+        "quick_check": "Jak się masz?",
+        "summary": "Status systemu",
+        "full_report": "Daj pełny raport systemu",
+    }[intent]
     return {
         "id": "t1",
         "domain": "system_status",
-        "command": {"intent": intent, "query": "Jak się masz?"},
+        "request": request,
         "depends_on": [],
-        "status": "ready",
-        "clarification_question": None,
     }
 
 

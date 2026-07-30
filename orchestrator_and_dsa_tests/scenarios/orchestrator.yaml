@@ -13,8 +13,8 @@ cases:
           final_reply_mode: verbatim
     expected_tasks:
       - domain: system_status
-        command:
-          intent: quick_check
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [działa]
 
@@ -29,8 +29,8 @@ cases:
           final_reply_mode: verbatim
     expected_tasks:
       - domain: system_status
-        command:
-          intent: quick_check
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [system]
 
@@ -45,8 +45,8 @@ cases:
           final_reply_mode: verbatim
     expected_tasks:
       - domain: system_status
-        command:
-          intent: summary
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [System]
 
@@ -61,8 +61,8 @@ cases:
           final_reply_mode: verbatim
     expected_tasks:
       - domain: system_status
-        command:
-          intent: full_report
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [raport]
 
@@ -77,8 +77,8 @@ cases:
           final_reply_mode: verbatim
     expected_tasks:
       - domain: weather
-        command:
-          query: o której dzisiaj zachodzi słońce?
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [zachód, słońca, dwadzieścia jeden dziesięć]
 
@@ -92,14 +92,8 @@ cases:
           text: Wyłączono klimatyzację.
     expected_tasks:
       - domain: home_assistant
-        command:
-          selection:
-            include:
-              - domain: climate
-                scope: single
-                area: office
-          operation:
-            intent: turn_off
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [klimatyz]
 
@@ -118,12 +112,11 @@ cases:
           timezone: America/New_York
     expected_tasks:
       - domain: home_assistant
-        command:
-          operation:
-            intent: turn_off
+        request:
+          $nonempty: true
       - domain: time
-        command:
-          geo_location: Jacksonville
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [klimatyz, Jacksonville]
 
@@ -137,14 +130,8 @@ cases:
           text: Wyłączono klimatyzację w pracowni.
     expected_tasks:
       - domain: home_assistant
-        command:
-          selection:
-            include:
-              - domain: climate
-                scope: single
-                area: office
-          operation:
-            intent: turn_off
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [klimatyz]
 
@@ -164,13 +151,11 @@ cases:
           value: 1879
     expected_tasks:
       - domain: home_assistant
-        command:
-          operation:
-            intent: turn_on
+        request:
+          $nonempty: true
       - domain: wikipedia
-        command:
-          topic:
-            $any: [Albert Einstein, Einstein]
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [klimatyz, Einstein, "1879"]
 
@@ -190,20 +175,12 @@ cases:
           text: Ustawiono klimatyzację w salonie na 22 stopnie.
     expected_tasks:
       - domain: home_assistant
+        request:
+          $nonempty: true
       - domain: home_assistant
-        command:
-          operation:
-            intent: set_temperature
-            parameters:
-              temperature: 22
-          selection:
-            include:
-              - domain: climate
-                scope: single
-                area:
-                  $any: [salon, living_room]
+        request:
+          $nonempty: true
     expected_replies:
       - contains_all: [temperatur, salon]
       - contains_all: ["22"]
-    expected_planning_context:
-      - message_index: 1
+    expected_planning_requests: 1

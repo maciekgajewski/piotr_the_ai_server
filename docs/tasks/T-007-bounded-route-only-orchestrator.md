@@ -3,7 +3,7 @@
 ## Status
 
 - **Authority:** Implementation task; not a runtime contract
-- **Status:** Ready for implementation
+- **Status:** Complete (implemented 2026-07-30)
 - **Audience:** Maintainers of orchestrator and DSA prompt architecture
 - **Read when:** Changing orchestrator routing, task construction, DSA interfaces,
   or orchestrator prompt bounds
@@ -306,3 +306,65 @@ all concrete command ownership is behind DSA interfaces, the prompt bounds are
 enforced without truncation, automated and live-model acceptance evidence is
 recorded, the full behavior suite passes, and independent review closes with no
 findings.
+
+## Completion evidence
+
+Implemented on 2026-07-30 as one clean interface cutover. The orchestrator now
+parses only generic routed tasks, all six configured DSAs own interpretation
+and validation, DSA clarification answers bypass the router, and prompt
+construction rejects oversize summaries or fixed prompts without truncation.
+
+### Before and after measurement
+
+The checked-in representative request uses the same utterance, conversation
+fields, and two area names as the investigation. The area records themselves
+are retained only as excluded fixture evidence and are not serialized into the
+planner request.
+
+| Measurement | Before | Route-only implementation |
+|---|---:|---:|
+| Fixed prompt characters | 10,600 | 2,320 |
+| Fixed prompt UTF-8 bytes | not previously recorded | 2,320 |
+| Representative dynamic payload characters | unbounded | 306 |
+| Representative dynamic payload UTF-8 bytes | unbounded | 314 |
+| `qwen3:14b` input tokens | 2,570 | 583 |
+| Input-token headroom below the 3,328-token allowance | 758 | 2,745 |
+
+The fixed prompt is 8,280 characters smaller, a reduction of about 78%. The
+measured request is 953 tokens below the 1,536-token acceptance ceiling.
+Per-DSA routing-summary contributions are: Home Assistant 132 bytes, media
+player 151, system status 114, time 128, weather 162, and Wikipedia 148.
+
+The live measurement command and result were:
+
+```text
+$ tools/t007-measure-route-prompt.sh
+model=qwen3:14b fixed_prompt_utf8_bytes=2320
+dynamic_payload_utf8_bytes=314 prompt_tokens=583 completion_tokens=1
+```
+
+Generation is deliberately limited to one token by the measurement tool; the
+planner's real input serialization, tokenizer, `num_ctx=4096`, and 768-token
+response reservation remain unchanged.
+
+### Validation
+
+```text
+$ .venv/bin/python -m pytest -q
+811 passed in 18.84s
+
+$ orchestrator_and_dsa_tests/run.sh --no-transcript
+PASS 45/45, qwen3:14b, total_duration=456.92s
+
+$ .venv/bin/python -m compileall -q ai_server orchestrator_and_dsa_tests tools/lib tests
+passed
+
+$ git diff --check
+passed
+```
+
+Independent task-reviewer pass 6: `No findings.`
+
+The repository has no configured formatter or linter command. Focused
+orchestrator, DSA, agent-factory, and behavior-fixture coverage is included in
+the full pytest and live behavior results above.
