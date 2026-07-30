@@ -76,3 +76,15 @@ await loop.close()
 `send_user_message()` returns `AgentReply(reply_text, end_conversation)`.
 `end_conversation` is `True` only after an unrecoverable error, in which case
 the reply text is `Model się zesrał`.
+
+Each model request has a central response deadline controlled by
+`AgentLoopConfig.response_timeout_seconds`, which defaults to 30 seconds. The
+deadline covers the complete cloud/local selection and fallback operation for
+one model response. It does not cover tool execution or processing-update
+callbacks. When the deadline expires, the in-flight model operation is
+cancelled and drained, the loop returns `Model się zesrał`, and
+`end_conversation` is `True`.
+
+`request_timeout_seconds` remains the lower-level HTTP timeout supplied to each
+individual Ollama request. It does not replace the central response deadline,
+because fallback and model-race policy can involve more than one HTTP request.

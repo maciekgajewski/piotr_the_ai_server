@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -15,6 +16,10 @@ from ai_server.utils.processing import await_with_processing_updates, emit_proce
 
 
 MODEL_FAILURE_REPLY = "Model się zesrał"
+
+
+class _ModelResponseTimeoutError(Exception):
+    pass
 
 
 class AgentLoop:
@@ -215,6 +220,8 @@ class AgentLoop:
                     tool_result_message = {"role": "tool", "tool_name": tool_name, "content": serialized_result}
                     self._logger.debug("appending tool result message message=%s", tool_result_message)
                     self._append_context_message(tool_result_message)
+        except _ModelResponseTimeoutError:
+            return AgentReply(reply_text=MODEL_FAILURE_REPLY, end_conversation=True)
         except Exception:
             self._logger.exception("unrecoverable agent loop error")
             return AgentReply(reply_text=MODEL_FAILURE_REPLY, end_conversation=True)
@@ -254,13 +261,27 @@ class AgentLoop:
             self._config.think,
         )
         self._logger.debug("turn=%s request=%s", self._turn_number, payload)
-        response = await self._ollama_connection.chat(
-            payload,
-            model=self._config.model,
-            fallback_model=self._config.fallback_model,
-            fallback_backoff_seconds=self._config.fallback_backoff_seconds,
-            request_timeout_seconds=self._config.request_timeout_seconds,
-        )
+        response_timeout = asyncio.timeout(self._config.response_timeout_seconds)
+        try:
+            async with response_timeout:
+                response = await self._ollama_connection.chat(
+                    payload,
+                    model=self._config.model,
+                    fallback_model=self._config.fallback_model,
+                    fallback_backoff_seconds=self._config.fallback_backoff_seconds,
+                    request_timeout_seconds=self._config.request_timeout_seconds,
+                )
+        except TimeoutError as exc:
+            if not response_timeout.expired():
+                raise
+            self._logger.warning(
+                "agent loop LLM response timed out turn=%s cloud_model=%s local_model=%s timeout_seconds=%s",
+                self._turn_number,
+                self._config.model,
+                self._config.fallback_model,
+                self._config.response_timeout_seconds,
+            )
+            raise _ModelResponseTimeoutError from exc
         if response.get("done") is not True:
             raise ValueError("Ollama chat response did not finish")
         return response

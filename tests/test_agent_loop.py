@@ -50,6 +50,7 @@ class DelayedFakeOllamaConnection:
         self._responses = responses
         self._delays = delays or {}
         self.requests: list[dict[str, Any]] = []
+        self.cancelled_models: list[str] = []
         self.closed = False
 
     async def chat(self, payload: dict[str, Any], *, request_timeout_seconds: float | None = None) -> dict[str, Any]:
@@ -57,7 +58,11 @@ class DelayedFakeOllamaConnection:
         payload = copy.deepcopy(payload)
         self.requests.append(payload)
         model = payload["model"]
-        await asyncio.sleep(self._delays.get(model, 0))
+        try:
+            await asyncio.sleep(self._delays.get(model, 0))
+        except asyncio.CancelledError:
+            self.cancelled_models.append(model)
+            raise
         response = self._responses[model]
         if isinstance(response, BaseException):
             raise response
@@ -322,7 +327,7 @@ def test_agent_loop_emits_processing_updates_for_llm_and_tool_work() -> None:
             updates.append("processing")
 
         loop = AgentLoop(
-            AgentLoopConfig(model="qwen3:4b"),
+            AgentLoopConfig(model="qwen3:4b", response_timeout_seconds=0.001),
             "System.",
             SlowTools(),
             session=session,
@@ -454,6 +459,77 @@ def test_agent_loop_returns_failure_reply_on_unrecoverable_error() -> None:
 
     assert reply.reply_text == MODEL_FAILURE_REPLY
     assert reply.end_conversation is True
+
+
+def test_agent_loop_cancels_model_request_and_returns_failure_reply_on_response_timeout(caplog) -> None:
+    ollama_connection = DelayedFakeOllamaConnection(
+        {
+            "gpt-oss:20b-cloud": {
+                "done": True,
+                "eval_count": 1,
+                "message": {"role": "assistant", "content": "Cloud."},
+            },
+            "qwen3:4b-instruct": {
+                "done": True,
+                "eval_count": 1,
+                "message": {"role": "assistant", "content": "Local."},
+            },
+        },
+        delays={"gpt-oss:20b-cloud": 1, "qwen3:4b-instruct": 1},
+    )
+    connection = AgentLoopOllamaConnection(
+        base_url="http://ollama:11434",
+        ollama_connection=ollama_connection,
+    )
+    loop = AgentLoop(
+        AgentLoopConfig(
+            model="gpt-oss:20b-cloud",
+            fallback_model="qwen3:4b-instruct",
+            response_timeout_seconds=0.001,
+        ),
+        "System.",
+        ExampleTools(),
+        ollama_connection=connection,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        reply = asyncio.run(loop.send_user_message("hej"))
+
+    assert reply.reply_text == MODEL_FAILURE_REPLY
+    assert reply.end_conversation is True
+    assert sorted(ollama_connection.cancelled_models) == [
+        "gpt-oss:20b-cloud",
+        "qwen3:4b-instruct",
+    ]
+    assert (
+        "agent loop LLM response timed out turn=1 cloud_model=gpt-oss:20b-cloud "
+        "local_model=qwen3:4b-instruct timeout_seconds=0.001"
+    ) in caplog.text
+    assert "unrecoverable agent loop error" not in caplog.text
+
+
+def test_agent_loop_does_not_mislabel_lower_level_request_timeout_as_response_timeout(caplog) -> None:
+    ollama_connection = DelayedFakeOllamaConnection(
+        {"qwen3:4b": TimeoutError("lower-level request timeout")}
+    )
+    connection = AgentLoopOllamaConnection(
+        base_url="http://ollama:11434",
+        ollama_connection=ollama_connection,
+    )
+    loop = AgentLoop(
+        AgentLoopConfig(model="qwen3:4b", response_timeout_seconds=30),
+        "System.",
+        ExampleTools(),
+        ollama_connection=connection,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        reply = asyncio.run(loop.send_user_message("hej"))
+
+    assert reply.reply_text == MODEL_FAILURE_REPLY
+    assert reply.end_conversation is True
+    assert "agent loop LLM response timed out" not in caplog.text
+    assert "unrecoverable agent loop error" in caplog.text
 
 
 def test_agent_loop_retries_with_fallback_model_on_main_model_rejection() -> None:
@@ -827,3 +903,16 @@ def test_agent_loop_config_validates_fallback_fields() -> None:
 
     with pytest.raises(ValueError, match="fallback_backoff_seconds must be positive"):
         AgentLoopConfig(model="main", fallback_model="fallback", fallback_backoff_seconds=0)
+
+
+def test_agent_loop_config_defaults_response_timeout_to_thirty_seconds() -> None:
+    assert AgentLoopConfig(model="main").response_timeout_seconds == 30.0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, -1, float("nan"), float("inf"), float("-inf"), True, "30"],
+)
+def test_agent_loop_config_rejects_invalid_response_timeout(value: Any) -> None:
+    with pytest.raises(ValueError, match="response_timeout_seconds must be a positive finite number"):
+        AgentLoopConfig(model="main", response_timeout_seconds=value)
