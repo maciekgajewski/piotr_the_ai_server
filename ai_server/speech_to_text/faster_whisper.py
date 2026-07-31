@@ -259,6 +259,7 @@ class FasterWhisperStreamingSttSession:
         self._pending_end = False
         self._last_partial_text = ""
         self._last_partial_audio_end_seconds = 0.0
+        self._stale_partial_drops = 0
         self._events: asyncio.Queue[TextPartial | TextEnd] = asyncio.Queue()
         self._worker_task = asyncio.create_task(self._partial_worker())
         self._transcript_preprocessor = TranscriptPreprocessor(session_id)
@@ -336,12 +337,25 @@ class FasterWhisperStreamingSttSession:
                 )
                 backlog_seconds = audio_seconds(len(self._audio), self._audio_format) - snapshot_end_seconds
                 if backlog_seconds > self._partial_max_backlog_seconds:
-                    self._logger.warning(
-                        "streaming STT partial backlog_seconds=%.2f max_backlog_seconds=%.2f; dropping stale partial",
+                    log = self._logger.warning if self._stale_partial_drops == 0 else self._logger.debug
+                    self._stale_partial_drops += 1
+                    log(
+                        "streaming STT partial backlog_seconds=%.2f max_backlog_seconds=%.2f; "
+                        "dropping stale partial dropped_partials=%s",
                         backlog_seconds,
                         self._partial_max_backlog_seconds,
+                        self._stale_partial_drops,
                     )
                     continue
+                if self._stale_partial_drops > 0:
+                    self._logger.info(
+                        "streaming STT partial backlog recovered backlog_seconds=%.2f "
+                        "max_backlog_seconds=%.2f dropped_partials=%s",
+                        backlog_seconds,
+                        self._partial_max_backlog_seconds,
+                        self._stale_partial_drops,
+                    )
+                    self._stale_partial_drops = 0
                 if text and text != self._last_partial_text:
                     self._last_partial_text = text
                     await self._events.put(

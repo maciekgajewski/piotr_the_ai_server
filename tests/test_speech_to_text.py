@@ -325,6 +325,65 @@ def test_faster_whisper_streaming_stt_warns_and_drops_stale_partial_without_text
     assert "tajny tekst tła" not in caplog.text
 
 
+def test_faster_whisper_streaming_stt_logs_stale_partial_episode_once_and_recovery(
+    caplog, monkeypatch
+) -> None:
+    async def run() -> None:
+        stt = FasterWhisperSpeechToText(
+            SttConfig(
+                model="fake",
+                language="pl",
+                device="cpu",
+                compute_type="int8",
+                partial_interval_seconds=0.01,
+                partial_window_seconds=1.0,
+                partial_max_backlog_seconds=0.1,
+            ),
+            transcriber_factory=lambda _config: FakeTranscriber(),
+        )
+        await stt.start()
+        session = await stt.create_streaming_session("backlog-episode-session")
+        partial_calls = 0
+
+        async def transcribe_with_controlled_backlog(
+            audio: bytes,
+            beam_size: int,
+            audio_start_seconds: float,
+            audio_end_seconds: float,
+            kind: str,
+        ) -> str:
+            nonlocal partial_calls
+            if kind == "partial":
+                partial_calls += 1
+                if partial_calls <= 2:
+                    await session.send_audio(
+                        PcmAudioChunk(data=b"b" * DEFAULT_STT_AUDIO_FORMAT.byte_rate)
+                    )
+            return "Ryszardzie, test"
+
+        monkeypatch.setattr(session, "_transcribe", transcribe_with_controlled_backlog)
+
+        with caplog.at_level(logging.DEBUG, logger="ai_server.speech_to_text.faster_whisper"):
+            await session.send_audio(
+                PcmAudioChunk(data=b"a" * DEFAULT_STT_AUDIO_FORMAT.byte_rate)
+            )
+            await asyncio.wait_for(
+                _wait_until(lambda: "partial backlog recovered" in caplog.text), timeout=1
+            )
+            await session.close()
+
+    asyncio.run(run())
+
+    drop_records = [
+        record for record in caplog.records if "dropping stale partial" in record.getMessage()
+    ]
+    assert [record.levelno for record in drop_records] == [logging.WARNING, logging.DEBUG]
+    assert "dropping stale partial dropped_partials=1" in drop_records[0].getMessage()
+    assert "dropping stale partial dropped_partials=2" in drop_records[1].getMessage()
+    assert "partial backlog recovered backlog_seconds=0.00" in caplog.text
+    assert "dropped_partials=2" in caplog.text
+
+
 def test_faster_whisper_model_loader_uses_local_files_only(monkeypatch) -> None:
     calls = []
 
