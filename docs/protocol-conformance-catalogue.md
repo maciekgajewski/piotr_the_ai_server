@@ -11,7 +11,8 @@
   coverage, or closing a protocol migration
 - **Approval state:** T-004 sections approved by Captain on 2026-07-19; T-005
   `WSC-` section and `WS-FOLLOWUP-003/004` retirement approved by Captain on
-  2026-07-20
+  2026-07-20; exact `MP-*` automated evidence and the Captain-approved
+  live-device scope closed by T-009 on 2026-08-03
 
 This catalogue maps stable requirements to implementation owners and required
 evidence. T-004 implementation is present; a row becomes a conformance claim
@@ -184,38 +185,43 @@ Additional repository-client coverage:
 
 ## Microphone Protocol
 
-These requirements are already normative and are not redesigned by T-004.
+These requirements are normative and are not redesigned by T-004 or T-009.
+The table distinguishes exact automated evidence from hardware closure. A test
+name is a conformance claim only after the current verification run passes it.
 
-| Requirement | Summary | Implementation owner | Required conformance evidence |
+| Requirement | Implementation owner | Exact current automated evidence | T-009 status |
 |---|---|---|---|
-| `MP-OWNER-001` | Driver does not own STT, Conversation, or re-arm | abstract interface and drivers | reusable black-box driver harness; architecture review |
-| `MP-ID-001` | Every listening generation has a new ID | manager | `tests/test_microphones.py`; `tests/test_microphone_protocol.py` |
-| `MP-ID-002` | Every segment has a new associated utterance ID | drivers and manager | multiple open-mic segment cases |
-| `MP-ID-003` | Stale events cannot mutate state | manager and drivers | stale listen/playback/cue and ID-reuse cases |
-| `MP-EVENT-001` | Capture and playback vocabularies are separate | messages and interfaces | microphone protocol and Box3 tests |
-| `MP-STATE-001` | Driver transition table is enforced | every driver | reusable conformance suite and Box3 contract |
-| `MP-STOP-001` | Stop actively ends device capture and awaits its notification | streaming drivers and firmware | explicit-stop ordering, timeout recovery, ESPHome generated-source inspection |
-| `MP-VISUAL-001` | `ERROR` is firmware-owned, not commandable | messages, drivers, firmware | reject command plus disconnect firmware validation |
-| `MP-VISUAL-002` | Visual commands are state-independent and idempotent | drivers | duplicate command in every connected driver state |
-| `MP-VISUAL-003` | Manager explicitly commands connected visuals | manager | normal-sequence assertions |
-| `MP-VISUAL-004` | Driver/firmware does not infer main visual | drivers and firmware | callback tests |
-| `MP-VISUAL-005` | Reconnect remains error until first command | driver and firmware | disconnect/reconnect/first-command sequence |
-| `MP-VISUAL-006` | Local indicators do not replace main visual | firmware | generated-config and hardware checks |
-| `MP-VISUAL-007` | Processing remains through playback | manager and drivers | visual sequence around playback |
-| `MP-OPENMIC-001` | First partial candidate immediately shows listening | manager partial-STT path | controlled timing before final text |
-| `MP-OPENMIC-002` | Rejection resets candidate and idle without re-arm | manager and driver | rejection ordering and unchanged `listen_id` |
-| `MP-OPENMIC-003` | Acceptance follows final validation | manager | final result before processing/cue/forwarding |
-| `MP-AUDIO-001` | Half-duplex output starts only when disarmed | manager and drivers | cue/playback rejected while active capture |
-| `MP-TIMEOUT-001` | Idle open mic has no segment timeout | manager | asynchronous idle generation remains armed |
-| `MP-ERROR-001` | Untrusted state closes/recreates boundary | manager | unavailable boundary recovery test |
-| `MP-OBS-001` | Commands/events include state and correlation logs | manager and drivers | `caplog` command/event context |
-| `MP-OBS-002` | Visual transitions include old/new/cause | manager and drivers | `caplog` visual transition |
-| `MP-OBS-003` | Transcript content is opt-in DEBUG only | STT config/implementation | config and STT opt-in/default-off tests |
+| `MP-OWNER-001` | abstract interface and drivers | `tests/test_box3_esphome_microphone.py::test_concrete_driver_exposes_only_the_sealed_microphone_operations`; `::test_box3_satisfies_reusable_listening_and_capture_contract`; `::test_box3_satisfies_reusable_cue_contract`; `::test_box3_satisfies_reusable_playback_contract` | Automated evidence present |
+| `MP-ID-001` | manager | `tests/test_microphones.py::test_new_conversation_listening_generation_has_fresh_correlation`; `tests/test_microphone_protocol.py::test_identifier_cannot_be_reused` | Automated evidence present |
+| `MP-ID-002` | drivers and manager | `tests/test_box3_esphome_microphone.py::test_capture_callbacks_echo_active_listen_and_new_utterance_ids`; `::test_box3_satisfies_reusable_listening_and_capture_contract` | Automated evidence present |
+| `MP-ID-003` | manager and drivers | `tests/test_microphone_protocol.py::test_arming_rejects_stale_or_wrong_listening_started`; `::test_capturing_rejects_every_stale_segment_event`; `::test_output_completion_rejects_stale_identifiers`; `::test_reset_candidate_rejects_unknown_utterance_without_mutating_generation` | Automated evidence present |
+| `MP-EVENT-001` | messages and interfaces | `tests/test_microphone_protocol.py::test_wake_word_generation_disarms_after_one_segment`; `::test_playback_finishes_only_after_end`; `tests/test_box3_esphome_microphone.py::test_capture_callbacks_echo_active_listen_and_new_utterance_ids`; `::test_playback_completion_is_emitted_only_after_end` | Automated evidence present |
+| `MP-STATE-001` | protocol state and every driver | `tests/test_microphone_protocol.py::test_complete_driver_state_command_matrix`; `::test_complete_driver_state_event_matrix`; `tests/test_box3_esphome_microphone.py::test_box3_satisfies_reusable_listening_and_capture_contract`; `::test_box3_satisfies_reusable_cue_contract`; `::test_box3_satisfies_reusable_playback_contract` | Automated evidence present |
+| `MP-STOP-001` | streaming driver and firmware | `tests/test_box3_esphome_microphone.py::test_voice_assistant_stop_awaits_explicit_device_stop_before_run_end_without_disconnect`; `::test_voice_assistant_stop_timeout_recovers_stale_stream`; `tests/test_microphone_firmware_conformance.py::test_explicit_stop_service_stops_device_pipeline` | Automated evidence and 2026-08-03 `voice-pe-03` stop/recovery hardware sequence present; duplicate `voice-pe-02` fault injection waived by Captain |
+| `MP-VISUAL-001` | messages, drivers, firmware | `tests/test_microphone_protocol.py::test_error_visual_cannot_be_commanded`; `tests/test_microphone_firmware_conformance.py::test_shared_api_exposes_only_server_commandable_visual_states`; `::test_reconnect_retains_error_until_explicit_server_visual_command` | Automated evidence and 2026-08-03 `voice-pe-03` visible disconnect/reconnect check present; `voice-pe-02` normal deployment initialization logged |
+| `MP-VISUAL-002` | protocol state and drivers | `tests/test_microphone_protocol.py::test_visual_commands_are_idempotent_in_every_connected_state`; `tests/test_box3_esphome_microphone.py::test_duplicate_visual_state_repeats_only_the_idempotent_private_service` | Automated evidence present |
+| `MP-VISUAL-003` | manager | `tests/test_microphones.py::test_manager_validates_command_and_driver_event_together`; `::test_open_mic_acceptance_has_exact_visual_stop_cue_and_message_order`; `tests/test_box3_esphome_microphone.py::test_timeout_boundary_recreation_reinitializes_visual_before_each_effective_reconnect` | Automated evidence present |
+| `MP-VISUAL-004` | drivers and firmware | `tests/test_box3_esphome_microphone.py::test_visual_state_maps_to_private_firmware_service`; `tests/test_microphone_firmware_conformance.py::test_only_connection_and_server_visual_handlers_assign_main_visual_phase` | Automated evidence and 2026-08-03 `voice-pe-03` visible callback sequence present; shared change deployed to `voice-pe-02` |
+| `MP-VISUAL-005` | manager, driver, firmware | `tests/test_box3_esphome_microphone.py::test_timeout_boundary_recreation_reinitializes_visual_before_each_effective_reconnect`; `tests/test_microphone_firmware_conformance.py::test_reconnect_retains_error_until_explicit_server_visual_command` | Defect regression and repeated 2026-08-03 `voice-pe-03` forced recovery present; `voice-pe-02` initialized in normative order under normal deployment, duplicate fault injection waived |
+| `MP-VISUAL-006` | firmware | `tests/test_microphone_firmware_conformance.py::test_only_connection_and_server_visual_handlers_assign_main_visual_phase`; reconnect/error rendering gate in `::test_reconnect_retains_error_until_explicit_server_visual_command` | Automated source evidence and 2026-08-03 `voice-pe-03` main-visual checks present; no firmware change required |
+| `MP-VISUAL-007` | manager and drivers | `tests/test_microphones.py::test_ready_rearm_waits_for_playback_finished_and_then_orders_idle_before_listening`; `::test_open_mic_acceptance_has_exact_visual_stop_cue_and_message_order` | Automated evidence and 2026-08-03 `voice-pe-03` playback/re-arm sequence present; shared change deployed to `voice-pe-02` |
+| `MP-OPENMIC-001` | manager partial-STT path | `tests/test_microphones.py::test_open_mic_partial_candidate_commands_listening_before_final_text` | Automated evidence present |
+| `MP-OPENMIC-002` | manager and driver | `tests/test_microphones.py::test_open_mic_rejection_resets_candidate_and_idle_without_rearming`; `tests/test_microphone_protocol.py::test_reset_candidate_rejects_unknown_utterance_without_mutating_generation` | Automated evidence present |
+| `MP-OPENMIC-003` | manager | `tests/test_microphones.py::test_open_mic_acceptance_has_exact_visual_stop_cue_and_message_order`; `::test_wake_word_acceptance_sets_processing_and_finishes_cue_before_message`; `::test_follow_up_acceptance_sets_processing_without_new_conversation_cue` | Automated evidence present |
+| `MP-AUDIO-001` | manager and drivers | `tests/test_microphone_protocol.py::test_cue_is_half_duplex`; `::test_playback_is_rejected_while_listening`; `tests/test_box3_esphome_microphone.py::test_playback_is_rejected_while_box3_listening_generation_is_active`; `::test_box3_satisfies_reusable_playback_contract` | Automated evidence present |
+| `MP-TIMEOUT-001` | manager | `tests/test_microphones.py::test_open_mic_idle_has_no_segment_timeout` | Automated evidence present |
+| `MP-ERROR-001` | manager and drivers | `tests/test_microphones.py::test_unavailable_boundary_is_closed_and_protocol_state_is_recreated`; `::test_failed_boundary_recreation_invalidates_visual_without_claiming_trusted_state`; `tests/test_box3_esphome_microphone.py::test_timeout_boundary_recreation_reinitializes_visual_before_each_effective_reconnect`; `::test_close_discards_every_concrete_stream_generation_field`; `::test_concrete_boundary_recovery_contains_cleanup_failures`; `::test_total_transport_teardown_failure_invokes_process_fatal_containment`; `::test_stale_recovery_total_disconnect_failure_reaches_process_fatal_containment` | Automated failure containment plus successful repeated 2026-08-03 `voice-pe-03` hardware recovery present; duplicate `voice-pe-02` fault injection waived |
+| `MP-OBS-001` | manager and drivers | `tests/test_microphones.py::test_protocol_command_and_event_logs_include_state_and_correlations`; `::test_every_microphone_command_log_includes_applicable_correlations`; `::test_every_microphone_event_log_includes_applicable_correlations`; `::test_rejected_command_is_logged_with_item_and_active_correlations`; `::test_rejected_event_is_logged_with_item_and_active_correlations` | Automated evidence present for every vocabulary item and rejected stale items |
+| `MP-OBS-002` | manager and drivers | `tests/test_microphones.py::test_visual_transition_logs_old_new_cause_and_active_correlations` | Automated evidence present |
+| `MP-OBS-003` | STT config and implementation | `tests/test_speech_to_text.py::test_faster_whisper_stt_logs_metadata_without_transcript_text_by_default`; `::test_faster_whisper_stt_logs_raw_and_processed_transcript_when_enabled`; `::test_faster_whisper_streaming_stt_emits_partial_and_final_text_without_logging_content_by_default`; `::test_faster_whisper_streaming_stt_logs_partial_and_final_transcripts_when_enabled` | Automated evidence present |
 
-Existing additional Microphone Protocol coverage remains required: every driver
-state/command/event combination; all listening modes; correlation failures;
-timeouts and recovery; reusable suites for every driver; ESPHome validation,
-compilation, and generated-source inspection when firmware is affected.
+The automated matrix now covers every protocol state/command/event pair, every
+listening mode through the reusable concrete-driver harness, stale correlation,
+timeout recovery, concrete reconnect ordering, and both satellite firmware
+packages at source level. T-009 closure combines the fresh dated
+`voice-pe-03` recovery sequence with logged normal `voice-pe-02` deployment;
+Captain explicitly waived duplicate `voice-pe-02` fault injection. The
+catalogue does not represent that skipped visible sequence as performed.
 
 ## Microphone-Conversation Mapping
 
@@ -316,6 +322,21 @@ Assistant imperative was misplanned as `query_state`; and one Wikipedia DSA
 turn fetched its sources successfully but returned invalid final JSON. These
 findings remain open and prevent treating this record as complete Gate D
 evidence.
+
+On 2026-08-03, T-009 repeated `voice-pe-03` verification against the current
+working-tree remediation through `tools/ai-server.sh` and private config
+`/tmp/ai-server-voice-pe-03-t009.yaml`. Device API metadata was ESPHome
+`2026.4.5`, compilation time `2026-07-13 20:05:26 +0000`. Visible checks passed
+for disconnected `ERROR`, initialized/open-mic `IDLE`, accepted-turn
+`PROCESSING`, playback cleanup, follow-up `LISTENING`, timeout cue and return to
+`IDLE`. A disposable 5 ms audio-event deadline repeatedly forced the real
+active-stream boundary recreation: each reconnect visibly passed through
+`ERROR`, received `SetVisualState(IDLE)` before the fresh `StartListening`, and
+used new session/listen/utterance identifiers. The detailed timestamp and
+correlation ledger is in T-009. The normal multi-device deployment then logged
+`voice-pe-02` connection, `SetVisualState(IDLE)`, and fresh `StartListening` /
+`ListeningStarted` in normative order. Captain waived repeating the isolated
+fault injection on `voice-pe-02`; T-009 records that accepted deviation.
 
 ## Required verification order
 

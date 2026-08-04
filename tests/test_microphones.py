@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from ai_server.conversations.bridge import BridgeSettings
+from ai_server.conversations.bridge import BridgeSettings, FatalTerminationController
 from ai_server.conversations.contexts import ConversationMedium, InputConversationContext
 from ai_server.conversations.messages import AssistantAbortReason, AssistantSinkTerminalResult, ConversationEnded
 from ai_server.conversations.messages import ContextRejectionCode, ConversationEndReason, FollowUpRequestCommitted
@@ -15,13 +15,15 @@ from ai_server.microphones.conversation_adapter import VoiceInputConversation, V
 from ai_server.microphones.conversation_adapter import VoiceAssistantSink, VoiceSessionState
 from ai_server.microphones.interfaces import MicrophoneUnavailable
 from ai_server.microphones.manager import CapturedUtterance, MicrophoneManager, _MicrophoneAvailabilityLogger
-from ai_server.microphones.messages import CueFinished, CueType, ListeningMode, ListeningStarted, ListeningStopped
+from ai_server.microphones.messages import Close, CueFinished, CueType, DriverClosed, ListeningMode
+from ai_server.microphones.messages import ListeningStarted, ListeningStopped, MicrophoneUnavailable as DriverUnavailable
 from ai_server.microphones.messages import PlaybackBegin, PlaybackChunk, PlaybackEnd, PlaybackFinished, PlayCue
-from ai_server.microphones.messages import AudioChunk, ResetWakeCandidate, SetVisualState, SpeechEnded, SpeechStarted
+from ai_server.microphones.messages import AudioChunk, AudioProgress, ResetWakeCandidate, SetVisualState
+from ai_server.microphones.messages import SpeechEnded, SpeechStarted
 from ai_server.microphones.messages import StartListening, StopListening, SynthesizedAudioChunk
 from ai_server.microphones.messages import SynthesizedAudioEnd, SynthesizedAudioStart
 from ai_server.microphones.messages import VisualState
-from ai_server.microphones.protocol import DriverState
+from ai_server.microphones.protocol import DriverState, ProtocolSnapshot
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 from ai_server.speech_to_text.messages import TextEnd, TextFragment, TextPartial
 
@@ -143,6 +145,7 @@ def _manager(
     *,
     open_mic: bool = False,
     tts=None,
+    fatal_termination: FatalTerminationController | None = None,
 ) -> MicrophoneManager:
     return MicrophoneManager(
         microphones=[microphone],
@@ -153,6 +156,7 @@ def _manager(
         bridge_settings=BridgeSettings(1.0, 0.1),
         microphone_assistant_text_buffers={"fake": 100},
         open_microphones={"fake"} if open_mic else set(),
+        fatal_termination=fatal_termination,
     )
 
 
@@ -601,9 +605,144 @@ def test_protocol_command_and_event_logs_include_state_and_correlations(caplog) 
         with caplog.at_level(logging.DEBUG, logger=logger.name):
             await manager._send_command(microphone, command, logger)
             await manager._await_listening_started(microphone, command, logger)
-        assert "command=StartListening old_state=disarmed new_state=arming" in caplog.text
-        assert "event=ListeningStarted old_state=arming new_state=listening" in caplog.text
+        assert "command=StartListening item_correlations={'listen_id': 'listen-1'}" in caplog.text
+        assert "old_state=disarmed new_state=arming" in caplog.text
+        assert "event=ListeningStarted item_correlations={'listen_id': 'listen-1'}" in caplog.text
+        assert "old_state=arming new_state=listening" in caplog.text
         assert "listen_id='listen-1'" in caplog.text
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_correlations"),
+    [
+        (StartListening("listen-1", ListeningMode.OPEN_MIC), "{'listen_id': 'listen-1'}"),
+        (StopListening("listen-1", "test"), "{'listen_id': 'listen-1'}"),
+        (SetVisualState(VisualState.IDLE), "{}"),
+        (ResetWakeCandidate("listen-1", "utterance-1"), "{'listen_id': 'listen-1', 'utterance_id': 'utterance-1'}"),
+        (PlayCue("cue-1", CueType.FOLLOW_UP_READY), "{'cue_id': 'cue-1'}"),
+        (PlaybackBegin("playback-1", 22050, 2, 1), "{'playback_id': 'playback-1'}"),
+        (PlaybackChunk("playback-1", b"audio"), "{'playback_id': 'playback-1'}"),
+        (PlaybackEnd("playback-1"), "{'playback_id': 'playback-1'}"),
+        (Close(), "{}"),
+    ],
+    ids=lambda value: type(value).__name__ if not isinstance(value, str) else value,
+)
+def test_every_microphone_command_log_includes_applicable_correlations(
+    command,
+    expected_correlations: str,
+    caplog,
+) -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = _manager(microphone)
+        manager._protocols["fake"] = _AcceptAllProtocol()
+        logger = logging.getLogger("test.microphone.command-matrix")
+
+        with caplog.at_level(logging.DEBUG, logger=logger.name):
+            await manager._send_command(microphone, command, logger)
+
+        assert (
+            f"microphone command={type(command).__name__} "
+            f"item_correlations={expected_correlations} old_state=disarmed "
+            "new_state=disarmed active_correlations="
+        ) in caplog.text
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("event", "expected_correlations"),
+    [
+        (ListeningStarted("listen-1", ListeningMode.OPEN_MIC), "{'listen_id': 'listen-1'}"),
+        (ListeningStopped("listen-1", "test"), "{'listen_id': 'listen-1'}"),
+        (SpeechStarted("listen-1", "utterance-1", 16000, 2, 1), "{'listen_id': 'listen-1', 'utterance_id': 'utterance-1'}"),
+        (AudioChunk("listen-1", "utterance-1", b"audio"), "{'listen_id': 'listen-1', 'utterance_id': 'utterance-1'}"),
+        (AudioProgress("listen-1", "utterance-1", 1, 5), "{'listen_id': 'listen-1', 'utterance_id': 'utterance-1'}"),
+        (SpeechEnded("listen-1", "utterance-1", "completed"), "{'listen_id': 'listen-1', 'utterance_id': 'utterance-1'}"),
+        (CueFinished("cue-1"), "{'cue_id': 'cue-1'}"),
+        (PlaybackFinished("playback-1"), "{'playback_id': 'playback-1'}"),
+        (DriverUnavailable("offline", listen_id="listen-1"), "{'listen_id': 'listen-1'}"),
+        (DriverClosed(), "{}"),
+    ],
+    ids=lambda value: type(value).__name__ if not isinstance(value, str) else value,
+)
+def test_every_microphone_event_log_includes_applicable_correlations(
+    event,
+    expected_correlations: str,
+    caplog,
+) -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = _manager(microphone)
+        manager._protocols["fake"] = _AcceptAllProtocol()
+        microphone.events.put_nowait(event)
+        logger = logging.getLogger("test.microphone.event-matrix")
+
+        with caplog.at_level(logging.DEBUG, logger=logger.name):
+            assert await manager._receive_event(microphone, logger) == event
+
+        assert (
+            f"microphone event={type(event).__name__} "
+            f"item_correlations={expected_correlations} old_state=disarmed "
+            "new_state=disarmed active_correlations="
+        ) in caplog.text
+
+    asyncio.run(run())
+
+
+def test_rejected_command_is_logged_with_item_and_active_correlations(caplog) -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = _manager(microphone)
+        logger = logging.getLogger("test.microphone.rejected-command")
+        protocol = manager._protocols["fake"]
+        protocol.command(StartListening("listen-active", ListeningMode.OPEN_MIC))
+        protocol.event(ListeningStarted("listen-active", ListeningMode.OPEN_MIC))
+
+        with caplog.at_level(logging.DEBUG, logger=logger.name):
+            with pytest.raises(AssertionError, match="mismatched listen_id"):
+                await manager._send_command(
+                    microphone,
+                    StopListening("listen-stale", "test"),
+                    logger,
+                )
+
+        assert "protocol violation command=StopListening" in caplog.text
+        assert "item_correlations={'listen_id': 'listen-stale'}" in caplog.text
+        assert "active_correlations=ProtocolSnapshot(state=<DriverState.LISTENING" in caplog.text
+        assert "listen_id='listen-active'" in caplog.text
+
+    asyncio.run(run())
+
+
+def test_rejected_event_is_logged_with_item_and_active_correlations(caplog) -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = _manager(microphone)
+        logger = logging.getLogger("test.microphone.rejected-event")
+        protocol = manager._protocols["fake"]
+        protocol.command(StartListening("listen-active", ListeningMode.OPEN_MIC))
+        protocol.event(ListeningStarted("listen-active", ListeningMode.OPEN_MIC))
+        protocol.event(
+            SpeechStarted("listen-active", "utterance-active", 16000, 2, 1)
+        )
+        microphone.events.put_nowait(
+            AudioChunk("listen-active", "utterance-stale", b"audio")
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=logger.name):
+            with pytest.raises(AssertionError, match="mismatched utterance_id"):
+                await manager._receive_event(microphone, logger)
+
+        assert "protocol violation event=AudioChunk" in caplog.text
+        assert (
+            "item_correlations={'listen_id': 'listen-active', "
+            "'utterance_id': 'utterance-stale'}"
+        ) in caplog.text
+        assert "active_correlations=ProtocolSnapshot(state=<DriverState.CAPTURING" in caplog.text
+        assert "utterance_id='utterance-active'" in caplog.text
 
     asyncio.run(run())
 
@@ -634,6 +773,16 @@ def test_visual_transition_logs_old_new_cause_and_active_correlations(caplog) ->
     asyncio.run(run())
 
 
+class _AcceptAllProtocol:
+    snapshot = ProtocolSnapshot(DriverState.DISARMED, None, None, None, None)
+
+    def command(self, _command) -> None:
+        return None
+
+    def event(self, _event) -> None:
+        return None
+
+
 def test_unavailable_boundary_is_closed_and_protocol_state_is_recreated() -> None:
     """MP-ERROR-001: recovery recreates state instead of guessing."""
 
@@ -650,6 +799,58 @@ def test_unavailable_boundary_is_closed_and_protocol_state_is_recreated() -> Non
         assert microphone.close_count == 1
         assert manager._protocols["fake"] is not old_protocol
         assert manager._protocols["fake"].snapshot.state is DriverState.DISARMED
+
+    asyncio.run(run())
+
+
+def test_failed_boundary_recreation_invalidates_visual_without_claiming_trusted_state() -> None:
+    """MP-ERROR-001/MP-VISUAL-005: failed close cannot preserve connected state."""
+
+    async def run() -> None:
+        class FatalTriggered(Exception):
+            pass
+
+        class Fatal(FatalTerminationController):
+            def __init__(self) -> None:
+                self.detail: str | None = None
+
+            async def terminate(self, detail: str):
+                self.detail = detail
+                raise FatalTriggered(detail)
+
+        microphone = FakeMicrophone()
+        fatal = Fatal()
+        manager = _manager(microphone, fatal_termination=fatal)
+        logger = logging.getLogger("test")
+        await manager._set_visual_state(
+            microphone,
+            VisualState.IDLE,
+            "ready_for_conversation",
+            logger,
+        )
+        await manager._send_command(
+            microphone,
+            StartListening("listen-1", ListeningMode.WAKE_WORD),
+            logger,
+        )
+        old_protocol = manager._protocols["fake"]
+
+        async def fail_close() -> None:
+            raise MicrophoneUnavailable("close failed")
+
+        microphone.close = fail_close
+        with pytest.raises(FatalTriggered, match="close failed"):
+            await manager._recover_microphone_boundary(
+                microphone,
+                logger,
+                MicrophoneUnavailable("offline"),
+            )
+
+        assert manager._visual_states["fake"] is None
+        assert manager._protocols["fake"] is old_protocol
+        assert manager._protocols["fake"].snapshot.state is DriverState.ARMING
+        assert fatal.detail is not None
+        assert "microphone boundary recovery failed" in fatal.detail
 
     asyncio.run(run())
 

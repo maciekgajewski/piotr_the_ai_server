@@ -20,8 +20,8 @@ Stage 3 must not begin until the normative documents produced by Stage 2 have be
 ## Progress
 
 - **Stage 1:** Completed on 2026-07-12. Added the documentation index, agent routing, authority labels, and the protocol documentation standard.
-- **Stage 2:** Completed on 2026-07-12. It produced the historical Conversation contract and mapping plus the still-normative Microphone Protocol. T-004 has since replaced the Conversation and mapping documents with approved target contracts awaiting implementation.
-- **Stage 3:** In progress only for remaining microphone-device evidence. The historical Conversation/websocket milestone, correlated Microphone Protocol, manager mapping, Box3 Python driver, and Box3/Voice Preview firmware visual ownership are implemented and green. T-002 and T-003 are fixed and live-verified on Box3, including bounded pre-roll, prompt warmed-STT `LISTENING`, clean explicit device stop, reply playback, and return to `IDLE` without `ERROR`. Explicit-stop firmware is deployed to all three Voice PE units. The unrun old-runtime websocket smoke test moved out of T-001 when T-004 superseded that scope.
+- **Stage 2:** Completed on 2026-07-12. It produced the historical Conversation contract and mapping plus the still-normative Microphone Protocol. T-004 replaced the Conversation and mapping documents and implemented their approved contracts on 2026-07-19.
+- **Stage 3:** The T-009 reconnect remediation and exact `MP-*` evidence audit completed on 2026-08-03 with representative `voice-pe-03` fault injection and normal multi-device deployment. T-001 retains only its broader historical hardware items outside T-009. T-002 and T-003 remain completed historical fixes.
 
 The implemented Conversation/websocket milestone above describes the current
 runtime and remains useful historical evidence. It is not the target architecture
@@ -42,9 +42,9 @@ Read, in order:
 
 1. root `AGENTS.md` and README architecture decisions;
 2. `docs/microphone-protocol.md`;
-3. current code and runtime evidence for the deployed microphone mapping; the
-   approved `docs/microphone-conversation-mapping.md` describes the T-004 target
-   and is not yet the current runtime contract;
+3. current code and runtime evidence for the deployed microphone mapping;
+   `docs/microphone-conversation-mapping.md` is the approved current runtime
+   contract implemented by T-004;
 4. the existing `MP-` section of `docs/protocol-conformance-catalogue.md`;
 5. T-002 and T-003 for the preserved Box3 fixes;
 6. this task's current-failures and next-steps sections below.
@@ -227,9 +227,12 @@ One combined shell invocation of focused pytest commands produced socket `Permis
 
 ### Current failures and incomplete conformance
 
-There are no currently reproducible pytest failures. The following acceptance failures remain:
+There are no currently reproducible pytest failures. Automated green status
+alone is not full Microphone Protocol conformance. The following acceptance
+failures remain:
 
-- Box3 and Voice Preview generated source prove server visual ownership and reconnect-before-first-command `ERROR`, and the available units have been flashed, but both device types still require hardware sequence validation.
+- On 2026-08-03, `voice-pe-02` and `voice-pe-03` reproduced a composed reconnect defect: stale-stream cleanup reconnected below the manager boundary and listening resumed while firmware correctly retained `ERROR`. T-009 contains the completed remediation, exact regression, `voice-pe-03` fault-injection evidence, normal `voice-pe-02` deployment ordering, and Captain's explicit waiver of duplicate fault injection.
+- Box3 and Voice Preview source checks prove server visual ownership and reconnect-before-first-command `ERROR`. Broader T-001 hardware work remains separate from completed T-009.
 - [T-003](T-003-box3-open-mic-preroll-stop-race.md) is complete. Its final isolated Box3 run proved the one-second pre-roll bound, prompt `LISTENING` after mandatory STT warm-up, explicit device-stop callback before RUN_END, full reply playback, and return to `IDLE` without a transport disconnect or `ERROR` bitmap.
 - The old-runtime websocket smoke test was never run for this checkpoint. It is
   no longer T-001 acceptance work; T-004 defines verification of the replacement
@@ -238,8 +241,9 @@ There are no currently reproducible pytest failures. The following acceptance fa
 
 ### Remaining acceptance criteria
 
-The implementation and automated conformance work originally listed here is
-complete. T-001 remains open only for these hardware evidence items:
+The original implementation work is present. T-009 closed its reconnect defect,
+exact evidence audit, and accepted live-device scope; T-001 remains open for
+these broader historical hardware items:
 
 - verify the remaining Box3 and Voice Preview visual/state sequences listed in
   the conformance catalogue, one satellite at a time;

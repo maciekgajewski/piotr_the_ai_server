@@ -1,7 +1,7 @@
 import pytest
 
 from ai_server.microphones.messages import AudioChunk, AudioProgress, Close, CueFinished, CueType, ListeningMode
-from ai_server.microphones.messages import ListeningStarted
+from ai_server.microphones.messages import DriverClosed, ListeningStarted
 from ai_server.microphones.messages import ListeningStopped, PlaybackBegin, PlaybackEnd, PlaybackFinished, PlayCue
 from ai_server.microphones.messages import MicrophoneUnavailable, PlaybackChunk, ResetWakeCandidate, SetVisualState
 from ai_server.microphones.messages import SpeechEnded
@@ -232,6 +232,86 @@ def test_reset_candidate_rejects_unknown_utterance_without_mutating_generation()
     assert protocol.snapshot == before
 
 
+COMMAND_LEGAL_STATES = {
+    "StartListening": {DriverState.DISARMED},
+    "StopListening": {DriverState.ARMING, DriverState.LISTENING, DriverState.CAPTURING},
+    "SetVisualState": set(DriverState) - {DriverState.CLOSED},
+    "ResetWakeCandidate": {DriverState.LISTENING},
+    "PlayCue": {DriverState.DISARMED},
+    "PlaybackBegin": {DriverState.DISARMED},
+    "PlaybackChunk": {DriverState.PLAYING_AUDIO},
+    "PlaybackEnd": {DriverState.PLAYING_AUDIO},
+    "Close": set(DriverState) - {DriverState.CLOSED},
+}
+
+
+EVENT_LEGAL_STATES = {
+    "ListeningStarted": {DriverState.ARMING},
+    "ListeningStopped": {DriverState.STOPPING},
+    "SpeechStarted": {DriverState.LISTENING},
+    "AudioChunk": {DriverState.CAPTURING},
+    "AudioProgress": {DriverState.CAPTURING},
+    "SpeechEnded": {DriverState.CAPTURING},
+    "CueFinished": {DriverState.PLAYING_CUE},
+    "PlaybackFinished": {DriverState.PLAYING_AUDIO},
+    "MicrophoneUnavailable": {
+        DriverState.ARMING,
+        DriverState.LISTENING,
+        DriverState.CAPTURING,
+        DriverState.STOPPING,
+        DriverState.PLAYING_CUE,
+        DriverState.PLAYING_AUDIO,
+    },
+    "DriverClosed": set(DriverState) - {DriverState.CLOSED},
+}
+
+
+@pytest.mark.parametrize("state", list(DriverState))
+@pytest.mark.parametrize("command_name", COMMAND_LEGAL_STATES)
+def test_complete_driver_state_command_matrix(
+    state: DriverState,
+    command_name: str,
+) -> None:
+    """MP-STATE-001: every command/state pair matches the normative table."""
+    protocol = _protocol_in_state(state, completed_utterance=command_name == "ResetWakeCandidate")
+    command = _command_for_state(command_name)
+
+    if command_name == "Close" and state is DriverState.CLOSED:
+        before = protocol.snapshot
+        protocol.command(command)
+        assert protocol.snapshot == before
+        return
+    if state in COMMAND_LEGAL_STATES[command_name]:
+        protocol.command(command)
+    else:
+        with pytest.raises(AssertionError):
+            protocol.command(command)
+
+
+@pytest.mark.parametrize("state", list(DriverState))
+@pytest.mark.parametrize("event_name", EVENT_LEGAL_STATES)
+def test_complete_driver_state_event_matrix(
+    state: DriverState,
+    event_name: str,
+) -> None:
+    """MP-STATE-001: every driver event/state pair matches the normative table."""
+    protocol = _protocol_in_state(state)
+    if event_name == "PlaybackFinished" and state is DriverState.PLAYING_AUDIO:
+        protocol.command(PlaybackEnd("playback-1"))
+    event = _event_for_state(event_name, state)
+
+    if event_name == "DriverClosed" and state is DriverState.CLOSED:
+        before = protocol.snapshot
+        protocol.event(event)
+        assert protocol.snapshot == before
+        return
+    if state in EVENT_LEGAL_STATES[event_name]:
+        protocol.event(event)
+    else:
+        with pytest.raises(AssertionError):
+            protocol.event(event)
+
+
 def _listening_protocol() -> MicrophoneProtocolState:
     protocol = MicrophoneProtocolState()
     protocol.command(StartListening("listen-1", ListeningMode.OPEN_MIC))
@@ -239,7 +319,11 @@ def _listening_protocol() -> MicrophoneProtocolState:
     return protocol
 
 
-def _protocol_in_state(state: DriverState) -> MicrophoneProtocolState:
+def _protocol_in_state(
+    state: DriverState,
+    *,
+    completed_utterance: bool = False,
+) -> MicrophoneProtocolState:
     protocol = MicrophoneProtocolState()
     if state is DriverState.DISARMED:
         return protocol
@@ -249,6 +333,9 @@ def _protocol_in_state(state: DriverState) -> MicrophoneProtocolState:
     if state in (DriverState.LISTENING, DriverState.CAPTURING, DriverState.STOPPING):
         protocol.command(StartListening("listen-1", ListeningMode.OPEN_MIC))
         protocol.event(ListeningStarted("listen-1", ListeningMode.OPEN_MIC))
+        if completed_utterance:
+            protocol.event(SpeechStarted("listen-1", "utterance-completed", 16000, 2, 1))
+            protocol.event(SpeechEnded("listen-1", "utterance-completed", "completed"))
         if state is DriverState.CAPTURING:
             protocol.event(SpeechStarted("listen-1", "utterance-1", 16000, 2, 1))
         elif state is DriverState.STOPPING:
@@ -260,4 +347,51 @@ def _protocol_in_state(state: DriverState) -> MicrophoneProtocolState:
     if state is DriverState.PLAYING_AUDIO:
         protocol.command(PlaybackBegin("playback-1", 22050, 2, 1))
         return protocol
+    if state is DriverState.CLOSED:
+        protocol.command(Close())
+        return protocol
     raise AssertionError(f"unsupported test state: {state}")
+
+
+def _command_for_state(command_name: str):
+    return {
+        "StartListening": StartListening("new-listen", ListeningMode.OPEN_MIC),
+        "StopListening": StopListening("listen-1", "test"),
+        "SetVisualState": SetVisualState(VisualState.IDLE),
+        "ResetWakeCandidate": ResetWakeCandidate("listen-1", "utterance-completed"),
+        "PlayCue": PlayCue("new-cue", CueType.FOLLOW_UP_READY),
+        "PlaybackBegin": PlaybackBegin("new-playback", 22050, 2, 1),
+        "PlaybackChunk": PlaybackChunk("playback-1", b"audio"),
+        "PlaybackEnd": PlaybackEnd("playback-1"),
+        "Close": Close(),
+    }[command_name]
+
+
+def _event_for_state(event_name: str, state: DriverState):
+    unavailable = {
+        DriverState.ARMING: MicrophoneUnavailable("offline", listen_id="listen-1"),
+        DriverState.LISTENING: MicrophoneUnavailable("offline", listen_id="listen-1"),
+        DriverState.CAPTURING: MicrophoneUnavailable(
+            "offline",
+            listen_id="listen-1",
+            utterance_id="utterance-1",
+        ),
+        DriverState.STOPPING: MicrophoneUnavailable("offline", listen_id="listen-1"),
+        DriverState.PLAYING_CUE: MicrophoneUnavailable("offline", cue_id="cue-1"),
+        DriverState.PLAYING_AUDIO: MicrophoneUnavailable(
+            "offline",
+            playback_id="playback-1",
+        ),
+    }.get(state, MicrophoneUnavailable("offline"))
+    return {
+        "ListeningStarted": ListeningStarted("listen-1", ListeningMode.OPEN_MIC),
+        "ListeningStopped": ListeningStopped("listen-1", "test"),
+        "SpeechStarted": SpeechStarted("listen-1", "new-utterance", 16000, 2, 1),
+        "AudioChunk": AudioChunk("listen-1", "utterance-1", b"audio"),
+        "AudioProgress": AudioProgress("listen-1", "utterance-1", 1, 5),
+        "SpeechEnded": SpeechEnded("listen-1", "utterance-1", "completed"),
+        "CueFinished": CueFinished("cue-1"),
+        "PlaybackFinished": PlaybackFinished("playback-1"),
+        "MicrophoneUnavailable": unavailable,
+        "DriverClosed": DriverClosed(),
+    }[event_name]

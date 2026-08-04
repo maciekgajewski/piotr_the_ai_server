@@ -1,21 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import logging
 
 import pytest
 
 import ai_server.microphones.drivers.box3_esphome as box3_driver
+from ai_server.conversations.bridge import BridgeSettings, FatalTerminationController
 from ai_server.microphones.drivers.box3_esphome import OPEN_MIC_AUDIO_PROGRESS_CHUNK_INTERVAL
 from ai_server.microphones.drivers.box3_esphome import OPEN_MIC_PRE_ROLL_BYTES, OPEN_MIC_PRE_ROLL_SECONDS
 from ai_server.microphones.drivers.box3_esphome import STOP_LISTENING_SERVICE
 from ai_server.microphones.drivers.box3_esphome import VOICE_ASSISTANT_STOP_ACK_TIMEOUT_SECONDS
 from ai_server.microphones.drivers.box3_esphome import Box3EsphomeMicrophone
+from ai_server.microphones.interfaces import MicrophoneUnavailable
+from ai_server.microphones.manager import MicrophoneManager
 from ai_server.microphones.messages import CueFinished, CueType, ListeningMode, ListeningStarted, ListeningStopped
 from ai_server.microphones.messages import AudioChunk, AudioProgress, PlaybackBegin, PlaybackChunk, PlaybackEnd
 from ai_server.microphones.messages import PlaybackFinished
 from ai_server.microphones.messages import PlayCue, ResetWakeCandidate, SetVisualState, SpeechEnded, SpeechStarted
 from ai_server.microphones.messages import StartListening, StopListening
 from ai_server.microphones.messages import VisualState
+from ai_server.microphones.protocol import DriverState
 from ai_server.microphones.types import MicrophoneContext, PlaybackTarget
 from tests.microphone_driver_conformance import assert_cue_contract, assert_listening_and_capture_contract
 from tests.microphone_driver_conformance import assert_playback_contract
@@ -50,6 +56,21 @@ def test_visual_state_maps_to_private_firmware_service() -> None:
         assert services == ["set_visual_processing"]
 
     asyncio.run(run())
+
+
+def test_concrete_driver_exposes_only_the_sealed_microphone_operations() -> None:
+    """MP-OWNER-001: the concrete driver stays behind the Microphone interface."""
+    public_operations = {
+        name
+        for name, value in Box3EsphomeMicrophone.__dict__.items()
+        if not name.startswith("_") and inspect.isfunction(value)
+    }
+    source = inspect.getsource(box3_driver)
+
+    assert public_operations == {"wait_for_event", "send_output_event", "close"}
+    assert "ai_server.conversations.messages" not in source
+    assert "ai_server.conversations.interfaces" not in source
+    assert "ai_server.speech_to_text" not in source
 
 
 def test_duplicate_visual_state_repeats_only_the_idempotent_private_service() -> None:
@@ -354,9 +375,13 @@ def test_stale_stream_recovery_cannot_expose_stopped_generation_capture_events()
             await microphone._handle_audio(b"\xff\x7f" * 512)
 
         microphone._finish_voice_assistant_run = finish_with_stale_stream_recovery
-        await microphone.send_output_event(StopListening("listen-1", "accepted"))
+        with pytest.raises(
+            MicrophoneUnavailable,
+            match="stale voice assistant stream required reconnect initialization",
+        ):
+            await microphone.send_output_event(StopListening("listen-1", "accepted"))
 
-        assert _drain_events(microphone) == [ListeningStopped("listen-1", "accepted")]
+        assert not any(isinstance(event, ListeningStopped) for event in _drain_events(microphone))
         assert microphone._stream_done.is_set()
         assert microphone._audio_ended
         assert not microphone._capture_events_enabled
@@ -431,13 +456,443 @@ def test_voice_assistant_stop_timeout_recovers_stale_stream(monkeypatch) -> None
         microphone._mark_disconnected = mark_disconnected
         monkeypatch.setattr(box3_driver, "VOICE_ASSISTANT_STOP_ACK_TIMEOUT_SECONDS", 0.01)
 
-        await microphone._finish_voice_assistant_run()
+        with pytest.raises(
+            MicrophoneUnavailable,
+            match="stale voice assistant stream required reconnect initialization",
+        ):
+            await microphone._finish_voice_assistant_run()
 
         assert operations == [STOP_LISTENING_SERVICE, "run_end"]
         assert disconnect_count == 1
         assert microphone._stream_done.is_set()
         assert microphone._audio_ended
         assert not microphone._run_end_sent
+
+    asyncio.run(run())
+
+
+def test_timeout_boundary_recreation_reinitializes_visual_before_each_effective_reconnect(
+    monkeypatch,
+) -> None:
+    """MP-VISUAL-005/MP-ERROR-001: timeout recreation clears stale reconnect state."""
+
+    async def run() -> None:
+        trace: list[str] = []
+        connection_count = 0
+
+        class Service:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class Client:
+            def __init__(self, *_args, **_kwargs) -> None:
+                nonlocal connection_count
+                connection_count += 1
+                self.number = connection_count
+                self.connected_address = "192.0.2.10"
+
+            async def connect(self, *, login: bool) -> None:
+                assert login
+                trace.append(f"connect:{self.number}")
+
+            async def disconnect(self) -> None:
+                trace.append(f"disconnect:{self.number}")
+
+            def subscribe_voice_assistant(self, **_callbacks):
+                trace.append(f"subscribe:{self.number}")
+                return lambda: trace.append(f"unsubscribe:{self.number}")
+
+            async def list_entities_services(self):
+                services = [Service(name) for name in (
+                    "set_visual_idle",
+                    "stop_listening",
+                    "start_open_mic_listening",
+                )]
+                return (), services
+
+            async def execute_service(self, service: Service, _data) -> None:
+                trace.append(f"service:{self.number}:{service.name}")
+
+            def send_voice_assistant_event(self, _event, _data) -> None:
+                trace.append(f"run_end:{self.number}")
+
+        class Lifecycle:
+            async def start(self) -> None:
+                return None
+
+            async def close(self) -> None:
+                return None
+
+        class EventQueue(asyncio.Queue):
+            def put_nowait(self, item) -> None:
+                trace.append(f"event:{connection_count}:{type(item).__name__}")
+                super().put_nowait(item)
+
+        monkeypatch.setattr(box3_driver.aioesphomeapi, "APIClient", Client)
+        monkeypatch.setattr(box3_driver, "VOICE_ASSISTANT_STOP_ACK_TIMEOUT_SECONDS", 0.01)
+        microphone = _microphone()
+        microphone._events = EventQueue()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=Lifecycle(),
+            tts=Lifecycle(),
+            agent=object(),
+            follow_up_timeout_seconds=60,
+            bridge_settings=BridgeSettings(1.0, 0.1),
+            microphone_assistant_text_buffers={"box": 100},
+            open_microphones={"box"},
+        )
+        logger = logging.getLogger("test.reconnect-conformance")
+
+        timed_out_listen = await manager._begin_new_conversation_listening(
+            microphone,
+            logger,
+        )
+        microphone._voice_assistant_run_active = True
+        microphone._run_end_sent = True
+        microphone._stream_done.clear()
+        await manager._recover_microphone_boundary(
+            microphone,
+            logger,
+            MicrophoneUnavailable("open-mic audio stream event timed out"),
+        )
+
+        first_recovered_listen = await manager._begin_new_conversation_listening(
+            microphone,
+            logger,
+        )
+        assert first_recovered_listen.listen_id != timed_out_listen.listen_id
+        assert trace.index("service:2:set_visual_idle") < trace.index(
+            "service:2:start_open_mic_listening"
+        ) < trace.index("event:2:ListeningStarted")
+
+        microphone._voice_assistant_run_active = True
+        microphone._stream_done.clear()
+        with pytest.raises(MicrophoneUnavailable):
+            await manager._stop_listening(
+                microphone,
+                first_recovered_listen.listen_id,
+                "forced_recovery",
+                logger,
+            )
+        assert not any(isinstance(event, ListeningStopped) for event in _drain_events(microphone))
+        await manager._recover_microphone_boundary(
+            microphone,
+            logger,
+            MicrophoneUnavailable("repeated stale stream"),
+        )
+        second_recovered_listen = await manager._begin_new_conversation_listening(
+            microphone,
+            logger,
+        )
+
+        assert second_recovered_listen.listen_id != first_recovered_listen.listen_id
+        assert trace.index("service:3:set_visual_idle") < trace.index(
+            "service:3:start_open_mic_listening"
+        ) < trace.index("event:3:ListeningStarted")
+        assert manager._visual_states["box"] is VisualState.IDLE
+
+    asyncio.run(run())
+
+
+def test_close_discards_every_concrete_stream_generation_field() -> None:
+    async def run() -> None:
+        microphone = _microphone()
+        microphone._stream_started.set()
+        microphone._stream_done.set()
+        microphone._speech_done.set()
+        microphone._pending_audio_chunks.append(b"stale")
+        microphone._pending_audio_byte_count = 5
+        microphone._wake_word = "stale"
+        microphone._byte_count = 5
+        microphone._audio_chunk_count = 1
+        microphone._last_audio_progress_chunk_count = 1
+        microphone._speech_started = True
+        microphone._speech_candidate_started_at = 1.0
+        microphone._last_speech_at = 2.0
+        microphone._stream_started_at = 3.0
+        microphone._ignore_audio_until = 4.0
+        microphone._ignored_audio_chunk_count = 1
+        microphone._ignored_audio_byte_count = 5
+        microphone._audio_ended = True
+        microphone._late_audio_chunk_count = 1
+        microphone._run_end_sent = True
+        microphone._voice_assistant_run_active = True
+        microphone._capture_events_enabled = True
+        microphone._listen_id = "listen-stale"
+        microphone._utterance_id = "utterance-stale"
+        microphone._listening_mode = ListeningMode.OPEN_MIC
+        microphone._playback_id = "playback-stale"
+
+        await microphone.close()
+
+        assert not microphone._stream_started.is_set()
+        assert not microphone._stream_done.is_set()
+        assert not microphone._speech_done.is_set()
+        assert microphone._pending_audio_byte_count == 0
+        assert microphone._wake_word is None
+        assert microphone._byte_count == 0
+        assert microphone._audio_chunk_count == 0
+        assert microphone._last_audio_progress_chunk_count == 0
+        assert not microphone._speech_started
+        assert microphone._speech_candidate_started_at is None
+        assert microphone._last_speech_at is None
+        assert microphone._stream_started_at is None
+        assert microphone._ignore_audio_until is None
+        assert microphone._ignored_audio_chunk_count == 0
+        assert microphone._ignored_audio_byte_count == 0
+        assert not microphone._audio_ended
+        assert microphone._late_audio_chunk_count == 0
+        assert not microphone._run_end_sent
+        assert not microphone._voice_assistant_run_active
+        assert not microphone._capture_events_enabled
+        assert microphone._listen_id is None
+        assert microphone._utterance_id is None
+        assert microphone._listening_mode is None
+        assert microphone._playback_id is None
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure_stage", ("playback", "unsubscribe", "disconnect"))
+def test_concrete_boundary_recovery_contains_cleanup_failures(
+    failure_stage: str,
+) -> None:
+    """MP-ERROR-001: cleanup failures still force ERROR and discard the boundary."""
+
+    async def run() -> None:
+        class FatalTriggered(Exception):
+            pass
+
+        class Fatal(FatalTerminationController):
+            def __init__(self) -> None:
+                self.detail: str | None = None
+
+            async def terminate(self, detail: str):
+                self.detail = detail
+                raise FatalTriggered(detail)
+
+        class Client:
+            def __init__(self) -> None:
+                self.connected = True
+                self.visual = VisualState.IDLE
+                self.disconnect_calls: list[bool] = []
+
+            async def disconnect(self, force: bool = False) -> None:
+                self.disconnect_calls.append(force)
+                if failure_stage == "disconnect" and not force:
+                    raise RuntimeError("graceful disconnect failed")
+                self.connected = False
+                self.visual = VisualState.ERROR
+
+        class Lifecycle:
+            async def start(self) -> None:
+                return None
+
+            async def close(self) -> None:
+                return None
+
+        microphone = _microphone()
+        client = Client()
+        microphone._client = client
+
+        def unsubscribe() -> None:
+            if failure_stage == "unsubscribe":
+                raise RuntimeError("unsubscribe failed")
+
+        microphone._unsubscribe = unsubscribe
+        if failure_stage == "playback":
+            async def fail_playback_cleanup() -> None:
+                raise RuntimeError("playback cleanup failed")
+
+            microphone._finish_playback = fail_playback_cleanup
+        microphone._voice_assistant_run_active = True
+        microphone._run_end_sent = True
+        microphone._capture_events_enabled = True
+        microphone._listen_id = "listen-stale"
+        microphone._listening_mode = ListeningMode.OPEN_MIC
+        fatal = Fatal()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=Lifecycle(),
+            tts=Lifecycle(),
+            agent=object(),
+            follow_up_timeout_seconds=60,
+            bridge_settings=BridgeSettings(1.0, 0.1),
+            microphone_assistant_text_buffers={"box": 100},
+            fatal_termination=fatal,
+        )
+        manager._visual_states["box"] = VisualState.IDLE
+
+        recovery = manager._recover_microphone_boundary(
+            microphone,
+            logging.getLogger("test.failed-concrete-recovery"),
+            MicrophoneUnavailable("operation failed"),
+        )
+        if failure_stage in ("playback", "unsubscribe"):
+            with pytest.raises(FatalTriggered):
+                await recovery
+            assert fatal.detail is not None
+            assert "microphone boundary recovery failed" in fatal.detail
+        else:
+            await recovery
+            assert fatal.detail is None
+
+        assert not client.connected
+        assert client.visual is VisualState.ERROR
+        assert client.disconnect_calls == ([False, True] if failure_stage == "disconnect" else [False])
+        assert microphone._client is None
+        assert microphone._unsubscribe is None
+        assert microphone._listen_id is None
+        assert not microphone._voice_assistant_run_active
+        assert not microphone._run_end_sent
+        assert manager._visual_states["box"] is None
+        assert manager._protocols["box"].snapshot.state is DriverState.DISARMED
+
+    asyncio.run(run())
+
+
+def test_total_transport_teardown_failure_invokes_process_fatal_containment() -> None:
+    async def run() -> None:
+        class FatalTriggered(Exception):
+            pass
+
+        class Client:
+            def __init__(self) -> None:
+                self.connected = True
+                self.visual = VisualState.IDLE
+                self.disconnect_calls: list[bool] = []
+
+            async def disconnect(self, force: bool = False) -> None:
+                self.disconnect_calls.append(force)
+                raise RuntimeError("transport would not close")
+
+        client = Client()
+
+        class Fatal(FatalTerminationController):
+            def __init__(self) -> None:
+                self.detail: str | None = None
+
+            async def terminate(self, detail: str):
+                self.detail = detail
+                # Production hard exit closes the process socket; model that effect here.
+                client.connected = False
+                client.visual = VisualState.ERROR
+                raise FatalTriggered(detail)
+
+        class Lifecycle:
+            async def start(self) -> None:
+                return None
+
+            async def close(self) -> None:
+                return None
+
+        microphone = _microphone()
+        microphone._client = client
+        microphone._voice_assistant_run_active = True
+        microphone._listen_id = "listen-stale"
+        microphone._listening_mode = ListeningMode.OPEN_MIC
+        fatal = Fatal()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=Lifecycle(),
+            tts=Lifecycle(),
+            agent=object(),
+            follow_up_timeout_seconds=60,
+            bridge_settings=BridgeSettings(1.0, 0.1),
+            microphone_assistant_text_buffers={"box": 100},
+            fatal_termination=fatal,
+        )
+        manager._visual_states["box"] = VisualState.IDLE
+
+        with pytest.raises(FatalTriggered):
+            await manager._recover_microphone_boundary(
+                microphone,
+                logging.getLogger("test.total-teardown-failure"),
+                MicrophoneUnavailable("operation failed"),
+            )
+
+        assert client.disconnect_calls == [False, True]
+        assert not client.connected
+        assert client.visual is VisualState.ERROR
+        assert microphone._client is None
+        assert microphone._listen_id is None
+        assert manager._visual_states["box"] is None
+        assert fatal.detail is not None
+        assert "forced disconnect failed" in fatal.detail
+
+    asyncio.run(run())
+
+
+def test_stale_recovery_total_disconnect_failure_reaches_process_fatal_containment() -> None:
+    async def run() -> None:
+        class FatalTriggered(Exception):
+            pass
+
+        class Client:
+            def __init__(self) -> None:
+                self.connected = True
+                self.visual = VisualState.IDLE
+                self.disconnect_calls: list[bool] = []
+
+            async def disconnect(self, force: bool = False) -> None:
+                self.disconnect_calls.append(force)
+                raise RuntimeError("transport would not close")
+
+        client = Client()
+
+        class Fatal(FatalTerminationController):
+            def __init__(self) -> None:
+                self.detail: str | None = None
+
+            async def terminate(self, detail: str):
+                self.detail = detail
+                client.connected = False
+                client.visual = VisualState.ERROR
+                raise FatalTriggered(detail)
+
+        class Lifecycle:
+            async def start(self) -> None:
+                return None
+
+            async def close(self) -> None:
+                return None
+
+        microphone = _microphone()
+        microphone._client = client
+        microphone._run_end_sent = True
+        microphone._stream_done.clear()
+        fatal = Fatal()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=Lifecycle(),
+            tts=Lifecycle(),
+            agent=object(),
+            follow_up_timeout_seconds=60,
+            bridge_settings=BridgeSettings(1.0, 0.1),
+            microphone_assistant_text_buffers={"box": 100},
+            fatal_termination=fatal,
+        )
+        manager._visual_states["box"] = VisualState.IDLE
+
+        with pytest.raises(MicrophoneUnavailable, match="forced disconnect failed"):
+            await microphone._recover_stale_voice_assistant_stream_before_rearm()
+        assert microphone._client is client
+        assert client.disconnect_calls == [False, True]
+
+        with pytest.raises(FatalTriggered):
+            await manager._recover_microphone_boundary(
+                microphone,
+                logging.getLogger("test.stale-total-teardown-failure"),
+                MicrophoneUnavailable("stale recovery disconnect failed"),
+            )
+
+        assert client.disconnect_calls == [False, True, False, True]
+        assert not client.connected
+        assert client.visual is VisualState.ERROR
+        assert microphone._client is None
+        assert fatal.detail is not None
+        assert "forced disconnect failed" in fatal.detail
 
     asyncio.run(run())
 

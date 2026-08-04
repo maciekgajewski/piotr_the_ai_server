@@ -47,7 +47,8 @@ While connected, the AI server explicitly controls `IDLE`, `LISTENING`, and `PRO
 
 ESPHome API service names and script IDs are implementation details behind each microphone driver. They are not part of the abstract Microphone Protocol and must not be invoked outside a concrete driver.
 
-The shared firmware package may define common service names for Piotr satellite implementations. Stage 3 will replace the current implicit service contract with explicit commands for:
+The shared firmware package defines the explicit service contract used by Piotr
+satellite implementations, including commands for:
 
 - starting and stopping each listening mode;
 - setting `IDLE`, `LISTENING`, and `PROCESSING`;

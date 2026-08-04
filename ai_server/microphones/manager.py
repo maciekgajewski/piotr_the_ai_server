@@ -788,12 +788,31 @@ class MicrophoneManager:
     ) -> None:
         protocol = self._protocols[microphone.context.name]
         old_state = protocol.snapshot.state
-        protocol.command(command)
+        logger.debug(
+            "validating microphone command=%s item_correlations=%s state=%s active_correlations=%s",
+            type(command).__name__,
+            _message_correlations(command),
+            old_state.value,
+            protocol.snapshot,
+        )
+        try:
+            protocol.command(command)
+        except AssertionError:
+            logger.exception(
+                "microphone protocol violation command=%s item_correlations=%s "
+                "state=%s active_correlations=%s",
+                type(command).__name__,
+                _message_correlations(command),
+                old_state.value,
+                protocol.snapshot,
+            )
+            raise
         if on_commit is not None:
             on_commit()
         logger.debug(
-            "microphone command=%s old_state=%s new_state=%s correlations=%s",
+            "microphone command=%s item_correlations=%s old_state=%s new_state=%s active_correlations=%s",
             type(command).__name__,
+            _message_correlations(command),
             old_state.value,
             protocol.snapshot.state.value,
             protocol.snapshot,
@@ -831,10 +850,29 @@ class MicrophoneManager:
         event = await microphone.wait_for_event()
         protocol = self._protocols[microphone.context.name]
         old_state = protocol.snapshot.state
-        protocol.event(event)
         logger.debug(
-            "microphone event=%s old_state=%s new_state=%s correlations=%s",
+            "validating microphone event=%s item_correlations=%s state=%s active_correlations=%s",
             type(event).__name__,
+            _message_correlations(event),
+            old_state.value,
+            protocol.snapshot,
+        )
+        try:
+            protocol.event(event)
+        except AssertionError:
+            logger.exception(
+                "microphone protocol violation event=%s item_correlations=%s "
+                "state=%s active_correlations=%s",
+                type(event).__name__,
+                _message_correlations(event),
+                old_state.value,
+                protocol.snapshot,
+            )
+            raise
+        logger.debug(
+            "microphone event=%s item_correlations=%s old_state=%s new_state=%s active_correlations=%s",
+            type(event).__name__,
+            _message_correlations(event),
             old_state.value,
             protocol.snapshot.state.value,
             protocol.snapshot,
@@ -1005,13 +1043,31 @@ class MicrophoneManager:
             snapshot,
             error,
         )
-        await microphone.close()
-        self._protocols[microphone.context.name] = MicrophoneProtocolState()
         self._visual_states[microphone.context.name] = None
+        try:
+            await microphone.close()
+        except Exception as close_error:
+            detail = (
+                f"microphone boundary recovery failed instance={microphone.context.instance_id} "
+                f"error={close_error}"
+            )
+            logger.critical(detail, exc_info=True)
+            fatal_termination = self._fatal_termination or FatalTerminationController()
+            await fatal_termination.terminate(detail)
+            raise AssertionError("fatal termination returned unexpectedly")
+        self._protocols[microphone.context.name] = MicrophoneProtocolState()
 
     @property
     def microphone_count(self) -> int:
         return len(self._microphones)
+
+
+def _message_correlations(message: MicrophoneCommand | MicrophoneEvent) -> dict[str, str]:
+    return {
+        field: value
+        for field in ("listen_id", "utterance_id", "cue_id", "playback_id")
+        if (value := getattr(message, field, None)) is not None
+    }
 
 
 async def init_mics(

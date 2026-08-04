@@ -230,20 +230,54 @@ class Box3EsphomeMicrophone:
 
     async def close(self) -> None:
         self._logger.debug("closing ESPHome microphone state=%s", self._voice_assistant_state())
-        await self._finish_playback()
-        if self._unsubscribe is not None:
-            self._unsubscribe()
-            self._unsubscribe = None
-        if self._client is not None:
-            await self._client.disconnect()
+        cleanup_error: Exception | None = None
+        try:
+            try:
+                await self._finish_playback()
+            except Exception as error:
+                self._logger.exception(
+                    "playback cleanup failed while closing ESPHome microphone; "
+                    "continuing transport teardown"
+                )
+                cleanup_error = error
+        finally:
+            if self._unsubscribe is not None:
+                unsubscribe = self._unsubscribe
+                self._unsubscribe = None
+                try:
+                    unsubscribe()
+                except Exception as error:
+                    self._logger.exception(
+                        "voice-assistant unsubscribe failed while closing ESPHome microphone; "
+                        "continuing transport teardown"
+                    )
+                    if cleanup_error is None:
+                        cleanup_error = error
+            client = self._client
             self._client = None
-        self._listen_id = None
-        self._utterance_id = None
-        self._listening_mode = None
-        self._capture_events_enabled = False
-        self._clear_pending_audio()
-        self._playback_id = None
-        self._drain_queued_events("driver close")
+            try:
+                if client is not None:
+                    await self._disconnect_for_close(client)
+            finally:
+                self._reset_concrete_boundary_state()
+                self._drain_queued_events("driver close")
+        if cleanup_error is not None:
+            raise cleanup_error
+
+    async def _disconnect_for_close(self, client: Any) -> None:
+        try:
+            await client.disconnect()
+        except Exception as graceful_error:
+            self._logger.exception(
+                "graceful ESPHome disconnect failed; forcing transport disconnect"
+            )
+            try:
+                await client.disconnect(force=True)
+            except Exception as force_error:
+                raise MicrophoneUnavailable(
+                    f"address={self.playback_target.address} forced disconnect failed: "
+                    f"{force_error}"
+                ) from graceful_error
 
     async def _ensure_connected(self) -> None:
         if self._client is not None:
@@ -716,9 +750,40 @@ class Box3EsphomeMicrophone:
         self._audio_ended = True
         self._clear_pending_audio()
         self._logger.debug(
-            "recovered stale ESPHome voice assistant stream before re-arm state=%s",
+            "discarded stale ESPHome voice assistant stream; manager boundary recreation required state=%s",
             self._voice_assistant_state(),
         )
+        raise MicrophoneUnavailable(
+            f"address={self.playback_target.address} stale voice assistant stream "
+            "required reconnect initialization"
+        )
+
+    def _reset_concrete_boundary_state(self) -> None:
+        self._stream_started.clear()
+        self._stream_done.clear()
+        self._speech_done.clear()
+        self._clear_pending_audio()
+        self._wake_word = None
+        self._byte_count = 0
+        self._audio_chunk_count = 0
+        self._last_audio_progress_chunk_count = 0
+        self._speech_started = False
+        self._speech_candidate_started_at = None
+        self._last_speech_at = None
+        self._stream_started_at = None
+        self._ignore_audio_until = None
+        self._ignored_audio_chunk_count = 0
+        self._ignored_audio_byte_count = 0
+        self._audio_ended = False
+        self._late_audio_chunk_count = 0
+        self._run_end_sent = False
+        self._voice_assistant_run_active = False
+        self._capture_events_enabled = False
+        self._listen_id = None
+        self._utterance_id = None
+        self._listening_mode = None
+        self._playback_id = None
+        assert self._playback_stream is None
 
     def _drain_queued_events(self, reason: str) -> None:
         counts: dict[str, int] = {}
@@ -775,8 +840,11 @@ class Box3EsphomeMicrophone:
         client = self._client
         self._client = None
         if client is not None:
-            with suppress(Exception):
-                await client.disconnect()
+            try:
+                await self._disconnect_for_close(client)
+            except MicrophoneUnavailable:
+                self._client = client
+                raise
 
     def _finish_audio_stream(self) -> None:
         if self._audio_ended:

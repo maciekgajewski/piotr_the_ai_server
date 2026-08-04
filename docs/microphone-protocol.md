@@ -171,6 +171,7 @@ The table covers audio-state events. `SetVisualState` is independently valid in 
 | `PLAYING_AUDIO` | matching `PlaybackFinished` after `PlaybackEnd` | Complete playback | `DISARMED` |
 | `PLAYING_AUDIO` | matching `MicrophoneUnavailable` | Abort playback | `DISARMED` |
 | any non-closed state | `Close` | Abort operation and release resources | `CLOSED` |
+| any non-closed state | `DriverClosed` | Discard the active operation; the driver is permanently unavailable | `CLOSED` |
 | `CLOSED` | any command or event | Inapplicable | `CLOSED` |
 
 Any command or event not allowed by this table is an internal protocol violation. A nested `SpeechStarted`, mismatched identifier, audio outside `CAPTURING`, or implicit driver re-arm MUST fail an invariant. (`MP-STATE-001`)
@@ -383,7 +384,7 @@ SetVisualState(IDLE) or SetVisualState(LISTENING) for follow-up
 
 ## Implementation and conformance references
 
-Stage 3 implementation targets:
+Current implementation owners:
 
 - `ai_server/microphones/messages.py`
 - `ai_server/microphones/interfaces.py`
@@ -397,12 +398,16 @@ Conformance targets:
 - `tests/test_microphones.py`
 - `tests/test_mic_protocol_test.py`
 - `tests/test_box3_esphome_microphone.py`
+- `tests/test_microphone_firmware_conformance.py`
 - reusable driver conformance tests
 - [Protocol Conformance Catalogue](protocol-conformance-catalogue.md)
 
 ## Compatibility policy
 
-This protocol intentionally replaces the current overloaded audio events and implicit firmware state coupling. Stage 3 MUST migrate all in-repository drivers, managers, tests, and firmware together. Compatibility aliases are not required.
+This protocol replaced the overloaded audio events and implicit firmware state
+coupling. In-repository drivers, managers, tests, and firmware use the current
+vocabulary without compatibility aliases. Completed T-009 records exact
+conformance evidence and the Captain-approved live-device verification scope.
 
 ## Unresolved decisions
 
