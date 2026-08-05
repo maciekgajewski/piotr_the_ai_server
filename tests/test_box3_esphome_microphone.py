@@ -491,8 +491,9 @@ def test_timeout_boundary_recreation_reinitializes_visual_before_each_effective_
                 self.number = connection_count
                 self.connected_address = "192.0.2.10"
 
-            async def connect(self, *, login: bool) -> None:
+            async def connect(self, *, on_stop, login: bool) -> None:
                 assert login
+                self.on_stop = on_stop
                 trace.append(f"connect:{self.number}")
 
             async def disconnect(self) -> None:
@@ -591,6 +592,308 @@ def test_timeout_boundary_recreation_reinitializes_visual_before_each_effective_
             "service:3:start_open_mic_listening"
         ) < trace.index("event:3:ListeningStarted")
         assert manager._visual_states["box"] is VisualState.IDLE
+
+    asyncio.run(run())
+
+
+def test_unexpected_transport_stop_wakes_waiter_and_requires_boundary_recreation(
+    monkeypatch,
+) -> None:
+    """MP-ERROR-001: a stopped idle transport cannot remain a trusted client."""
+
+    async def run() -> None:
+        clients = []
+
+        class Client:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.connected_address = "192.0.2.10"
+                self.on_stop = None
+                clients.append(self)
+
+            async def connect(self, *, on_stop, login: bool) -> None:
+                assert login
+                self.on_stop = on_stop
+
+            async def disconnect(self, force: bool = False) -> None:
+                assert not force
+
+            def subscribe_voice_assistant(self, **_callbacks):
+                return lambda: None
+
+        monkeypatch.setattr(box3_driver.aioesphomeapi, "APIClient", Client)
+        microphone = _microphone()
+        await microphone._ensure_connected()
+        first_client = clients[0]
+        waiter = asyncio.create_task(microphone.wait_for_event())
+        await asyncio.sleep(0)
+
+        assert first_client.on_stop is not None
+        await first_client.on_stop(False)
+
+        with pytest.raises(MicrophoneUnavailable, match="ESPHome transport stopped"):
+            await waiter
+        with pytest.raises(MicrophoneUnavailable, match="ESPHome transport stopped"):
+            await microphone._ensure_connected()
+        assert len(clients) == 1
+        assert "connected=False" in microphone._voice_assistant_state()
+        assert "transport_unavailable=True" in microphone._voice_assistant_state()
+
+        await microphone.close()
+        await microphone._ensure_connected()
+
+        assert len(clients) == 2
+        assert microphone._client is clients[1]
+        assert "connected=True" in microphone._voice_assistant_state()
+        assert "transport_unavailable=False" in microphone._voice_assistant_state()
+
+    asyncio.run(run())
+
+
+def test_connection_diagnostics_require_completed_transport_handshake(monkeypatch) -> None:
+    async def run() -> None:
+        connect_entered = asyncio.Event()
+        release_connect = asyncio.Event()
+
+        class Client:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.connected_address = "192.0.2.10"
+
+            async def connect(self, *, on_stop, login: bool) -> None:
+                assert on_stop is not None
+                assert login
+                connect_entered.set()
+                await release_connect.wait()
+
+            async def disconnect(self, force: bool = False) -> None:
+                assert not force
+
+            def subscribe_voice_assistant(self, **_callbacks):
+                return lambda: None
+
+        monkeypatch.setattr(box3_driver.aioesphomeapi, "APIClient", Client)
+        microphone = _microphone()
+        connecting = asyncio.create_task(microphone._ensure_connected())
+        await connect_entered.wait()
+
+        assert "connected=False" in microphone._voice_assistant_state()
+
+        release_connect.set()
+        await connecting
+        assert "connected=True" in microphone._voice_assistant_state()
+
+        await microphone.close()
+        assert "connected=False" in microphone._voice_assistant_state()
+
+    asyncio.run(run())
+
+
+def test_transport_stop_during_handshake_cannot_commit_connection(monkeypatch) -> None:
+    async def run() -> None:
+        client = None
+
+        class Client:
+            def __init__(self, *_args, **_kwargs) -> None:
+                nonlocal client
+                self.connected_address = "192.0.2.10"
+                self.subscribed = False
+                client = self
+
+            async def connect(self, *, on_stop, login: bool) -> None:
+                assert login
+                await on_stop(False)
+
+            async def disconnect(self, force: bool = False) -> None:
+                assert not force
+
+            def subscribe_voice_assistant(self, **_callbacks):
+                self.subscribed = True
+                return lambda: None
+
+        monkeypatch.setattr(box3_driver.aioesphomeapi, "APIClient", Client)
+        microphone = _microphone()
+
+        with pytest.raises(MicrophoneUnavailable, match="ESPHome transport stopped"):
+            await microphone._ensure_connected()
+
+        assert client is not None
+        assert not client.subscribed
+        assert "connected=False" in microphone._voice_assistant_state()
+        assert "transport_unavailable=True" in microphone._voice_assistant_state()
+
+    asyncio.run(run())
+
+
+def test_transport_stop_rejects_late_playback_commands() -> None:
+    async def run() -> None:
+        class PlaybackStream:
+            def __init__(self) -> None:
+                self.writes = []
+
+            def write(self, data: bytes) -> None:
+                self.writes.append(data)
+
+        microphone = _microphone()
+        client = object()
+        playback_stream = PlaybackStream()
+        finish_calls = 0
+        microphone._client = client
+        microphone._transport_connected = True
+        microphone._playback_id = "playback-1"
+        microphone._playback_stream = playback_stream
+
+        async def finish_playback() -> None:
+            nonlocal finish_calls
+            finish_calls += 1
+
+        microphone._finish_playback = finish_playback
+        await microphone._handle_transport_stop(client, False)
+
+        for command in (
+            PlaybackChunk("playback-1", b"late"),
+            PlaybackEnd("playback-1"),
+        ):
+            with pytest.raises(MicrophoneUnavailable, match="ESPHome transport stopped"):
+                await microphone.send_output_event(command)
+
+        assert playback_stream.writes == []
+        assert finish_calls == 0
+        assert microphone._playback_id == "playback-1"
+        assert microphone._playback_stream is playback_stream
+
+    asyncio.run(run())
+
+
+def test_transport_stop_ignores_duplicate_and_stale_client_callbacks(monkeypatch) -> None:
+    async def run() -> None:
+        clients = []
+
+        class Client:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.connected_address = "192.0.2.10"
+                self.on_stop = None
+                clients.append(self)
+
+            async def connect(self, *, on_stop, login: bool) -> None:
+                assert login
+                self.on_stop = on_stop
+
+            async def disconnect(self, force: bool = False) -> None:
+                assert not force
+                assert self.on_stop is not None
+                await self.on_stop(True)
+
+            def subscribe_voice_assistant(self, **_callbacks):
+                return lambda: None
+
+        monkeypatch.setattr(box3_driver.aioesphomeapi, "APIClient", Client)
+        microphone = _microphone()
+        await microphone._ensure_connected()
+        first_client = clients[0]
+        await microphone.close()
+
+        assert microphone._transport_unavailable_reason is None
+        assert microphone._events.empty()
+
+        await microphone._ensure_connected()
+        second_client = clients[1]
+        assert first_client.on_stop is not None
+        await first_client.on_stop(False)
+        assert microphone._client is second_client
+        assert microphone._transport_unavailable_reason is None
+        assert microphone._events.empty()
+
+        assert second_client.on_stop is not None
+        await second_client.on_stop(True)
+        await second_client.on_stop(False)
+        assert microphone._events.qsize() == 1
+        with pytest.raises(MicrophoneUnavailable, match="ESPHome transport stopped"):
+            await microphone.wait_for_event()
+        assert microphone._events.qsize() == 1
+        await microphone.close()
+        assert microphone._events.empty()
+
+    asyncio.run(run())
+
+
+def test_transport_stop_recovery_reinitializes_visual_before_listening(monkeypatch) -> None:
+    """MP-VISUAL-005/MP-ERROR-001: transport loss uses manager recovery ordering."""
+
+    async def run() -> None:
+        trace: list[str] = []
+        clients = []
+
+        class Service:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class Client:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.number = len(clients) + 1
+                self.connected_address = "192.0.2.10"
+                self.on_stop = None
+                clients.append(self)
+
+            async def connect(self, *, on_stop, login: bool) -> None:
+                assert login
+                self.on_stop = on_stop
+                trace.append(f"connect:{self.number}")
+
+            async def disconnect(self, force: bool = False) -> None:
+                assert not force
+                trace.append(f"disconnect:{self.number}")
+
+            def subscribe_voice_assistant(self, **_callbacks):
+                trace.append(f"subscribe:{self.number}")
+                return lambda: trace.append(f"unsubscribe:{self.number}")
+
+            async def list_entities_services(self):
+                return (), [
+                    Service("set_visual_idle"),
+                    Service("start_open_mic_listening"),
+                ]
+
+            async def execute_service(self, service: Service, _data) -> None:
+                trace.append(f"service:{self.number}:{service.name}")
+
+        class Lifecycle:
+            async def start(self) -> None:
+                return None
+
+            async def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(box3_driver.aioesphomeapi, "APIClient", Client)
+        microphone = _microphone()
+        manager = MicrophoneManager(
+            microphones=[microphone],
+            stt=Lifecycle(),
+            tts=Lifecycle(),
+            agent=object(),
+            follow_up_timeout_seconds=60,
+            bridge_settings=BridgeSettings(1.0, 0.1),
+            microphone_assistant_text_buffers={"box": 100},
+            open_microphones={"box"},
+        )
+        logger = logging.getLogger("test.transport-stop-recovery")
+        first_listen = await manager._begin_new_conversation_listening(microphone, logger)
+        waiter = asyncio.create_task(manager._receive_event(microphone, logger))
+        await asyncio.sleep(0)
+
+        first_client = clients[0]
+        assert first_client.on_stop is not None
+        await first_client.on_stop(False)
+        with pytest.raises(MicrophoneUnavailable) as raised:
+            await waiter
+        await manager._recover_microphone_boundary(microphone, logger, raised.value)
+        second_listen = await manager._begin_new_conversation_listening(microphone, logger)
+
+        assert second_listen.listen_id != first_listen.listen_id
+        assert trace.index("connect:2") < trace.index("service:2:set_visual_idle")
+        assert trace.index("service:2:set_visual_idle") < trace.index(
+            "service:2:start_open_mic_listening"
+        )
+        assert manager._visual_states["box"] is VisualState.IDLE
+        assert manager._protocols["box"].snapshot.state is DriverState.LISTENING
 
     asyncio.run(run())
 

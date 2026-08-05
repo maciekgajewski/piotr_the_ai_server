@@ -85,10 +85,12 @@ class Box3EsphomeMicrophone:
         self._post_speech_ignore_seconds = post_speech_ignore_seconds
         self._client_info = client_info
         self._client = None
+        self._transport_connected = False
         self._unsubscribe = None
         self._stream_started = asyncio.Event()
         self._stream_done = asyncio.Event()
-        self._events: asyncio.Queue[MicrophoneEvent] = asyncio.Queue()
+        self._events: asyncio.Queue[MicrophoneEvent | MicrophoneUnavailable] = asyncio.Queue()
+        self._transport_unavailable_reason: str | None = None
         self._pending_audio_chunks: deque[bytes] = deque()
         self._pending_audio_byte_count = 0
         self._wake_word: str | None = None
@@ -143,9 +145,19 @@ class Box3EsphomeMicrophone:
             "waiting for ESPHome voice assistant event state=%s",
             self._voice_assistant_state(),
         )
-        return await self._events.get()
+        event = await self._events.get()
+        if self._transport_unavailable_reason is not None:
+            raise MicrophoneUnavailable(self._transport_unavailable_reason)
+        if isinstance(event, MicrophoneUnavailable):
+            raise event
+        return event
 
     async def send_output_event(self, event: MicrophoneCommand) -> None:
+        if isinstance(event, Close):
+            await self.close()
+            return
+        if self._transport_unavailable_reason is not None:
+            raise MicrophoneUnavailable(self._transport_unavailable_reason)
         if isinstance(event, PlaybackBegin):
             self._logger.debug(
                 "sending audio start event to ESPHome satellite rate=%s width=%s channels=%s volume=%s state=%s",
@@ -223,9 +235,6 @@ class Box3EsphomeMicrophone:
             self._logger.debug("setting visual state state=%s", event.state.value)
             await self._execute_api_service(VISUAL_STATE_SERVICES[event.state])
             return
-        if isinstance(event, Close):
-            await self.close()
-            return
         raise ValueError(f"unsupported microphone output event: {type(event).__name__}")
 
     async def close(self) -> None:
@@ -255,6 +264,7 @@ class Box3EsphomeMicrophone:
                         cleanup_error = error
             client = self._client
             self._client = None
+            self._transport_connected = False
             try:
                 if client is not None:
                     await self._disconnect_for_close(client)
@@ -280,13 +290,15 @@ class Box3EsphomeMicrophone:
                 ) from graceful_error
 
     async def _ensure_connected(self) -> None:
+        if self._transport_unavailable_reason is not None:
+            raise MicrophoneUnavailable(self._transport_unavailable_reason)
         if self._client is not None:
             self._logger.debug("reusing ESPHome satellite connection state=%s", self._voice_assistant_state())
             return
 
         _require_aioesphomeapi()
 
-        self._client = aioesphomeapi.APIClient(
+        client = aioesphomeapi.APIClient(
             self.playback_target.address,
             API_PORT,
             password=None,
@@ -294,22 +306,58 @@ class Box3EsphomeMicrophone:
             noise_psk=self.playback_target.api_key,
             expected_name=self.playback_target.expected_name,
         )
+        self._client = client
         self._logger.debug("connecting to ESPHome satellite address=%s", self.playback_target.address)
         try:
-            await self._client.connect(login=True)
+            await client.connect(
+                on_stop=partial(self._handle_transport_stop, client),
+                login=True,
+            )
         except _expected_unavailable_errors() as error:
             if self._playback_stream is not None:
                 self._playback_stream.close()
                 self._playback_stream = None
             await self._mark_disconnected()
             raise MicrophoneUnavailable(f"address={self.playback_target.address} error={error}") from error
-        connected_address = self._client.connected_address
+        if self._client is not client:
+            raise MicrophoneUnavailable(
+                f"address={self.playback_target.address} ESPHome connection was superseded"
+            )
+        if self._transport_unavailable_reason is not None:
+            raise MicrophoneUnavailable(self._transport_unavailable_reason)
+        self._transport_connected = True
+        connected_address = client.connected_address
         if isinstance(connected_address, str) and _is_ipv4_address(connected_address):
             self.playback_target = replace(self.playback_target, address=connected_address)
         elif isinstance(connected_address, tuple) and connected_address and _is_ipv4_address(str(connected_address[0])):
             self.playback_target = replace(self.playback_target, address=str(connected_address[0]))
         self._logger.debug("connected to ESPHome satellite address=%s", self.playback_target.address)
         self._subscribe_voice_assistant()
+
+    async def _handle_transport_stop(self, client: Any, expected_disconnect: bool) -> None:
+        if self._client is not client:
+            self._logger.debug(
+                "ignored stopped stale ESPHome transport expected_disconnect=%s state=%s",
+                expected_disconnect,
+                self._voice_assistant_state(),
+            )
+            return
+        self._transport_connected = False
+        if self._transport_unavailable_reason is not None:
+            self._logger.debug(
+                "ignored duplicate ESPHome transport stop expected_disconnect=%s state=%s",
+                expected_disconnect,
+                self._voice_assistant_state(),
+            )
+            return
+        reason = f"address={self.playback_target.address} ESPHome transport stopped"
+        self._transport_unavailable_reason = reason
+        self._logger.debug(
+            "ESPHome transport stopped expected_disconnect=%s state=%s",
+            expected_disconnect,
+            self._voice_assistant_state(),
+        )
+        self._events.put_nowait(MicrophoneUnavailable(reason))
 
     def _subscribe_voice_assistant(self) -> None:
         if self._unsubscribe is not None:
@@ -759,6 +807,8 @@ class Box3EsphomeMicrophone:
         )
 
     def _reset_concrete_boundary_state(self) -> None:
+        self._transport_connected = False
+        self._transport_unavailable_reason = None
         self._stream_started.clear()
         self._stream_done.clear()
         self._speech_done.clear()
@@ -839,6 +889,7 @@ class Box3EsphomeMicrophone:
             self._unsubscribe = None
         client = self._client
         self._client = None
+        self._transport_connected = False
         if client is not None:
             try:
                 await self._disconnect_for_close(client)
@@ -944,7 +995,8 @@ class Box3EsphomeMicrophone:
 
     def _voice_assistant_state(self) -> str:
         return (
-            f"connected={self._client is not None} "
+            f"connected={self._transport_connected} "
+            f"transport_unavailable={self._transport_unavailable_reason is not None} "
             f"subscribed={self._unsubscribe is not None} "
             f"run_active={self._voice_assistant_run_active} "
             f"capture_events_enabled={self._capture_events_enabled} "

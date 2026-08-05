@@ -883,6 +883,38 @@ def test_microphone_unavailability_logs_once_until_recovery(caplog) -> None:
     assert info_messages == ["microphone available again"]
 
 
+def test_successful_readiness_logs_recovery_immediately_after_unavailability(caplog) -> None:
+    async def run() -> None:
+        microphone = FakeMicrophone()
+        manager = _manager(microphone)
+        logger = logging.getLogger(
+            f"ai_server.microphones.manager.MicrophoneManager[{microphone.context.instance_id}]"
+        )
+        availability_logger = manager._availability_loggers[microphone.context.name]
+
+        with caplog.at_level(logging.DEBUG, logger=logger.name):
+            availability_logger.unavailable(MicrophoneUnavailable("transport stopped"))
+            await manager._begin_new_conversation_listening(microphone, logger)
+
+        warning_messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        ]
+        info_messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.INFO
+        ]
+
+        assert warning_messages == [
+            "microphone unavailable; retrying soon error=transport stopped"
+        ]
+        assert info_messages == ["microphone available again"]
+
+    asyncio.run(run())
+
+
 def test_microphone_boundary_recreation_is_debug_observability(caplog) -> None:
     async def run() -> None:
         microphone = FakeMicrophone()

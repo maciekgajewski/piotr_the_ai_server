@@ -109,6 +109,12 @@ class MicrophoneManager:
             microphone.context.name: None
             for microphone in microphones
         }
+        self._availability_loggers = {
+            microphone.context.name: _MicrophoneAvailabilityLogger(
+                _microphone_logger(microphone)
+            )
+            for microphone in microphones
+        }
 
     async def start(self) -> None:
         try:
@@ -137,7 +143,7 @@ class MicrophoneManager:
 
     async def _run_microphone(self, microphone: Microphone) -> None:
         logger = _microphone_logger(microphone)
-        availability_logger = _MicrophoneAvailabilityLogger(logger)
+        availability_logger = self._availability_loggers[microphone.context.name]
         while not self._closing:
             session = VoiceInputSession(
                 manager=self,
@@ -226,6 +232,7 @@ class MicrophoneManager:
         )
         await self._send_command(microphone, output_event, logger)
         await self._await_listening_started(microphone, output_event, logger)
+        self._availability_loggers[microphone.context.name].available()
         return output_event
 
     async def _capture_open_mic_utterance(
