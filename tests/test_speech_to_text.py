@@ -294,7 +294,7 @@ def test_faster_whisper_streaming_stt_logs_partial_and_final_transcripts_when_en
     assert f"streaming STT final transcript {expected}" in caplog.text
 
 
-def test_faster_whisper_streaming_stt_warns_and_drops_stale_partial_without_text(caplog) -> None:
+def test_faster_whisper_streaming_stt_debug_logs_and_drops_stale_partial_without_text(caplog) -> None:
     async def run() -> None:
         transcriber = FakeTranscriber(text="tajny tekst tła", delay_seconds=0.05)
         stt = FasterWhisperSpeechToText(
@@ -310,7 +310,7 @@ def test_faster_whisper_streaming_stt_warns_and_drops_stale_partial_without_text
             transcriber_factory=lambda _config: transcriber,
         )
 
-        with caplog.at_level(logging.WARNING, logger="ai_server.speech_to_text.faster_whisper"):
+        with caplog.at_level(logging.DEBUG, logger="ai_server.speech_to_text.faster_whisper"):
             await stt.start()
             session = await stt.create_streaming_session("backlog-session")
             await session.send_audio(PcmAudioChunk(data=b"a" * DEFAULT_STT_AUDIO_FORMAT.byte_rate))
@@ -325,7 +325,7 @@ def test_faster_whisper_streaming_stt_warns_and_drops_stale_partial_without_text
     assert "tajny tekst tła" not in caplog.text
 
 
-def test_faster_whisper_streaming_stt_logs_stale_partial_episode_once_and_recovery(
+def test_faster_whisper_streaming_stt_debug_logs_stale_partials_and_recovery(
     caplog, monkeypatch
 ) -> None:
     async def run() -> None:
@@ -377,11 +377,15 @@ def test_faster_whisper_streaming_stt_logs_stale_partial_episode_once_and_recove
     drop_records = [
         record for record in caplog.records if "dropping stale partial" in record.getMessage()
     ]
-    assert [record.levelno for record in drop_records] == [logging.WARNING, logging.DEBUG]
+    assert [record.levelno for record in drop_records] == [logging.DEBUG, logging.DEBUG]
     assert "dropping stale partial dropped_partials=1" in drop_records[0].getMessage()
     assert "dropping stale partial dropped_partials=2" in drop_records[1].getMessage()
     assert "partial backlog recovered backlog_seconds=0.00" in caplog.text
     assert "dropped_partials=2" in caplog.text
+    recovery_records = [
+        record for record in caplog.records if "partial backlog recovered" in record.getMessage()
+    ]
+    assert [record.levelno for record in recovery_records] == [logging.DEBUG]
 
 
 def test_faster_whisper_model_loader_uses_local_files_only(monkeypatch) -> None:

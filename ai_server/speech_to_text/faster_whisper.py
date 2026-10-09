@@ -337,9 +337,8 @@ class FasterWhisperStreamingSttSession:
                 )
                 backlog_seconds = audio_seconds(len(self._audio), self._audio_format) - snapshot_end_seconds
                 if backlog_seconds > self._partial_max_backlog_seconds:
-                    log = self._logger.warning if self._stale_partial_drops == 0 else self._logger.debug
                     self._stale_partial_drops += 1
-                    log(
+                    self._logger.debug(
                         "streaming STT partial backlog_seconds=%.2f max_backlog_seconds=%.2f; "
                         "dropping stale partial dropped_partials=%s",
                         backlog_seconds,
@@ -348,7 +347,7 @@ class FasterWhisperStreamingSttSession:
                     )
                     continue
                 if self._stale_partial_drops > 0:
-                    self._logger.info(
+                    self._logger.debug(
                         "streaming STT partial backlog recovered backlog_seconds=%.2f "
                         "max_backlog_seconds=%.2f dropped_partials=%s",
                         backlog_seconds,
