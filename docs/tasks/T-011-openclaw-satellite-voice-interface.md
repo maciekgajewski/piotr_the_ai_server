@@ -3,218 +3,232 @@
 ## Status
 
 - **Authority:** Plan; not a runtime contract
-- **Status:** Planned; implementation not started or authorized
+- **Status:** Stage 1 in progress; Python Gateway foundation implemented; spoken-request binding and voice-service integration pending; Talk excluded
 - **Created:** 2026-10-09
+- **Updated:** 2026-10-10
 - **Audience:** Maintainers of the OpenClaw voice subproject and reused satellite components
-- **Read when:** Planning or implementing OpenClaw voice input, replies, announcements, or initiated conversations
+- **Read when:** Planning or implementing OpenClaw satellite input, replies, or notifications
 
-## Objective
+## Objective and current scope
 
-Create a separate subproject in this repository that gives OpenClaw voice input
-and output through our existing satellites. Reuse the satellite drivers,
-conversation protocol, Whisper, Piper, speaker recognition, and room context.
-OpenClaw owns all reasoning and actions for this subproject.
+Create a separate subproject that presents our satellites to OpenClaw using its
+native node/chat interfaces. Reuse satellite drivers, Whisper, Piper, speaker
+recognition, and room context. OpenClaw owns reasoning and actions. The Python
+service translates between speech and text and owns hardware/media lifetimes.
 
-This is a sidequest, not a replacement or direction change for Piotr. Preserve
-the existing Piotr application, orchestrator, and DSAs. Piotr and the new voice
-tool are assumed never to run simultaneously on the same machine; shared
-satellite ownership and switching between assistants are outside scope.
+This is a sidequest, not a replacement for Piotr. Piotr and the voice service
+will not run simultaneously on the same machine. Shared satellite ownership
+and switching between assistants remain outside scope.
 
-Captain requested the path of least resistance and explicitly chose to retain
-the current conversation protocol. This document records the plan only.
-Implementation requires Captain's separate "proceed" or "make it so".
+Captain simplified the direction on 2026-10-09: use ordinary text exchanges and
+be a native node notification target. Captain accepts either no follow-up or a
+fixed default follow-up policy for now. The working choice is **no follow-up**:
+one accepted spoken request, one assistant response, playback/cleanup, then
+return to normal wake-word readiness. A new utterance requires a new wake.
+Neither response punctuation nor model intent determines microphone reopening.
+Spoken notifications also finish without opening a reply interval.
+
+This supersedes the custom channel-plugin/dedicated-voice-tool architecture for
+the current milestone. Model-selected `finish`/`listen`, proactive questions
+with correlated spoken answers, and the full server-start/listen extension are
+deferred. Their earlier investigation is retained as historical design evidence.
+No custom OpenClaw plugin is assumed necessary for this milestone. Captain
+excluded the Talk API family on 2026-10-10; keep the existing Whisper/Piper
+media path and the native node/chat interfaces.
+
+Captain said "proceed" on 2026-10-10 after excluding Talk, authorizing continued
+implementation of this subproject. Resolve outstanding binding decisions and
+verify the native contract before wiring the runtime. This authorization does
+not itself settle those choices or approve deployment to running services.
 
 ## Binding documents
 
-Read before implementation:
+Read root `AGENTS.md`, the architecture decisions in `README.md`, and
+`docs/README.md`, including T-004's remaining hardware verification. Before
+changing runtime behavior, read:
 
-1. root `AGENTS.md` and the architecture decisions in `README.md`;
-2. `docs/README.md`, including the remaining T-004 hardware verification scope;
-3. `docs/ai-server-conversation-protocol.md`;
-4. `docs/microphone-protocol.md`;
-5. `docs/microphone-conversation-mapping.md`;
-6. `docs/protocol-conformance-catalogue.md`;
-7. `docs/project-standard-satellite-behavior.md`;
-8. this task.
+1. [Conversation protocol](../ai-server-conversation-protocol.md);
+2. [Microphone protocol](../microphone-protocol.md);
+3. [Microphone-Conversation mapping](../microphone-conversation-mapping.md);
+4. [Conformance catalogue](../protocol-conformance-catalogue.md);
+5. [Satellite behavior](../project-standard-satellite-behavior.md).
 
-The new OpenClaw transport is a separate integration boundary. Do not assume
-the existing websocket client protocol is its transport or change that binding
-incidentally. Read its normative documents if implementation touches it.
+OpenClaw's Gateway protocol is a separate external binding from Piotr's
+websocket conversation protocol. Do not change the latter incidentally.
 
-## Agreed behavior and ownership
+## Behavior and ownership
 
-| Concern | Owner and behavior |
+| Concern | Current requirement |
 |---|---|
-| Reasoning, tools, permissions, and assistant policy | OpenClaw |
-| Destination selection for proactive speech | OpenClaw supplies an explicit satellite destination; the voice tool exposes satellite names, rooms, and availability |
-| Presence inference and person-location history | OpenClaw, if desired; no presence tracker in the voice tool |
-| Satellite connections, capture, playback, cues, and recovery | Voice tool through the existing manager and abstract driver interfaces |
-| Speech recognition and synthesis | Existing Whisper and Piper components |
-| Speaker recognition | Existing conversation-start recognition; the identity stays fixed for that Conversation |
-| Unknown speaker | Normal accepted input; forward to OpenClaw without inventing a known identity or rejecting speech merely because recognition failed |
-| Room context | Configured area of the originating satellite |
-| Follow-up presentation and timing | Voice input adapter under the existing protocol |
-| Announcements and initiated conversations | OpenClaw requests either speak-and-finish or speak-and-listen |
-| Busy or unavailable destination | Voice tool reports the result; OpenClaw owns retry and alternative-destination policy |
+| Spoken input | Existing wake/capture/STT pipeline supplies complete accepted text |
+| Reply | Ordinary OpenClaw assistant text is rendered through Piper; end after output and cleanup |
+| Follow-up | No automatic follow-up in the current milestone, including after a question |
+| Notification | OpenClaw addresses a node using native `system.notify`; the proposed presentation is spoken title/body |
+| Destination | One logical OpenClaw node per satellite; the existing `nodes notify` action selects that satellite by node identity |
+| Speaker identity | Keep existing initial recognition; unknown is normal accepted input |
+| Room | Configured originating satellite area; native context carriage still needs verification |
+| Notification identity | No recognized speaker and no inference from an intended recipient or originating session |
+| Busy/unavailable | Reject explicitly; no durable notification queue and no interruption of an active exchange |
+| Media ownership | Existing manager and abstract drivers own events, listening/playback exclusion, cues, visuals, and recovery |
+| Reasoning, tools, permissions, retry decisions | OpenClaw |
 
-Recognition is known to be unreliable, so unknown speakers must be a routine
-tested case. Do not introduce per-utterance identity fields or change the
-immutable Conversation context. A follow-up retains the conversation-start
-identity even if somebody else answers; this is an accepted limitation of
-reusing the current protocol. The initially recognized user is context, not a
-new authorization policy enforced by this tool.
-
-## Working architecture
-
-Use a separate Python voice-service entry point and a thin OpenClaw channel
-plugin, subject to checking the installed OpenClaw version and interfaces:
+## Working architecture and unresolved bindings
 
 ```text
-satellites <-> Python voice service <-> OpenClaw channel plugin <-> OpenClaw
+satellites <-> Python voice service <-> native OpenClaw Gateway node/chat APIs
+              Whisper / Piper
 ```
 
-- Reuse Python components directly from this repository. Avoid copying their
-  implementation, a broad shared-library extraction, or rewriting them in the
-  plugin's language.
-- Implement the OpenClaw agent adapter behind the existing `Agent` and
-  `AgentConversation` interfaces. Keep concrete OpenClaw behavior out of the
-  Conversation bridge and satellite drivers.
-- The plugin adapts channel ingress, outbound delivery, and OpenClaw session
-  correlation. The Python service owns voice and hardware lifetimes.
-- Provide an explicit user-supplied config path. Command-line values take
-  precedence where a setting is also configurable in the file. The new entry
-  point must not require Piotr's orchestrator, DSAs, or reasoning-model startup.
-- Keep one active interaction per satellite. Report competing outbound work
-  as busy instead of adding a durable queue or interrupting an active exchange.
-- Keep buffers and operation deadlines bounded, preserve cancellation and
-  shutdown guarantees, and distinguish delivery acceptance from audio playback
-  completion. Do not automatically replay speech after an uncertain delivery.
-- Use existing firmware and device behavior unless verification reveals a
-  separately scoped defect; no firmware change is planned.
+- Reuse repository Python components without copying implementations or a broad
+  shared-library extraction. Use abstract Agent interfaces for accepted text
+  exchanges; keep OpenClaw details out of the bridge and drivers.
+- The copied installed version supports node `voice.transcript` and
+  `chat.subscribe` events and the operator-client `chat.send` API. These are
+  distinct role/auth surfaces, not interchangeable methods on one connection.
+  Verify the smallest native binding with adequate acceptance, run correlation,
+  response, failure, and cancellation signals before selecting the exact path.
+- Native `nodes` tool action `notify` invokes `system.notify` with title/body.
+  Our node implementation would render that text through Piper. This is a
+  proposed custom presentation of a native command, not an existing headless
+  node feature that already controls these satellites.
+- Captain selected one logical OpenClaw node per satellite on 2026-10-10.
+  The Python service owns those node connections; ESPHome hardware does not
+  connect to OpenClaw directly. Node names and durable device identities must
+  identify satellites unambiguously, including after reconnect. Pairing,
+  command declaration/allowlists,
+  session history scope, and account/credential ownership remain
+  deployment/design work.
+- Captain selected a Python client in the voice service for native Gateway
+  WebSocket on 2026-10-10. Use the existing `aiohttp` WebSocket dependency;
+  declare a direct Ed25519 dependency before implementation. Verify the
+  installed Gateway's handshake, pairing, scopes, event framing, and reconnect
+  contract with a version-pinned fixture. Do not introduce a JavaScript sidecar
+  or a new local Python-to-JavaScript link for this milestone.
+  Do not merge unrelated users merely because they share a satellite.
+- Require an explicit user-supplied configuration path; CLI overrides matching
+  config values. Do not start Piotr's orchestrator, DSAs, or reasoning model.
+- Bound text, buffers, concurrent work, operation deadlines, and local cleanup.
+  Correlate runs and connection generations; never replay old replies,
+  notifications, or uncertain user submissions automatically after reconnect.
 
-Process supervision, transport, authentication, and exact plugin API names are
-implementation choices to settle against the installed version. Prefer the
-smallest supported local integration, not a general-purpose voice platform.
+Captain selected the existing Gateway's native WebSocket transport on 2026-10-09
+and retired the earlier requirement for both loopback TCP and Unix sockets for
+T-011. The [TCP/Unix local transport draft](T-011-local-transport-contract.md)
+describes the superseded custom Python-to-plugin link. No proxy or Gateway
+bind/auth configuration change is part of this selection.
 
-## Proactive output without changing the Conversation protocol
+## Local protocol impact
 
-The current bridge starts only after an input adapter accepts a complete,
-non-empty user message. It has no assistant-initiated Conversation event.
+For ordinary request/reply, the adapter can propose mapping successful native
+run completion to `END_CONVERSATION`, without requiring a model voice tool or
+parsing punctuation. Exact final-output/run-completion semantics still need
+verification; a transport acknowledgement is not completed reasoning or audio.
 
-Use a separate delivery operation in the new tool's adapter/coordinator:
+Notifications still require explicit admission and output ownership. The current
+Conversation protocol requires non-empty initial user input, and the current
+microphone mapping renders output only inside an active Conversation. Do not
+fabricate a user message or bypass the manager to play a notification. The
+[stage-one investigation](T-011-stage-one-investigation.md#minimal-speak-only-notification-binding-candidate)
+proposes a manager-owned speak-only operation outside the Conversation bridge,
+with a coordinated mapping extension. Stage 1 must prove its contention with
+capture/STT, stop/join before playback, cancellation, completion, and cleanup
+before re-arm. The full speak-and-listen design is deferred; unchanged core
+interfaces or firmware are not yet proven.
 
-1. OpenClaw supplies the target, text, delivery correlation, and finish/listen
-   intent.
-2. The coordinator reserves an idle satellite and uses manager-owned
-   listening/playback exclusion, cues, visuals, and correlated playback.
-3. For an announcement, report playback completion and restore readiness.
-4. For speak-and-listen, present a bounded reply opportunity after playback
-   drains. If accepted speech arrives, use it as the initial user message of a
-   normal Conversation, with conversation-start speaker recognition and room
-   context. Correlate that Conversation with the initiating OpenClaw interaction
-   outside the immutable bridge context.
-5. If nobody replies or delivery fails, report that outcome and restore or
-   recover the satellite. Do not create an empty or fabricated Conversation.
+Retain Captain's selected remote-cancellation policy: stop voice and join local
+work, keep the shared Gateway running, and report remote settlement as uncertain
+when unproven. This remains relevant to native chat requests. Unresolved remote
+sessions cannot be reused for voice, and late output cannot enter a later
+exchange. Native cancellation/recovery evidence must replace assumptions about
+in-process SDK access. Generic local Agents retain strict lifecycle guarantees;
+necessary remote-contract changes must be explicit and tested.
 
-This path requires new coordination code; it is not already supplied by the
-existing voice adapter. Verify that it can be composed without violating the
-normative microphone and mapping contracts. Preserve existing protocol events,
-interfaces, and state transitions. If the proposed composition cannot meet
-those constraints, document the conflict and return to Captain before changing
-the contract or dropping initiated conversations from scope.
+## Stages and verification
 
-## Implementation stages
+### 1. Verify and finish the native integration design
 
-### 1. Verify the installed OpenClaw integration boundary
+- Verify installed versus loaded version and native handshake/pairing/auth
+  without exposing credentials or changing running services.
+- Prove native text submission, correlated reply delivery, typed completion,
+  failure/cancellation, and bounded output with isolated fixtures, then a
+  bounded live check once the required credentials/pairing are available.
+- Prove native notification invocation, node-side rejection propagation,
+  the installed built-in tool's 30-second default invoke deadline,
+  timeout/disconnect behavior, and what success means for spoken playback.
+  Do not equate native notification acceptance with having been heard.
+- Prove one-node-per-satellite addressing without cross-satellite delivery,
+  isolated session/history scope,
+  and recognized or unknown speaker/room carriage.
+- Specify the minimal speak-only notification binding and the remote-lifetime
+  contract; reconcile affected normative documents and conformance plans before
+  their eventual approved runtime cutover.
 
-OpenClaw is reported installed under account `ryszard`. During planning,
-`/home/ryszard` was inaccessible from the agent account; the installed version,
-configuration, and startup method have not been verified.
+The [investigation](T-011-stage-one-investigation.md) separates installed-source
+findings, earlier plugin fixtures, and outstanding native-path proof. Prior SDK
+fixtures do not establish native node/chat correctness. Stage 1 remains open.
 
-- Establish the version, startup method, supported plugin API, and local
-  connection/authentication mechanism without exposing credentials.
-- Verify channel ingress and outbound delivery, including initiated output.
-- Choose OpenClaw session correlation and history scope explicitly; do not
-  accidentally merge unrelated satellite conversations or assume the initial
-  speaker identifies every future user of that satellite.
-- Establish how OpenClaw expresses end versus follow-up intent, progress,
-  failure, and cancellation through the existing agent interface. Do not infer
-  control flow from punctuation or diagnostic strings.
-- Define the minimal local transport contract, including correlation,
-  boundedness, completion results, and disconnect behavior.
-- Record how proactive reply capture satisfies the unchanged voice contracts.
+The shared [Python Gateway foundation](../../openclaw_voice/README.md) is
+implemented and tested independently of the pending spoken-request method. It
+provides durable Ed25519 identities, signed protocol-4 connections, bounded RPC
+and event handling, and explicit uncertain submission/cancellation outcomes.
+Isolated tests include the installed `2026.9.8` connect validators and signature
+verifier; authenticated live connection and voice-service integration remain
+outstanding.
 
-Do not run `sudo` from the agent terminal. If privileged inspection is needed,
-follow root `AGENTS.md` and ask Captain to run the exact command manually.
+### 2. Implement one spoken request and reply
 
-### 2. Complete one user-initiated voice exchange
+After the remaining Stage 1 binding decisions and verification, add the
+separate entry point/configuration and native adapter.
+Reuse capture/STT, recognition, immutable context, TTS, and playback. End after
+one successful reply and cleanup; exercise unknown-speaker input and failures.
 
-- Add the separate entry point and explicit configuration.
-- Connect reused drivers, Whisper, Piper, and speaker recognition to the
-  OpenClaw adapter and thin channel plugin.
-- Deliver accepted text with conversation-start identity and room context.
-- Render replies and support ordinary multi-turn follow-up under the existing
-  bridge, including unknown-speaker input.
+### 3. Implement spoken native notifications
 
-### 3. Add proactive speech and initiated conversations
+After the speak-only binding is settled, expose satellite targets through the selected node mapping and
+handle `system.notify` using the approved speak-only binding. Preserve exclusion
+with user input and report busy, unavailable, failed, and uncertain outcomes.
+Do not open follow-up listening or introduce a durable playback queue.
 
-- Expose satellite destinations and current availability.
-- Implement speak-and-finish and speak-and-listen through the separate delivery
-  coordinator described above.
-- Report busy, unavailable, playback completion, no reply, and failures with
-  sufficient correlation for OpenClaw to act on the result.
-- Preserve one owner of satellite state across unsolicited delivery, normal
-  wake-word acceptance, reply capture, and teardown.
+### 4. Review and accept
 
-### 4. Verify, review, and accept on hardware
+Run focused native-adapter and lifecycle tests, relevant Conversation/microphone/
+mapping/STT/TTS tests, and the complete Python suite if shared runtime changes.
+Run configured-model orchestrator/DSA tests if those behaviors change; none are
+planned. Use the project's independent review-agent workflow, fixing findings
+until a fresh review reports `No findings.`.
 
-- Add focused tests for the new adapter/plugin contract and lifecycle behavior.
-- Run relevant existing Conversation, microphone, mapping, STT, and TTS tests,
-  plus the complete Python suite if shared runtime components change.
-- Run plugin tests appropriate to the installed SDK. Run the configured-model
-  orchestrator/DSA behavior suite if those behaviors are changed, as required
-  by `AGENTS.md`; no such changes are planned.
-- Perform independent implementation review using the project's review-agent
-  workflow, address findings, and repeat until a fresh review reports
-  `No findings.`
-- With Piotr stopped, verify the new runtime on a configured satellite and
-  record Captain's hardware acceptance separately from automated results.
-- Document startup, shutdown, configuration, and returning to the existing
-  Piotr runtime. Starting the sidequest must not rewrite Piotr's configuration.
+With Piotr stopped, verify both an ordinary exchange and an addressed spoken
+notification on a configured satellite. Record Captain's hardware acceptance
+separately. Document startup, shutdown, configuration, and return to Piotr
+without rewriting Piotr's config. Do not run sudo from the agent terminal.
 
 ## Acceptance criteria
 
-- A wake-word request reaches OpenClaw with the expected room and initial
-  recognized or unknown speaker; the response plays through Piper.
-- Ordinary follow-up uses the existing Conversation protocol unchanged.
-- OpenClaw can address an idle satellite without preceding user speech, both
-  for an announcement and for a question whose spoken answer reaches the
-  initiating OpenClaw session.
-- Proactive reply timeout restores readiness and reports no reply without a
-  fabricated user message.
-- Busy and unavailable destinations produce explicit results; concurrent
-  requests cannot interleave audio or corrupt listening state.
-- Cancellation, disconnects, shutdown, and late results cannot leak audio or
-  context into a later interaction. Delivery uncertainty does not cause blind
-  replay of speech or resubmission of an action-triggering user message.
-- Piotr's existing behavior and normative protocols remain intact; unrelated
-  outstanding hardware verification is not declared complete by this task.
-- Automated checks, independent review, deployment evidence, and Captain's
-  satellite acceptance are recorded as separate gates before marking complete.
+- A wake-word request reaches OpenClaw as text with the intended isolated
+  context; ordinary reply text plays through Piper, then readiness returns.
+- Unknown speakers work normally. Neither replies nor notifications
+  automatically open a follow-up interval.
+- OpenClaw's existing notification operation addresses the intended idle
+  satellite and produces speech without preceding user input.
+- Busy/unavailable destinations reject without overlapping audio or capturing
+  speech into the wrong exchange. Success and uncertainty reflect the verified
+  native receipt contract and local playback facts.
+- Cancellation, disconnect, restart, and late results cannot leak speech or
+  context into a later interaction; uncertain operations are not auto-replayed.
+- Local cleanup and explicit remote uncertainty follow the selected policy;
+  unresolved remote routes stay excluded, without killing the shared Gateway.
+- Piotr behavior is preserved. Any affected normative protocols and tests
+  change together in an approved cutover. T-004 hardware work stays separate.
+- Automated validation, independent review, deployment evidence, and Captain's
+  hardware acceptance are separate gates before completion.
 
-## Reference material and evidence
+## References
 
-Current code inspected during planning includes
-`ai_server/conversations/interfaces.py`, `contexts.py`, `messages.py`,
-`ai_server/microphones/conversation_adapter.py`, `manager.py`, and
-`ai_server/speaker_recognition/client.py`. `UserMessage` contains text only;
-speaker identity and area are immutable conversation context fields.
-
-Upstream references consulted on 2026-10-09:
-
-- [Building channel plugins](https://docs.openclaw.ai/plugins/sdk-channel-plugins)
+- [Native nodes](https://docs.openclaw.ai/nodes)
+- [Node notification CLI](https://docs.openclaw.ai/cli/nodes)
 - [Gateway protocol](https://docs.openclaw.ai/gateway/protocol)
+- [WebChat interface](https://docs.openclaw.ai/web/webchat)
 
-These establish candidate integration surfaces, not compatibility with the
-uninspected installation. No OpenClaw connection, plugin installation,
-deployment, or satellite acceptance has been performed for this task.
+Documentation was checked on 2026-10-09 and supplemented by the copied installed
+`2026.9.8` distribution. No live OpenClaw connection, plugin installation,
+deployment, or satellite acceptance has been performed for T-011.

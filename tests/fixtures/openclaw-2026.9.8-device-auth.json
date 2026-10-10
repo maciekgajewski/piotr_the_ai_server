@@ -1,0 +1,26 @@
+{
+  "provenance": {
+    "version": "2026.9.8",
+    "file": "device-auth-BT2rF0Jc.mjs",
+    "sha256": "ca29a67f0fae072f2c7bcf8a9fc2f72ad3198cdb5b455e34e42d2a3ae956e242"
+  },
+  "publicTestSeedHex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "params": {
+    "deviceId": "fe812c12f3ab4ce6ac5db69ac352f906cb1b11ef43fb33e252ef7ff552263889",
+    "clientId": "gateway-client",
+    "clientMode": "backend",
+    "role": "operator",
+    "scopes": [
+      "operator.read",
+      "operator.write"
+    ],
+    "signedAtMs": 1780000000000,
+    "token": "fixture-token-not-a-credential",
+    "nonce": "fixture-nonce",
+    "platform": " LiNuX ",
+    "deviceFamily": " VOICE-Ä "
+  },
+  "payload": "v3|fe812c12f3ab4ce6ac5db69ac352f906cb1b11ef43fb33e252ef7ff552263889|gateway-client|backend|operator|operator.read,operator.write|1780000000000|fixture-token-not-a-credential|fixture-nonce|linux|voice-Ä",
+  "publicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+  "signature": "Ivx0g6nOCjgpSXoiBUgdIUC-eafxdDiguzEsFimeYInzmKlC4mO13M6KatHwzyvGcthPOeFndf-93qn7dgdEDg"
+}
