@@ -79,3 +79,46 @@ class GatewayClientSettings:
         for token in (self.token, self.device_token):
             if token is not None and (not isinstance(token, str) or not token.strip() or token != token.strip() or "|" in token):
                 raise ValueError("Gateway token must be non-empty, trimmed, and contain no pipe")
+
+
+@dataclass(frozen=True)
+class GatewayChatSettings:
+    turn_timeout_seconds: float
+    abort_timeout_seconds: float
+    max_active_turns: int
+    max_message_characters: int
+    max_reply_characters: int
+
+    def __post_init__(self) -> None:
+        for name in ("turn_timeout_seconds", "abort_timeout_seconds"):
+            value = getattr(self, name)
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"chat {name} must be positive and finite")
+        for name in ("max_active_turns", "max_message_characters", "max_reply_characters"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"chat {name} must be a positive integer")
+
+
+@dataclass(frozen=True)
+class GatewayNotifySettings:
+    max_params_bytes: int
+    max_title_characters: int
+    max_body_characters: int
+    max_speech_characters: int
+    minimum_remaining_ms: int
+    presentation_cleanup_timeout_seconds: float
+    result_receipt_margin_seconds: float
+
+    def __post_init__(self) -> None:
+        for name in (
+            "max_params_bytes", "max_title_characters", "max_body_characters",
+            "max_speech_characters", "minimum_remaining_ms",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"notify {name} must be a positive integer")
+        for name in ("presentation_cleanup_timeout_seconds", "result_receipt_margin_seconds"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"notify {name} must be positive and finite")

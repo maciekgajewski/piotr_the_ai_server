@@ -1,24 +1,29 @@
 # T-011 stage-one integration investigation
 
 - **Authority:** Investigation and candidate design; not a runtime contract
-- **Status:** In progress; native node/chat direction supersedes the plugin design; single request/reply and spoken notifications; native binding verification remains open
+- **Status:** In progress; one server-owned node abstracts satellites; spoken-input binding under reconciliation; single request/reply and spoken notifications; native binding verification remains open
 - **Date:** 2026-10-09
-- **Updated:** 2026-10-10
+- **Updated:** 2026-10-11
 - **Scope:** Stage 1 of [T-011](T-011-openclaw-satellite-voice-interface.md), authorized by Captain
 
 ## Current direction: native text exchanges and spoken notifications
 
 Captain simplified T-011 on 2026-10-09 after reconsidering OpenClaw's native
 peripheral interfaces. The current [task plan](T-011-openclaw-satellite-voice-interface.md)
-selects native node/chat integration. Captain accepts no follow-up or a fixed
+selects native node/chat integration. On 2026-10-11 Captain clarified that one
+server-owned OpenClaw node abstracts all satellites; satellites connect only to
+the Python voice server. The earlier per-satellite node plan is superseded.
+Captain accepts no follow-up or a fixed
 default; the working choice is no follow-up: one request, one response, then
 normal wake-word readiness. Notifications are speak-and-finish.
 
 This section and the current checklist supersede earlier architecture proposals
 below. Dedicated `voice_reply`/`voice_start` tools, a custom channel plugin and
 two-backend Python-to-plugin link, and proactive questions with correlated spoken
-answers are not current implementation requirements. The earlier approval of
-stage-one investigation remains; stages 2/3 still require separate approval.
+answers are not current implementation requirements. Captain's later
+2026-10-10 "proceed" authorizes continued T-011 implementation. Runtime work
+that changes a normative Piotr protocol still needs its coordinated contract
+cutover; deployment and hardware acceptance remain separate.
 Retain remote cancellation uncertainty, local cleanup, unknown-speaker support,
 room context, boundedness, and exclusion of unresolved remote routes. The native
 binding must establish how to preserve them without in-process SDK access.
@@ -101,12 +106,18 @@ the candidate native binding:
 - The Gateway's `node.invoke` awaits a matching node result. A node result with
   `ok: false` becomes a failed Gateway response with node error details;
   `ok: true` becomes a successful response. The built-in `nodes notify` tool
-  then reduces the successful invocation to `{ok: true}`. For spoken delivery,
-  the node must define `ok: true` to mean its own playback completed; an early
-  acknowledgement would overstate delivery. Timeout or disconnection after
-  dispatch may still be uncertain, even if the Gateway reports an error.
+  then reduces the successful invocation to `{ok: true}`. Captain selected
+  node `ok: true` only after matching `PlaybackFinished` and manager cleanup
+  restore trusted readiness. An earlier acknowledgement would establish only
+  acceptance. Timeout or disconnection after dispatch may still be uncertain,
+  even if the Gateway reports an error.
 - The built-in `nodes notify` tool does not pass an invocation `timeoutMs`.
-  The installed node registry defaults an omitted timeout to 30 seconds.
+  The installed node registry defaults an omitted timeout to 30 seconds; the
+  installed CLI explicitly defaults `--invoke-timeout` to 15 seconds.
+  The dispatched `node.invoke.request` includes the remaining `timeoutMs`.
+  The installed registry sends a `node.invoke.cancel` on timeout only for
+  progress-handled invocations or worker nodes, so the ordinary notify path
+  cannot rely on receiving a cancel event when its caller times out.
   Speech synthesis plus playback and cleanup could exceed that deadline, so
   success-after-playback and the native tool timeout must be reconciled with
   an explicit accepted-duration bound or another supported invocation path.
@@ -115,6 +126,18 @@ the candidate native binding:
   Gateway acknowledges a late `node.invoke.result` as ignored after its pending
   invocation has gone away, so that late result does not repair the original
   caller's timeout.
+- Captain selected rejection before playback on 2026-10-10 when the speech
+  cannot safely finish within the native invoke window. Preflight must use the
+  request's remaining `timeoutMs`, reserve time for cleanup and the result
+  round trip, and reject before sending any `PlaybackBegin` when the bound
+  cannot be met. Exact size/duration limits and media implementation are open.
+- Captain selected speaking title followed by body, with a short pause between
+  them, on 2026-10-11. A title-only or body-only notification speaks its one
+  available field. Boundaries apply to the resulting combined audio.
+- Captain selected explicit before-playback rejection for unsupported
+  notification hints on 2026-10-11. Omitted delivery or `delivery=system`
+  remains supported. Sound, priority, overlay, and auto delivery are not
+  implemented by the spoken satellite and must return a clear error.
 - The installed role policy reserves node methods for the node role and chat
   methods for the operator role. A voice service using this candidate needs
   separately authorized node and operator connections; reusing one connection
@@ -163,24 +186,38 @@ challenge-bound handshake, pairing, scopes, framing, and reconnect logic need
 native fixture and live proof. This is a design selection, not a verified
 Gateway connection.
 
+Captain selected operator `chat.send` for accepted spoken requests on
+2026-10-10. The selection was based on its explicit run ID and terminal chat
+events. Captain's 2026-10-11 server-node clarification reopens whether spoken
+input should use the single node's `voice.transcript` event or a separate
+server-owned operator connection; the isolated `chat.send` adapter remains a
+tested candidate. Captain
+then selected one history per configured room, shared by speakers in that room,
+because recognition is unreliable. Recognized names are included only as
+tentative hints; unknown remains unknown. The isolated native schema fixture
+now passes, while live execution remains unproved.
+
 ### Consequences and remaining design work
 
 - Captain excluded Talk and said "proceed" on 2026-10-10. Implementation is
-  authorized; the request-method and explicit speaker/room carriage decisions
-  remain open. Shared Python Gateway connection work can proceed independently
-  of those choices. No running-service change or device pairing is implied.
+  authorized; the earlier operator `chat.send` choice must be reconciled with
+  Captain's clarification of the server-node boundary before runtime wiring.
+  History is scoped by configured room, independent of speaker recognition.
+  Each text request explicitly carries the room and tentative or unknown
+  speaker context. No running-service change or device pairing is implied.
 - Ordinary replies can propose a fixed `END_CONVERSATION` after successful
   native response/run completion, without an LLM finish/listen producer.
   Distinguish streamed text, final response, failure, and remote settlement.
-- Captain selected one logical OpenClaw node per satellite on 2026-10-10.
-  The installed `nodes notify` action selects one node and sends only
-  title/body plus sound/priority/delivery hints; it has no satellite selector
-  inside that command. The Python service owns each logical node connection;
-  the ESPHome hardware does not speak the OpenClaw protocol. Verify distinct
-  durable node identities, unique names, pairing, and command declarations in
-  the native fixture and live deployment. A notification addressed to one node
-  must never play on another satellite, including across reconnects or when the
-  intended node is unavailable.
+- Captain corrected the earlier per-satellite node selection on 2026-10-11.
+  One server-owned OpenClaw node abstracts all satellites. The installed
+  `nodes notify` action selects that node and sends only title/body plus
+  sound/priority/delivery hints; it has no satellite selector inside the
+  command. The voice service must define a separate internal satellite
+  destination policy before notification runtime wiring. The ESPHome hardware
+  does not speak the OpenClaw protocol or own Gateway credentials. Verify the
+  durable service node identity, pairing, and command declaration in the native
+  fixture and live deployment. A notification must not play on an unintended
+  satellite, including after reconnect or when the intended target is unavailable.
 - Captain selected the existing Gateway's native WebSocket transport on
   2026-10-09 and retired the earlier TCP/Unix dual-backend requirement for
   T-011. This removes the custom local link from the current design. It does
@@ -198,8 +235,8 @@ Gateway connection.
 
 After Captain excluded Talk and said "proceed", the shared
 [`openclaw_voice.gateway`](../../openclaw_voice/README.md) foundation was added.
-This part is independent of the pending choice between `chat.send` and
-`voice.transcript`; neither spoken-input binding is wired to the media runtime.
+This part preceded the choice between `chat.send` and `voice.transcript`;
+neither spoken-input binding was wired to the media runtime at this checkpoint.
 It implements durable private Ed25519 identities, protocol-4 challenge signing,
 explicit version/role/scope checks, finite frame/request/event limits, liveness,
 and one connection generation per client. Requests are never automatically
@@ -233,6 +270,56 @@ native chat execution, notification playback, token persistence, reconnect
 supervision, or hardware acceptance. The main Piotr runtime and normative
 media/Conversation protocols remain unchanged.
 
+### Isolated operator chat checkpoint (2026-10-10)
+
+After Captain selected `chat.send` and room-scoped history, the separate
+[`GatewayChat`](../../openclaw_voice/gateway/chat.py) adapter and room helpers
+were added. A configured agent ID and room produce a stable agent-qualified
+session key. Every request carries the room and a tentative recognized speaker,
+or an unknown speaker, in bounded text. It submits once with an idempotency key
+and `deliver: false`, accepts only a matching non-yielded text final, and never
+speaks deltas or stale events. Timeouts, lost results, mismatched room events,
+adapter close, and cancellation trigger a bounded exact-run abort attempt and
+quarantine the room route. Close revokes queued replies and joins active
+exchanges, including across concurrent close callers; quarantined routes retain
+capacity. Malformed matching event states fail safely. Proven local pre-dispatch
+rejections do not quarantine a room. Abort acknowledgement does not clear
+uncertainty. A future
+supervisor must preserve quarantined routes across reconnect and restart.
+
+`OPENCLAW_TEST_DIST=/tmp/t011-installed-full/dist .venv/bin/python -m pytest -q
+tests/test_openclaw_gateway.py` passed **54 tests** in the permitted loopback
+namespace. Fake-Gateway cases cover terminal-before-ack ordering, concurrent
+same-room exclusion, failure, timeout before and after start acknowledgement,
+late-event isolation, cancellation, close races and concurrent close callers,
+retained quarantine capacity,
+local pre-dispatch rejection, and malformed event state. A local Node probe checks synthetic
+send/abort/final shapes against the copied installed `2026.9.8` validators and
+event schema, with the source bundle hash pinned. `git diff --check` passed.
+The same installed-schema probe validates synthetic exact-run `agent.wait`
+parameters; authorization and settlement behavior remain a live gate.
+An isolated Node probe checks synthetic `system.notify`
+invocation, completed receipt, and before-playback rejection shapes against
+the installed `2026.9.8` schemas and request builder. A bounded Python frame
+codec validates node identity, command, remaining timeout, JSON/text limits,
+and rejects unsupported hints without touching media. A separate audio
+preflight now synthesizes title and body before playback, bounds buffered PCM,
+measures duration including the pause, and checks cleanup and receipt time
+against the remaining deadline. TTS cleanup has its own finite join bound;
+an unjoinable TTS worker requires process-fatal containment. The combined
+82-test focused suite passes. An isolated node invocation adapter sends the
+completed, before-playback rejection, or uncertain result after an abstract
+presenter settles, bounded by the native deadline and an exact non-ignored
+Gateway receipt; manager reservation,
+playback/re-arm, node event-loop supervision, and the live
+notification path remain untested.
+
+This is isolated contract evidence only. No authenticated Gateway chat run,
+real-model reply, device notification, or satellite playback has occurred.
+The adapter is not yet connected to Piotr's Conversation and microphone runtime;
+remote cancellation semantics and durable quarantine still need the planned
+contract work.
+
 ### Minimal speak-only notification binding candidate
 
 The current Conversation bridge requires accepted non-empty user text
@@ -245,9 +332,17 @@ candidate for approval, not a change to the normative protocols.
 1. The per-satellite media owner arbitrates notification admission with its
    ongoing acceptance, capture/STT, Conversation, and playback work. It accepts
    at most one bounded notification when there is no accepted or in-progress
-   utterance, active Conversation, or other notification. An otherwise idle
-   wake-word/open-mic listening generation may be suspended by the same owner.
-   If speech wins the race before notification reservation, report busy.
+   utterance, active Conversation, or other notification. Captain selected
+   pausing an otherwise idle wake-word or open-mic listening generation on
+   2026-10-11. The same owner stops and joins it, including any open-mic STT
+   task, before output and re-arms the same mode after cleanup. Both modes
+   need race proof. If speech starts before notification reservation, report
+   busy.
+   The Box3 driver currently drains queued capture events for that listening
+   generation before it emits `ListeningStopped`. The manager must still join
+   its competing event receive task before committing `StopListening`: if that
+   task has already consumed `SpeechStarted`, speech owns the boundary and the
+   notification returns busy.
 2. After reservation, stop the current listening generation and await its exact
    `ListeningStopped` acknowledgement. Join or contain every owned capture/STT
    task before starting output. Keep `PROCESSING` visible during synthesis and
@@ -259,8 +354,9 @@ candidate for approval, not a change to the normative protocols.
    recover the boundary. Return a typed before-playback rejection or an
    after-commit failure/uncertain result; never claim a spoken notification was
    unheard simply because an acknowledgement was lost.
-4. The node's `system.notify` success result should be sent after the local
-   playback and cleanup boundary chosen for the final contract. The built-in
+4. The node's `system.notify` success result is sent only after matching
+   `PlaybackFinished` and manager cleanup restore trusted readiness, as Captain
+   selected on 2026-10-10. The built-in
    OpenClaw nodes tool hides successful result details, so diagnostics must
    retain a local operation ID and log the separate admission, playback, and
    re-arm outcomes. The caller must not auto-replay an uncertain notification.
@@ -520,7 +616,8 @@ Captain selected option 1 on 2026-10-09: one OpenClaw plugin packages the
 incoming voice channel and dedicated voice tools. The Python service continues
 to own speech/media and satellites. This selects the interface direction;
 names, detailed schemas, and lifecycle bindings below remain design proposals.
-Runtime implementation still requires the separate stages 2/3 approval.
+At that point runtime implementation required separate stages 2/3 approval;
+Captain's later "proceed" authorized the current native subproject instead.
 
 Assumptions retained: the shared Gateway stays running; Piotr and the voice
 service do not run concurrently; OpenClaw owns reasoning/actions; proactive
@@ -651,6 +748,31 @@ The bounded recovery-record format and authoritative SDK settlement query are
 still stage-one verification items. Records retain identifiers/status, not
 replayable speech or user requests. A late settlement cannot authorize playback
 from a retired connection generation.
+
+The copied installed `2026.9.8` method policy advertises `agent.wait` with
+`operator.write`; `<=2026.7` is its introduction marker, not a restriction to
+an old protocol profile. Its handler can return a run ID, status, terminal
+fields, and a session snapshot from process-local agent-job records. Those
+records have a 600-second cache TTL, and an absent snapshot returns a timeout;
+absence therefore cannot prove settlement after a process restart or cache
+expiry. `chat.abort` replies with abort/run IDs, while `chat.history` returns
+stored messages, so neither alone proves that all side effects of an uncertain
+run have settled. Authenticated native tests must establish `agent.wait`
+authorization, chat-run correlation, terminal meaning, and restart behavior
+before it can release a quarantined room route. Until then, restart recovery
+must retain or fail closed on unresolved routes.
+
+The durable route record should be committed before `chat.send` can leave the
+voice process. It needs the stable room session key, exact run/idempotency ID,
+and an unresolved state, but no transcript, reply, speaker name, or credential.
+If the process stops between that commit and dispatch, the room remains
+conservatively unavailable on restart. A verified terminal outcome may retire
+the record only after its settlement meaning is established by the native
+fixture; a local timeout, abort acknowledgement, missing cache entry, elapsed
+age, or Gateway reconnection cannot retire it. A malformed or unreadable record
+store closes chat admission until an operator resolves it. The storage format,
+exclusive ownership, atomic commit, and recovery procedure still need design
+and crash tests before the voice service is wired.
 
 Shutdown closes local admission, revokes voice authority, attempts remote abort
 within a finite budget, and joins local tasks/media within the existing global
@@ -822,14 +944,14 @@ The following are design candidates, not an agreed wire schema or verified API:
 | Required result | Current evidence / next check |
 |---|---|
 | Installed version and startup | Operator reports CLI `2026.9.8 (fc23bc8)`; host confirms running system service using that executable. Loaded-process version remains unverified |
-| Native connection/auth | Python Gateway foundation implemented with durable per-device identity and one connection generation per client. Isolated handshake/lifecycle tests and installed connect-schema/signature checks pass. Live pairing/auth, token persistence, reconnect supervision, native text-path selection, and account/credential ownership remain open |
-| Ingress and ordinary reply | Node transcript/subscription and native chat client source-inspected; correlated native execution, real-model replies, context carriage, and output bounds untested |
-| Native notifications | Built-in nodes tool and CLI invoke `system.notify`; title/body handling confirmed in source. Built-in tool omits invoke timeout, producing a 30-second registry default. Our spoken presentation, duration bound, rejection propagation, timeout/receipt semantics, and live delivery remain untested |
-| Session/history scope | Prior plugin key-construction fixture is historical evidence only. Captain selected one logical node per satellite; distinct durable identity/pairing, exact target delivery, and explicit native history isolation remain untested. Node transcript default can select the main session |
+| Native connection/auth | Python Gateway foundation implemented with durable per-device identity and one connection generation per client. Isolated handshake/lifecycle tests and installed connect-schema/signature checks pass. One server-owned node abstracts satellites; the earlier operator `chat.send` choice is being reconciled with node ingress. Live pairing/auth, token persistence, reconnect supervision, and account/credential ownership remain open |
+| Ingress and ordinary reply | Isolated `GatewayChat` and installed send/abort/final schema probe pass. Room keys, tentative speaker text, run/room correlation, bounded final text, shutdown revocation, local pre-dispatch rejection, and uncertain-route quarantine are covered by fake-Gateway tests. Authenticated native execution, real-model reply, model/token observability, and voice-service integration remain untested |
+| Native notifications | Built-in nodes tool and CLI invoke `system.notify`; title/body handling confirmed in source. Built-in tool omits invoke timeout, producing a 30-second registry default; the CLI explicitly defaults to 15 seconds. Captain selected success after matching `PlaybackFinished` and manager cleanup, and rejection before playback if the remaining deadline cannot be met. Title then body is selected; unsupported sound/priority/delivery hints reject before playback. Synthetic installed-schema, bounded Python frame/result codec, isolated result sender, and buffered audio preflight tests pass. Manager-owned playback/re-arm, node event-loop delivery, and live delivery remain untested |
+| Session/history scope | Captain selected one history per configured room, shared by its speakers. Stable agent-qualified room keys are implemented and tested locally. One server-node pairing, internal notification target selection, native room-key isolation, and restart behavior remain untested |
 | Disposition and cancellation | No model disposition producer required for the current no-follow-up choice. Map successful native completion to END; prove cancellation/settlement and unresolved-route exclusion through the native interface |
 | Transport | Captain selected native Gateway WebSocket and retired the earlier TCP/Unix dual-backend requirement for T-011. Authenticated native connection remains untested |
-| Local notification contract | Full proactive conversation/listen design deferred. Minimal speak-only admission/rendering and remote-lifetime changes still need design and coordinated normative approval |
-| Review and acceptance | Gateway foundation has 32 passing tests including installed schema/signature interoperability. Initial independent review's redirect finding was fixed; fresh re-review returned `No findings.` Earlier plugin reviews and five SDK checks remain historical evidence. Native chat/notification execution, service integration, deployment, and hardware acceptance remain outstanding |
+| Local notification contract | Full proactive conversation/listen design deferred. Captain selected stopping idle wake-word and open-mic listening for notifications and re-arming the same mode after cleanup, with speech winning a pre-reservation race. Minimal speak-only admission/rendering and remote-lifetime changes still need design and coordinated normative approval |
+| Review and acceptance | Gateway foundation, isolated chat adapter, notification schema probe, bounded frame/result codec, and audio preflight have 82 passing focused tests including installed connect/chat/agent.wait/notify schema checks. The earlier foundation re-review, the fresh fifth chat adapter review, notification codec review, fourth audio preflight review, seventh notification result review, and source/probe re-review returned `No findings.` Four chat adapter, four audio preflight, three result sender, and one source-description findings were repaired. Native chat/notification execution, service integration, deployment, and hardware acceptance remain outstanding |
 
 Stages 2 and 3 have not started. T-004's outstanding hardware acceptance remains
 separate and unchanged.

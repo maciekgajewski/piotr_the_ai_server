@@ -50,6 +50,9 @@ class GatewayClient:
     def connected(self) -> bool:
         return self._hello is not None and not self._failed.is_set()
 
+    def observes_event(self, name: str) -> bool:
+        return name in self._event_names
+
     @property
     def hello(self) -> GatewayHello:
         if self._hello is None:
@@ -194,7 +197,7 @@ class GatewayClient:
         device_token = auth.get("deviceToken")
         if device_token is not None and (not isinstance(device_token, str) or not device_token):
             raise GatewayProtocolError("invalid Gateway device token receipt")
-        return GatewayHello(server["version"], connection_id, _string_set(features.get("methods")), _string_set(features.get("events")), scopes, device_token)
+        return GatewayHello(server["version"], connection_id, self._client.role, _string_set(features.get("methods")), _string_set(features.get("events")), scopes, device_token)
 
     async def _send_frame(self, frame: dict[str, Any]) -> None:
         assert self._websocket is not None
